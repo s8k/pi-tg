@@ -31,9 +31,10 @@ export interface CtxLike {
     getBranch(): { type: string }[];
   };
   ui: { notify(message: string, level?: "info" | "warning" | "error"): void };
-  waitForIdle(): Promise<void>;
-  newSession(): Promise<{ cancelled: boolean }>;
-  switchSession(sessionPath: string): Promise<{ cancelled: boolean }>;
+  // command-context-only (absent on the plain session context):
+  waitForIdle?(): Promise<void>;
+  newSession?(): Promise<{ cancelled: boolean }>;
+  switchSession?(sessionPath: string): Promise<{ cancelled: boolean }>;
 }
 
 export interface ClientLike {
@@ -88,13 +89,19 @@ export function makeTelegaPi(deps: TelegaPiDeps): TelegaPi {
       );
     },
     newSession() {
-      void requireCtx().newSession().catch(() => {});
+      const c = requireCtx();
+      if (!c.newSession) throw new Error("no active pi context");
+      void c.newSession().catch(() => {});
     },
     switchSession(path) {
-      void requireCtx().switchSession(path).catch(() => {});
+      const c = requireCtx();
+      if (!c.switchSession) throw new Error("no active pi context");
+      void c.switchSession(path).catch(() => {});
     },
     waitForIdle: async () => {
-      await requireCtx().waitForIdle();
+      const c = requireCtx();
+      if (!c.waitForIdle) throw new Error("no active pi context");
+      await c.waitForIdle();
     },
     compact(onDone) {
       requireCtx().compact({
