@@ -59,6 +59,9 @@ export class FakePi {
       allModels: () => self.opts.allModels ?? [],
       setModel: async (id) => {
         self.setModels.push(id);
+        const known = [...(self.opts.scopedModels ?? []).map((s) => s.model), ...(self.opts.allModels ?? [])];
+        const m = known.find((x) => x.id === id);
+        if (m) self.opts.model = m; // mirror pi: a successful setModel changes the current model
         return self.opts.modelSetResult ?? true;
       },
       setThinkingLevel: (level) => self.setThinkings.push(level),
