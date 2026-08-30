@@ -1,6 +1,6 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { escapeAttr, escapeHtml, inlineToHtml } from "../src/markdown.ts";
+import { escapeAttr, escapeHtml, inlineToHtml, markdownToHtml } from "../src/markdown.ts";
 
 describe("escape", () => {
   test("escapeHtml: & < >", () => {
@@ -54,5 +54,32 @@ describe("inline", () => {
           `unbalanced in ${JSON.stringify(out)} from ${JSON.stringify(s)}`);
       }
     }
+  });
+});
+
+describe("blocks", () => {
+  test("fence → <pre>, content escaped, newlines kept", () => {
+    assert.equal(markdownToHtml("```js\nconst a = 1 < 2;\n```"), "<pre>const a = 1 &lt; 2;</pre>");
+  });
+  test("unclosed fence (streaming) renders to EOF", () => {
+    assert.equal(markdownToHtml("```\npartial ="), "<pre>partial =</pre>");
+  });
+  test("tilde fences work; fence longer than 3 closes", () => {
+    assert.equal(markdownToHtml("~~~\nx\n~~~"), "<pre>x</pre>");
+    assert.equal(markdownToHtml("````\n```inner```\n````"), "<pre>```inner```</pre>");
+  });
+  test("headings → bold", () => {
+    assert.equal(markdownToHtml("# Title"), "<b>Title</b>");
+    assert.equal(markdownToHtml("## Sub #"), "<b>Sub</b>");
+  });
+  test("lists, quote, hr", () => {
+    assert.equal(markdownToHtml("- one\n* two\n1. num"), "• one\n• two\n1. num");
+    assert.equal(markdownToHtml("> quoted"), "❝ quoted");
+    assert.equal(markdownToHtml("---"), "────────");
+    assert.equal(markdownToHtml("- - -"), "────────");
+  });
+  test("combined document", () => {
+    const md = "## Plan\n\n- do `x`\n\n```\na < b\n```\n\n**done**";
+    assert.equal(markdownToHtml(md), "<b>Plan</b>\n• do <code>x</code>\n<pre>a &lt; b</pre>\n<b>done</b>");
   });
 });
