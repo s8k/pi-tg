@@ -1,0 +1,83 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { join } from "node:path";
+import { DEFAULTS, configPath, getBotToken, loadConfig, sanitize, saveConfig } from "../src/config.ts";
+
+function tempPath(): { opts: { path: string }; path: string } {
+  const dir = mkdtempSync(join(tmpdir(), "telega-cfg-"));
+  const path = join(dir, "pi-telega.json");
+  return { opts: { path }, path };
+}
+
+test("configPath: default under ~/.pi/agent, override honored", () => {
+  assert.equal(configPath(), join(homedir(), ".pi", "agent", "pi-telega.json"));
+  assert.equal(configPath({ path: "/x/y.json" }), "/x/y.json");
+});
+
+test("loadConfig: missing file → defaults", () => {
+  const { opts } = tempPath();
+  const cfg = loadConfig(opts);
+  assert.equal(cfg.botToken, undefined);
+  assert.equal(cfg.ownerId, undefined);
+  assert.equal(cfg.streamEditMs, DEFAULTS.streamEditMs);
+  assert.equal(cfg.toolPreviewChars, DEFAULTS.toolPreviewChars);
+  assert.equal(cfg.askClearOnSwitch, true);
+  assert.equal(cfg.maxSessionList, 20);
+  assert.deepEqual(cfg.sentMessageIds, []);
+});
+
+test("saveConfig/loadConfig round-trip", () => {
+  const { opts } = tempPath();
+  const cfg = { ...loadConfig(opts), botToken: "123:ABC", ownerId: 42, lastOffset: 999, sentMessageIds: [1, 2, 3] };
+  saveConfig(cfg, opts);
+  const back = loadConfig(opts);
+  assert.equal(back.botToken, "123:ABC");
+  assert.equal(back.ownerId, 42);
+  assert.equal(back.lastOffset, 999);
+  assert.deepEqual(back.sentMessageIds, [1, 2, 3]);
+});
+
+test("getBotToken: env override wins, blank env falls through", () => {
+  const { opts } = tempPath();
+  const cfg = { ...loadConfig(opts), botToken: "file-token" };
+  assert.equal(getBotToken(cfg, { ...opts, env: { PI_TELEGA_BOT_TOKEN: "env-token" } }), "env-token");
+  assert.equal(getBotToken(cfg, { ...opts, env: {} }), "file-token");
+  assert.equal(getBotToken(cfg, { ...opts, env: { PI_TELEGA_BOT_TOKEN: "  " } }), "file-token");
+});
+
+test("loadConfig: corrupt JSON → defaults, no throw", () => {
+  const { opts, path } = tempPath();
+  writeFileSync(path, "{not json", "utf-8");
+  assert.deepEqual(loadConfig(opts).sentMessageIds, []);
+});
+
+test("sanitize: sentMessageIds capped at 500 (newest kept) + deduped + invalid dropped", () => {
+  const ids = Array.from({ length: 600 }, (_, i) => i + 1); // 1..600
+  const cfg = sanitize({ sentMessageIds: [...ids, 600, "nope", -5] });
+  assert.equal(cfg.sentMessageIds.length, 500);
+  assert.equal(cfg.sentMessageIds[0], 101);   // oldest 1..100 dropped
+  assert.equal(cfg.sentMessageIds[499], 600);  // newest kept
+});
+
+test("sanitize: clamps and drops invalid fields", () => {
+  const cfg = sanitize({
+    streamEditMs: 10,        // below min → default
+    toolPreviewChars: "x",   // not a number → default
+    maxSessionList: 999,     // above max → default
+    askClearOnSwitch: "yes", // not a boolean → default
+    ownerId: "42",           // not a number → undefined
+    botToken: "",            // empty → undefined
+    pendingAction: { type: "activate", chatId: 7 }, // missing path → undefined
+  });
+  assert.equal(cfg.streamEditMs, DEFAULTS.streamEditMs);
+  assert.equal(cfg.toolPreviewChars, DEFAULTS.toolPreviewChars);
+  assert.equal(cfg.maxSessionList, DEFAULTS.maxSessionList);
+  assert.equal(cfg.askClearOnSwitch, DEFAULTS.askClearOnSwitch);
+  assert.equal(cfg.ownerId, undefined);
+  assert.equal(cfg.botToken, undefined);
+  assert.equal(cfg.pendingAction, undefined);
+  const ok = sanitize({ pendingAction: { type: "activate", chatId: 7, path: "C:/x/s.jsonl" } });
+  assert.deepEqual(ok.pendingAction, { type: "activate", chatId: 7, path: "C:/x/s.jsonl" });
+});
