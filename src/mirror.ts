@@ -141,4 +141,51 @@ export class Mirror {
       await this.deps.out.delete(chatId, id).catch(() => {});
     }
   }
+
+  // --- finalization ---
+
+  private async sendAnswer(chatId: number, md: string): Promise<void> {
+    for (const chunk of chunkMarkdown(md)) {
+      await this.deps.out.send(chatId, markdownToHtml(chunk), { parseMode: "HTML" });
+    }
+  }
+
+  /** agent_end: finalize working message; post the last non-empty assistant text. */
+  async onAgentEnd(messages: MirrorMessage[]): Promise<void> {
+    const { out, state } = this.deps;
+    let finalText = "";
+    let stopReason: string | undefined;
+    let errMsg: string | undefined;
+    for (const msg of messages) {
+      if (msg.role !== "assistant") continue;
+      const t = assistantText(msg);
+      if (t.length > 0) finalText = t;
+      if (msg.stopReason) stopReason = msg.stopReason;
+      if (msg.error?.message) errMsg = msg.error.message;
+    }
+    const chatId = this.deps.getChatId();
+    if (chatId !== undefined) {
+      const wid = state.getWorking();
+      if (stopReason === "aborted") {
+        if (wid !== undefined) await out.edit(chatId, wid, "⏹ interrupted", { parseMode: null, replyMarkup: { inline_keyboard: [] } });
+        if (finalText) await this.sendAnswer(chatId, finalText);
+      } else if (stopReason === "error" || errMsg) {
+        if (wid !== undefined) await out.edit(chatId, wid, `⚠️ error: ${errMsg ?? stopReason ?? "unknown"}`, { parseMode: null, replyMarkup: { inline_keyboard: [] } });
+      } else {
+        const label = finalText ? "✅ Done — answer below" : "✅ Done (no reply text)";
+        if (wid !== undefined) await out.edit(chatId, wid, label, { parseMode: null, replyMarkup: { inline_keyboard: [] } });
+        if (finalText) await this.sendAnswer(chatId, finalText);
+      }
+    }
+    state.setWorking(undefined);
+    state.clearToolMsgs();
+  }
+
+  /** ui_prompt_start: pi is blocking on a terminal permission dialog. */
+  async onUiPromptStart(title?: string): Promise<void> {
+    const chatId = this.deps.getChatId();
+    if (chatId === undefined) return;
+    const t = title ? `: ${title}` : "";
+    await this.deps.out.send(chatId, `⚠️ pi is waiting in the terminal (permission prompt${t}). Answer there.`, { parseMode: null });
+  }
 }
