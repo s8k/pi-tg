@@ -1,6 +1,6 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { escapeAttr, escapeHtml, inlineToHtml, markdownToHtml } from "../src/markdown.ts";
+import { chunkMarkdown, chunkText, escapeAttr, escapeHtml, inlineToHtml, markdownToHtml, toPlainText } from "../src/markdown.ts";
 
 describe("escape", () => {
   test("escapeHtml: & < >", () => {
@@ -81,5 +81,79 @@ describe("blocks", () => {
   test("combined document", () => {
     const md = "## Plan\n\n- do `x`\n\n```\na < b\n```\n\n**done**";
     assert.equal(markdownToHtml(md), "<b>Plan</b>\n• do <code>x</code>\n<pre>a &lt; b</pre>\n<b>done</b>");
+  });
+});
+
+describe("chunking", () => {
+  const MARKER = "(continued)\n";
+
+  test("small doc → one chunk, no marker", () => {
+    assert.deepEqual(chunkMarkdown("hello world"), ["hello world"]);
+  });
+
+  test("split: marker on 2nd chunk only, all chunks ≤ maxLen", () => {
+    const a = "x".repeat(4000);
+    const b = "y".repeat(900);
+    const chunks = chunkMarkdown(a + "\n" + b, 4096);
+    assert.equal(chunks.length, 2);
+    assert.equal(chunks[0], a);
+    assert.ok(chunks[1].startsWith(MARKER));
+    assert.equal(chunks[1].slice(MARKER.length), b);
+    for (const c of chunks) assert.ok(c.length <= 4096);
+  });
+
+  test("code fence stays whole; trailing text moves to next chunk", () => {
+    const code = Array.from({ length: 240 }, () => "line").join("\n"); // 1439 chars
+    const md = "```\n" + code + "\n```\ntrailing";
+    const chunks = chunkMarkdown(md, 1230);
+    assert.equal(chunks.length, 2);
+    assert.ok(chunks[0].startsWith("<pre>") && chunks[0].endsWith("</pre>"));
+    assert.ok(chunks[1].startsWith(MARKER));
+    assert.equal(chunks[1].slice(MARKER.length), "trailing");
+    for (const c of chunks) assert.ok(c.length <= 1230);
+  });
+
+  test("oversized fence re-wrapped as multiple valid <pre> blocks, content preserved", () => {
+    const codeLines = Array.from({ length: 600 }, (_, i) => `l${i}x`);
+    const md = "```\n" + codeLines.join("\n") + "\n```";
+    const chunks = chunkMarkdown(md, 1500);
+    assert.ok(chunks.length >= 3);
+    for (const c of chunks) {
+      const body = c.startsWith(MARKER) ? c.slice(MARKER.length) : c;
+      assert.ok(body.startsWith("<pre>") && body.endsWith("</pre>"), body.slice(0, 40));
+    }
+    const reconstructed = chunks
+      .map((c) => (c.startsWith(MARKER) ? c.slice(MARKER.length) : c))
+      .map((c) => c.slice(5, -6)) // strip <pre> / </pre>
+      .join("\n");
+    assert.equal(reconstructed, codeLines.join("\n"));
+  });
+
+  test("empty doc → no chunks", () => {
+    assert.deepEqual(chunkMarkdown(""), []);
+    assert.deepEqual(chunkMarkdown("  \n\n"), []);
+  });
+
+  test("chunkText: line-boundary split, reconstructable", () => {
+    const lines = Array.from({ length: 10 }, (_, i) => `line ${i} ` + "x".repeat(100));
+    const text = lines.join("\n");
+    const chunks = chunkText(text, 300);
+    for (const c of chunks) assert.ok(c.length <= 300);
+    const joined = chunks.map((c, i) => (i ? c.slice(MARKER.length) : c)).join("\n");
+    assert.equal(joined, text);
+  });
+});
+
+describe("toPlainText", () => {
+  test("strips markers, keeps content", () => {
+    const md = "# Title\n\n- `x` item\n- two\n1. num\n\n**bold** and [t](http://u) ~~gone~~\n\n---\n\n> quote";
+    assert.equal(
+      toPlainText(md),
+      ["Title", "", "• x item", "• two", "1. num", "", "bold and t (http://u) gone", "", "────────", "", "quote"].join("\n"),
+    );
+  });
+
+  test("fence content kept verbatim (no HTML)", () => {
+    assert.equal(toPlainText("```\n<a & b>\n```"), "<a & b>");
   });
 });

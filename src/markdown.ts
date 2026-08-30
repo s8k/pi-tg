@@ -104,3 +104,163 @@ export function toUnits(md: string): Unit[] {
 export function markdownToHtml(md: string): string {
   return toUnits(md).map((u) => u.html).join("\n");
 }
+
+export const TG_MAX_LEN = 4096;
+const MARKER = "(continued)\n";
+
+function hardCut(text: string, cap: number): string[] {
+  const out: string[] = [];
+  let rest = text;
+  while (rest.length > cap) {
+    out.push(rest.slice(0, cap));
+    rest = rest.slice(cap);
+  }
+  if (rest !== "") out.push(rest);
+  return out;
+}
+
+/** Split one over-limit unit: <pre> blocks re-wrap at code-line boundaries; anything else hard-cuts. */
+function hardSplitUnit(html: string, maxLen: number): string[] {
+  const cap = maxLen - MARKER.length;
+  const m = /^<pre>([\s\S]*)<\/pre>$/.exec(html);
+  if (!m) return hardCut(html, cap);
+  const lineCap = cap - "<pre>".length - "</pre>".length;
+  const codeLines = m[1].split("\n");
+  const out: string[] = [];
+  let buf: string[] = [];
+  let len = 0;
+  const flush = () => {
+    if (buf.length > 0) {
+      out.push(`<pre>${buf.join("\n")}</pre>`);
+      buf = [];
+      len = 0;
+    }
+  };
+  for (const cl of codeLines) {
+    if (cl.length > lineCap) {
+      // single code line over the limit: hard-cut (documented last resort)
+      flush();
+      for (const piece of hardCut(cl, lineCap)) out.push(`<pre>${piece}</pre>`);
+      continue;
+    }
+    const add = (buf.length > 0 ? 1 : 0) + cl.length;
+    if (len + add <= lineCap) {
+      buf.push(cl);
+      len += add;
+    } else {
+      flush();
+      buf.push(cl);
+      len = cl.length;
+    }
+  }
+  flush();
+  return out;
+}
+
+/** Pack rendered units into chunks ≤ maxLen; chunks ≥ 2 get the continuation marker. */
+export function chunkMarkdown(md: string, maxLen = TG_MAX_LEN): string[] {
+  const raw: string[] = [];
+  let cur = "";
+  const push = () => {
+    if (cur !== "") {
+      raw.push(cur);
+      cur = "";
+    }
+  };
+  for (const u of toUnits(md)) {
+    const piece = u.html;
+    if (piece.length > maxLen - MARKER.length) {
+      push();
+      raw.push(...hardSplitUnit(piece, maxLen));
+      continue;
+    }
+    // Full maxLen only for the very first piece of the very first chunk
+    // (the only chunk that never carries the marker); everything else reserves marker space.
+    const cap = raw.length === 0 && cur === "" ? maxLen : maxLen - MARKER.length;
+    const sep = cur === "" ? 0 : 1;
+    if (cur.length + sep + piece.length <= cap) {
+      cur = cur === "" ? piece : cur + "\n" + piece;
+    } else {
+      push();
+      cur = piece;
+    }
+  }
+  push();
+  return raw.map((r, idx) => (idx === 0 ? r : MARKER + r));
+}
+
+/** Same line-boundary packing for plain (fallback) text. */
+export function chunkText(plain: string, maxLen = TG_MAX_LEN): string[] {
+  const raw: string[] = [];
+  let cur = "";
+  const push = () => {
+    if (cur !== "") {
+      raw.push(cur);
+      cur = "";
+    }
+  };
+  for (const line of plain.replace(/\r\n?/g, "\n").split("\n")) {
+    if (line === "") continue;
+    if (line.length > maxLen - MARKER.length) {
+      push();
+      raw.push(...hardCut(line, maxLen - MARKER.length));
+      continue;
+    }
+    const cap = raw.length === 0 && cur === "" ? maxLen : maxLen - MARKER.length;
+    const sep = cur === "" ? 0 : 1;
+    if (cur.length + sep + line.length <= cap) {
+      cur = cur === "" ? line : cur + "\n" + line;
+    } else {
+      push();
+      cur = line;
+    }
+  }
+  push();
+  return raw.map((r, idx) => (idx === 0 ? r : MARKER + r));
+}
+
+function stripInline(s: string): string {
+  return s
+    .replace(/\[([^\]\n]+)\]\(([^()\s]+)\)/g, "$1 ($2)")
+    .replace(/`([^`\n]+)`/g, "$1")
+    .replace(/\*\*([^*]+)\*\*/g, "$1")
+    .replace(/__([^_]+__)__|__([^_]+)__/g, (_m, _a, b) => (b ?? _m))
+    .replace(/~~(.+?)~~/g, "$1")
+    .replace(/\*([^*\n]+)\*/g, "$1")
+    .replace(/(^|[^\w])_([^_\n]+)_(?!\w)/g, "$1$2");
+}
+
+/** Strip all markdown syntax → plain text (used when Telegram rejects the HTML). */
+export function toPlainText(md: string): string {
+  const lines = md.replace(/\r\n?/g, "\n").split("\n");
+  const out: string[] = [];
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    const fence = FENCE_OPEN_RE.exec(line);
+    if (fence) {
+      const closeRe = fenceCloseRe(fence[1]);
+      i++;
+      while (i < lines.length && !closeRe.test(lines[i])) {
+        out.push(lines[i]);
+        i++;
+      }
+      if (i < lines.length) i++;
+      continue;
+    }
+    if (line.trim() === "") { out.push(""); i++; continue; }
+    const h = HEADING_RE.exec(line);
+    const hr = HR_RE.exec(line);
+    const ul = UL_RE.exec(line);
+    const ol = OL_RE.exec(line);
+    const bq = BQ_RE.exec(line);
+    if (h) out.push(stripInline(h[1].replace(/\s+#+\s*$/, "")));
+    else if (hr) out.push(HR_LINE);
+    else if (ul) out.push("• " + stripInline(ul[1]));
+    else if (ol) out.push(`${ol[1]}. ` + stripInline(ol[2]));
+    else if (bq) out.push(stripInline(bq[1]));
+    else out.push(stripInline(line));
+    i++;
+  }
+  return out.join("\n");
+}
