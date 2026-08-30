@@ -32,6 +32,7 @@
 | 7 | Markdown | **HTML parse mode**: md→HTML converter, chunk ≤ 4096 chars, code-fence-aware; plain-text fallback on `400` parse errors | HTML escaping is far less error-prone than MarkdownV2 entity escaping; Telegram rejects malformed entities, so the converter must be golden-tested |
 | 8 | Prompt while agent busy | **Auto-steer** (`deliverAs: "steer"`), acknowledged with "⚡ queued" | Matches typing-in-terminal intuition. (No "undo steer" in v1 — the extension API has no queue-removal method; `hasPendingMessages()` is read-only) |
 | 9 | Chat cleaning | On `/new` / session switch: bot asks `[Clear] / [Keep]`; Clear = delete all **bot-sent** message IDs (tracked, throttled) | Telegram rule: a bot can only delete its own messages in a private chat; owner-typed messages remain |
+| 10 | Stop semantics | **Full Esc equivalent** — `ctx.abort()` + inline **[⏹ Stop]** button on the working message. In TUI mode pi binds extension `ctx.abort()` to the *same handler* the terminal's Esc (`app.interrupt`) uses: abort the active turn (in-flight LLM stream; in-flight tools get the shared `AbortSignal` — bash kills its child process tree; no queued tool calls start; retry sleep cancelled) **and** clear queued steer/follow-up messages (their text is restored to the terminal editor, nothing lost). Idle → "Nothing to stop". Does **not** cancel an in-flight manual `/compact` (separate controller) | Verified in pi source: TUI `abortHandler` → `restoreQueuedMessagesToEditor({abort:true})` → `agent.abort()`; bash tool `onAbort` → `killProcessTree`; aborted turn ends with `stopReason: "aborted"`, partial text kept |
 
 ## 3. Architecture
 
@@ -70,20 +71,25 @@ pi-telega/
 │   │                        #   chunking ≤ 4096 at line boundaries OUTSIDE code fences with
 │   │                        #   continuation markers; plain-text fallback renderer
 │   ├── router.ts            # Telegram update → typed action: /commands, callback_data parsing
-│   │                        #   (JSON action payloads on buttons), free text → prompt action
+│   │                        #   (JSON action payloads on buttons, incl. `stop` from the
+│   │                        #   working-message button), free text → prompt action
 │   ├── session-bridge.ts    # pi-API glue (only module importing the extension runtime):
 │   │                        #   pi.sendUserMessage (idle→plain, busy→deliverAs:"steer"),
 │   │                        #   ctx.newSession, ctx.switchSession (+ waitForIdle guard),
 │   │                        #   SessionManager.list(ctx.cwd), ctx.scopedModels/ctx.modelRegistry
-│   │                        #   + pi.setModel, pi.get/setThinkingLevel, ctx.abort, ctx.compact,
+│   │                        #   + pi.setModel, pi.get/setThinkingLevel, stop() (isIdle guard
+│   │                        #   + ctx.abort, Esc-equivalent), ctx.compact,
 │   │                        #   ctx.getContextUsage, ctx.isIdle, pi.set/getSessionName, ctx.shutdown
 │   ├── mirror.ts            # pi events → Telegram: message_update text deltas → throttled edits
 │   │                        #   of a single "working" message (default 1500 ms);
 │   │                        #   tool_execution_start/update/end → one-line status
 │   │                        #   ("⚙ bash: npm test … ✔ 42 lines") + truncated result
 │   │                        #   (default 300 chars); agent_end → final answer (chunked) and
-│   │                        #   working-message cleanup; session_start/shutdown → session card;
-│   │                        #   extension_error / retries → ⚠ notices
+│   │                        #   working-message cleanup; agent_end with an aborted message
+│   │                        #   (stopReason "aborted") → working message finalized as
+│   │                        #   "⏹ interrupted" + kept partial text, Stop button removed,
+│   │                        #   in-flight tool line marked "✖ aborted"; session_start/shutdown
+│   │                        #   → session card; extension_error / retries → ⚠ notices
 │   ├── onboarding.ts        # token validation via getMe; QR string (qrcode, terminal blocks)
 │   │                        #   shown via ctx.ui.setWidget + plain link fallback; first-/start
 │   │                        #   pairing; allowlist gate ("Not authorized")
@@ -109,7 +115,7 @@ pi-telega/
 One private chat. Message inventory:
 
 - **owner prompts** (typed, or `/name <text>` etc.)
-- **"working" message** — created at `agent_start`, edited with throttled streaming text; removed/replaced when the answer finalizes
+- **"working" message** — created at `agent_start`, edited with throttled streaming text; while running it carries an inline **[⏹ Stop]** button (callback `stop`, no confirmation — instant, like Esc); removed/replaced when the answer finalizes or is interrupted
 - **tool status lines** — one line per tool call: `⚙ <tool>: <arg summary> … ✔/✖ <truncated result>`
 - **final assistant answer** — chunked if > 4096 chars, full Markdown→HTML
 - **session card** — `📌 <name>` / cwd / model / thinking / message count / context % / first-prompt snippet / `[Activate]` (and `★ current` marker)
@@ -126,7 +132,7 @@ One private chat. Message inventory:
 | `/models` | Buttons for available models (`ctx.scopedModels`, or full catalogue when unscoped), current marked `★` → tap → `pi.setModel()` → confirmation |
 | `/thinking` | Buttons for the levels the current model supports → `pi.setThinkingLevel()` |
 | `/status` | Session name, cwd, model, thinking, context usage %, message count, busy/idle |
-| `/stop` | `ctx.abort()` |
+| `/stop` | Full Esc equivalent: `ctx.abort()` — aborts the active turn (LLM stream, in-flight tools — bash child processes are killed — and any queued tool calls), clears queued steer/follow-up messages (restored to the terminal editor), aborted partial output is kept in the session and mirrored as "⏹ interrupted". Idle → "Nothing to stop". Same handler as the [⏹ Stop] button on the working message |
 | `/compact` | `ctx.compact()` (progress notice, then summary result) |
 | `/name <text>` | `pi.setSessionName()` (visible in `/sessions` and cards) |
 | `/kill` | Confirm button → `ctx.shutdown()` (terminates the pi process; bot goes silent) |
@@ -180,6 +186,7 @@ Afterwards: zero onboarding. Token persisted ⇒ poller auto-starts on every `se
 3. **Session switch:** `/sessions` → `SessionManager.list(cwd)` → buttons → activate flow (§4) → `switchSession` → card + clean prompt.
 4. **New session:** `/new` → `ctx.newSession()` → card → clean prompt.
 5. **Bookmark:** terminal `/tg` → card posted to chat (title = session name or first-prompt snippet).
+6. **Stop:** `/stop` (or [⏹ Stop] button on the working message) → router → bridge `stop()`: `ctx.isIdle()` → reply "Nothing to stop — session is idle" (no abort called); otherwise `ctx.abort()` → in-flight LLM stream aborted (partial text kept as an `aborted` message), in-flight tools receive the shared abort signal (bash: process tree killed), queued steer/follow-up messages discarded (their text restored to the terminal editor — phone-typed steer text is not lost) → `agent_end` (aborted) → mirror finalizes the working message as "⏹ interrupted" + partial text, marks the in-flight tool line "✖ aborted", removes the Stop button → bot replies "⏹ stopped". Session is now idle; a new prompt runs immediately.
 
 ## 8. Error handling
 
@@ -192,6 +199,8 @@ Afterwards: zero onboarding. Token persisted ⇒ poller auto-starts on every `se
 | Telegram `400` bad entities (malformed Markdown) | Retry the message as plain text (fallback renderer); log original |
 | `switchSession` cancelled by another extension | Report "switch cancelled by <extension>" in chat |
 | pi killed by `/kill` or terminal closed | Poller stops with the process; on next `pi -c` the bot returns automatically; sent-ID tracker persists so `/new`-clean still works |
+| `/stop` while idle | "Nothing to stop — session is idle" (no `ctx.abort()` call) |
+| `/stop` while manual `/compact` is running | `ctx.abort()` does not cancel an in-flight compaction (separate controller); it finishes normally and the session goes idle — stop confirmation notes this |
 | LLM/Docker down mid-run | pi surfaces the error as message events → mirrored as `⚠` with the error text |
 | Extension handler throws | All handlers wrapped; failure → `ctx.ui.notify` in TUI, never crashes the process |
 | Unknown Telegram user | "Not authorized" (all commands incl. repeated `/start`) |
@@ -225,6 +234,7 @@ Afterwards: zero onboarding. Token persisted ⇒ poller auto-starts on every `se
 - `tests/fake-pi.ts`: stub of exactly the used surface (`sendUserMessage`, `newSession`, `switchSession`, `modelRegistry`, `setModel`, `compact`, `abort`, …). `tests/fake-fetch.ts`: scripted Bot API responses including 429/409.
 - Golden tests for `markdown.ts` (the riskiest module): fences, nested emphasis, entity escaping, 4096 boundaries, chunk continuity.
 - Integration test: fake-pi + fake-fetch, scripted event sequence → assert the exact expected sequence of send/edit/delete calls.
+- Stop tests: (a) `stop` callback / `/stop` while busy → `ctx.abort()` called once, `agent_end`(aborted) → working message finalized as "⏹ interrupted" with partial text, Stop button removed, in-flight tool line "✖ aborted"; (b) `/stop` while idle → no `ctx.abort()` call, "Nothing to stop" reply; (c) double stop → second call is a no-op reply.
 - Manual smoke checklist (README): real bot, real pi, real phone — pairing, prompt, steer-while-busy, /models, /sessions, /new+clear, /kill.
 - CI: `tsc --noEmit` + `node --test`.
 
