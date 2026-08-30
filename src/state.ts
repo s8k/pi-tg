@@ -1,3 +1,5 @@
+import type { PiThinkingLevel } from "./thinking.ts";
+
 export interface SessionListItem {
   path: string;
   id: string;
@@ -20,7 +22,7 @@ export class TelegaState {
   private toolMsgIds = new Map<string, number>();
   private sessionList: SessionListItem[] = [];
   private modelList: string[] = [];
-  private thinkingList: string[] = [];
+  private thinkingList: PiThinkingLevel[] = [];
 
   constructor(offset = 0) {
     this.offset = offset;
@@ -79,10 +81,10 @@ export class TelegaState {
   modelAt(i: number): string | undefined {
     return this.modelList[i];
   }
-  setThinkingList(levels: string[]): void {
+  setThinkingList(levels: PiThinkingLevel[]): void {
     this.thinkingList = levels;
   }
-  thinkingAt(i: number): string | undefined {
+  thinkingAt(i: number): PiThinkingLevel | undefined {
     return this.thinkingList[i];
   }
 }
