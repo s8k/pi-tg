@@ -83,6 +83,40 @@ export interface TgSentMessage {
   text?: string;
 }
 
+export interface PollerDeps {
+  client: TelegramClient;
+  getOffset(): number;
+  setOffset(n: number): void;
+  onUpdates(updates: TgUpdate[]): Promise<void>;
+  onError(err: unknown): void;
+  shouldStop(): boolean;
+  sleep(ms: number): Promise<void>;
+}
+
+const BACKOFF_START_MS = 1000;
+const BACKOFF_CAP_MS = 30_000;
+
+export async function pollLoop(deps: PollerDeps): Promise<void> {
+  let backoff = BACKOFF_START_MS;
+  for (;;) {
+    if (deps.shouldStop()) return;
+    try {
+      const updates = await deps.client.getUpdates(deps.getOffset(), 50);
+      if (updates.length > 0) {
+        await deps.onUpdates(updates);
+        deps.setOffset(updates[updates.length - 1].update_id + 1);
+      }
+      backoff = BACKOFF_START_MS;
+    } catch (err) {
+      if (deps.shouldStop()) return;
+      deps.onError(err);
+      if (err instanceof TgError && err.code === 409) return; // another poller owns the token
+      await deps.sleep(backoff);
+      backoff = Math.min(backoff * 2, BACKOFF_CAP_MS);
+    }
+  }
+}
+
 const MAX_429_RETRIES = 3;
 
 export class TelegramClient {
@@ -182,5 +216,9 @@ export class TelegramClient {
     const p: Record<string, unknown> = { callback_query_id: callbackQueryId };
     if (text) p.text = text;
     return this.call("answerCallbackQuery", p);
+  }
+
+  getUpdates(offset: number, timeoutSec = 50): Promise<TgUpdate[]> {
+    return this.call("getUpdates", { offset, timeout: timeoutSec, allowed_updates: ["message", "callback_query", "edited_message"] }) as Promise<TgUpdate[]>;
   }
 }

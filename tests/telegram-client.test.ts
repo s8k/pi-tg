@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { TelegramClient, TgError, TgNetworkError } from "../src/telegram-client.ts";
+import { TelegramClient, TgError, TgNetworkError, pollLoop } from "../src/telegram-client.ts";
 import { makeFakeFetch } from "./fake-fetch.ts";
 
 test("call: ok:true → result, correct URL + JSON body", async () => {
@@ -97,4 +97,121 @@ test("answerCallbackQuery: sends callback_query_id (+ optional text)", async () 
   await c.answerCallbackQuery("cb-1", "ok");
   const body = JSON.parse(String(ff.calls[0].init?.body ?? "{}"));
   assert.deepEqual(body, { callback_query_id: "cb-1", text: "ok" });
+});
+
+test("getUpdates: offset, timeout, allowed_updates", async () => {
+  const ff = makeFakeFetch(() => ({ status: 200, body: { ok: true, result: [] } }));
+  const c = new TelegramClient("T", { fetchImpl: ff.fetchImpl });
+  await c.getUpdates(42, 30);
+  const body = JSON.parse(String(ff.calls[0].init?.body ?? "{}"));
+  assert.deepEqual(body, { offset: 42, timeout: 30, allowed_updates: ["message", "callback_query", "edited_message"] });
+});
+
+async function waitFor(cond: () => boolean, timeoutMs = 2000): Promise<void> {
+  const t0 = Date.now();
+  while (!cond()) {
+    if (Date.now() - t0 > timeoutMs) throw new Error("waitFor timeout");
+    await new Promise((r) => setTimeout(r, 5));
+  }
+}
+
+test("pollLoop: delivers batches, advances offset, stops on flag", async () => {
+  const delivered: number[][] = [];
+  let offset = 0;
+  let stop = false;
+  const ff = makeFakeFetch();
+  ff.queue.push(
+    { status: 200, body: { ok: true, result: [
+      { update_id: 1, message: { message_id: 1, chat: { id: 7, type: "private" }, date: 1 } },
+      { update_id: 2, message: { message_id: 2, chat: { id: 7, type: "private" }, date: 2 } },
+    ] } },
+    { status: 200, body: { ok: true, result: [] } },
+  );
+  const client = new TelegramClient("T", { fetchImpl: ff.fetchImpl, sleep: async () => {} });
+  const p = pollLoop({
+    client,
+    getOffset: () => offset,
+    setOffset: (n) => (offset = n),
+    onUpdates: async (u) => { delivered.push(u.map((x) => x.update_id)); },
+    onError: () => {},
+    shouldStop: () => stop,
+    // real (short) timer: a no-op sleep would spin in microtasks and starve the event loop
+    sleep: (ms) => new Promise((r) => setTimeout(r, Math.min(ms, 5))),
+  });
+  await waitFor(() => delivered.length === 1);
+  stop = true;
+  await p;
+  assert.deepEqual(delivered, [[1, 2]]);
+  assert.equal(offset, 3);
+});
+
+test("pollLoop: network error → backoff(1s) then retry succeeds", async () => {
+  const sleeps: number[] = [];
+  const errors: unknown[] = [];
+  // call 1: network failure; call 2: one update; call 3+: empty, yielding like a real long poll
+  let n = 0;
+  const ff = makeFakeFetch(async () => {
+    n++;
+    if (n === 1) throw new Error("boom");
+    if (n > 2) await new Promise((r) => setTimeout(r, 5));
+    const updates = n === 2
+      ? [{ update_id: 9, message: { message_id: 9, chat: { id: 7, type: "private" }, date: 9 } }]
+      : [];
+    return { status: 200, body: { ok: true, result: updates } };
+  });
+  let offset = 0;
+  let stop = false;
+  const delivered: number[][] = [];
+  const client = new TelegramClient("T", { fetchImpl: ff.fetchImpl, sleep: async () => {} });
+  const p = pollLoop({
+    client,
+    getOffset: () => offset,
+    setOffset: (m) => (offset = m),
+    onUpdates: async (u) => { delivered.push(u.map((x) => x.update_id)); },
+    onError: (e) => errors.push(e),
+    shouldStop: () => stop,
+    // real (short) timer so the error path yields to the event loop; records the backoff ms
+    sleep: (ms) => { sleeps.push(ms); return new Promise((r) => setTimeout(r, Math.min(ms, 5))); },
+  });
+  await waitFor(() => delivered.length === 1);
+  stop = true;
+  await p;
+  assert.deepEqual(delivered, [[9]]);
+  assert.equal(offset, 10);
+  assert.equal(errors.length, 1);
+  assert.ok(sleeps.includes(1000));
+});
+
+test("pollLoop: 409 conflict → reports and stops (no retry)", async () => {
+  const ff = makeFakeFetch(() => ({ status: 409, body: { ok: false, error_code: 409, description: "Conflict: terminated by other getUpdates request" } }));
+  const client = new TelegramClient("T", { fetchImpl: ff.fetchImpl, sleep: async () => {} });
+  const errors: unknown[] = [];
+  const p = pollLoop({
+    client,
+    getOffset: () => 0,
+    setOffset: () => {},
+    onUpdates: async () => {},
+    onError: (e) => errors.push(e),
+    shouldStop: () => false,
+    sleep: async () => {},
+  });
+  await p;
+  assert.equal(ff.calls.length, 1);
+  assert.equal(errors.length, 1);
+  assert.ok(errors[0] instanceof TgError && (errors[0] as TgError).code === 409);
+});
+
+test("pollLoop: already stopping → returns without any call", async () => {
+  const ff = makeFakeFetch(() => ({ status: 200, body: { ok: true, result: [] } }));
+  const client = new TelegramClient("T", { fetchImpl: ff.fetchImpl, sleep: async () => {} });
+  await pollLoop({
+    client,
+    getOffset: () => 0,
+    setOffset: () => {},
+    onUpdates: async () => {},
+    onError: () => {},
+    shouldStop: () => true,
+    sleep: async () => {},
+  });
+  assert.equal(ff.calls.length, 0);
 });

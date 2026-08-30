@@ -10,7 +10,7 @@ export interface ScriptedResponse {
   body: unknown;
 }
 
-type Handler = (url: string, init?: RequestInit) => ScriptedResponse | never;
+type Handler = (url: string, init?: RequestInit) => ScriptedResponse | Promise<ScriptedResponse> | never;
 
 /**
  * Scripted fetch stand-in. Responses come from `queue` (FIFO) first, then `handler`.
@@ -28,7 +28,7 @@ export function makeFakeFetch(handler?: Handler): {
   const fetchImpl: FetchLike = async (url, init) => {
     calls.push({ url, init });
     let r = queue.shift();
-    if (!r && h) r = h(url, init);
+    if (!r && h) r = await h(url, init);
     if (!r) throw new Error(`fake-fetch: no response scripted for ${url}`);
     return {
       ok: r.status >= 200 && r.status < 300,
