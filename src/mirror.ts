@@ -101,4 +101,44 @@ export class Mirror {
     if (id === undefined || line === undefined) return;
     await out.edit(chatId, id, `${line} ${isError ? "✖" : "✔"}`, { parseMode: null });
   }
+
+  // --- streaming (assistant messages) ---
+  private streamMsgId: number | undefined;
+  private streamText = "";
+  private lastStreamEdit = 0;
+
+  /** message_start (assistant only). */
+  async onAssistantStart(msg: MirrorMessage): Promise<void> {
+    if (msg.role !== "assistant") return;
+    const chatId = this.deps.getChatId();
+    if (chatId === undefined) return;
+    this.streamText = "";
+    this.lastStreamEdit = 0;
+    const id = await this.deps.out.send(chatId, "…", { parseMode: null });
+    this.streamMsgId = id;
+  }
+
+  /** message_update (assistant only): throttled plain-text edit. */
+  async onAssistantUpdate(msg: MirrorMessage): Promise<void> {
+    if (msg.role !== "assistant") return;
+    if (this.streamMsgId === undefined) return;
+    this.streamText = assistantText(msg);
+    if (this.deps.now() - this.lastStreamEdit < this.deps.cfg.streamEditMs) return;
+    let text = this.streamText;
+    if (text.length > TG_MAX_LEN - 1) text = text.slice(0, TG_MAX_LEN - 2) + " …";
+    this.lastStreamEdit = this.deps.now();
+    await this.deps.out.edit(this.deps.getChatId()!, this.streamMsgId, text || "…", { parseMode: null });
+  }
+
+  /** message_end (assistant only): drop the stream message. */
+  async onAssistantEnd(msg: MirrorMessage): Promise<void> {
+    if (msg.role !== "assistant") return;
+    const chatId = this.deps.getChatId();
+    const id = this.streamMsgId;
+    this.streamMsgId = undefined;
+    this.streamText = "";
+    if (chatId !== undefined && id !== undefined) {
+      await this.deps.out.delete(chatId, id).catch(() => {});
+    }
+  }
 }
