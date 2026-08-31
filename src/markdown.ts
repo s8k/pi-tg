@@ -354,3 +354,34 @@ export function richUnits(md: string): RichUnit[] {
   flushPara();
   return units;
 }
+
+/**
+ * Wrap fenced blocks whose body has more than `foldLines` lines in a closed
+ * <details> (the markdown tier parses markdown inside details bodies, so the
+ * fence still renders as a preformatted block). Short fences pass verbatim.
+ */
+export function foldLongFences(md: string, foldLines = 25): string {
+  const lines = md.replace(/\r\n?/g, "\n").split("\n");
+  const out: string[] = [];
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    const fence = FENCE_OPEN_RE.exec(line);
+    if (!fence) { out.push(line); i++; continue; }
+    const buf: string[] = [line];
+    const closeRe = fenceCloseRe(fence[1]);
+    i++;
+    let closed = false;
+    while (i < lines.length && !closeRe.test(lines[i])) { buf.push(lines[i]); i++; }
+    if (i < lines.length) { buf.push(lines[i]); i++; closed = true; }
+    const body = buf.slice(1, closed ? buf.length - 1 : buf.length);
+    if (body.length > foldLines) {
+      const lang = fence[2] ?? "";
+      const summary = `code${lang ? `, ${lang}` : ""} (${body.length} lines)`;
+      out.push(`<details><summary>${summary}</summary>`, "", ...buf, "", "</details>");
+    } else {
+      out.push(...buf);
+    }
+  }
+  return out.join("\n");
+}

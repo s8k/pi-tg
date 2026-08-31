@@ -1,6 +1,6 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { chunkMarkdown, chunkText, escapeAttr, escapeHtml, inlineToHtml, markdownToHtml, RICH_CAP, richUnits, toPlainText } from "../src/markdown.ts";
+import { chunkMarkdown, chunkText, escapeAttr, escapeHtml, foldLongFences, inlineToHtml, markdownToHtml, RICH_CAP, richUnits, toPlainText } from "../src/markdown.ts";
 
 describe("escape", () => {
   test("escapeHtml: & < >", () => {
@@ -204,4 +204,44 @@ test("richUnits: <details> region → one details unit", () => {
   assert.ok(u[1].text.startsWith("<details>"));
   assert.ok(u[1].text.endsWith("</details>"));
   assert.ok(u[1].text.includes("inner text"));
+});
+
+const fenceOf = (n: number, lang = "") =>
+  [lang ? "```" + lang : "```", ...Array.from({ length: n }, (_, i) => `line${i}`), "```"].join("\n");
+
+test("foldLongFences: short fence (≤ N lines) untouched", () => {
+  const md = `intro\n\n${fenceOf(5)}\n\noutro`;
+  assert.equal(foldLongFences(md, 25), md);
+});
+
+test("foldLongFences: exactly N lines → untouched; N+1 → wrapped", () => {
+  assert.equal(foldLongFences(fenceOf(25), 25), fenceOf(25));
+  assert.ok(foldLongFences(fenceOf(26), 25).startsWith("<details>"));
+});
+
+test("foldLongFences: wraps with summary (line count + language), fence intact inside", () => {
+  const out = foldLongFences(fenceOf(30, "python"), 25);
+  assert.ok(out.startsWith("<details><summary>code, python (30 lines)</summary>"), out.slice(0, 80));
+  assert.ok(out.includes("```python"));
+  assert.ok(out.trimEnd().endsWith("</details>"));
+  assert.ok(out.includes("line0") && out.includes("line29"));
+});
+
+test("foldLongFences: no language → plain summary", () => {
+  const out = foldLongFences(fenceOf(30), 25);
+  assert.ok(out.startsWith("<details><summary>code (30 lines)</summary>"));
+});
+
+test("foldLongFences: multiple fences, only the long one wrapped", () => {
+  const md = `${fenceOf(3)}\n\ntext\n\n${fenceOf(40, "ts")}`;
+  const out = foldLongFences(md, 25);
+  assert.equal((out.match(/<details>/g) ?? []).length, 1);
+  assert.ok(out.includes("code, ts (40 lines)"));
+});
+
+test("foldLongFences: unclosed long fence (streaming) also wrapped", () => {
+  const md = ["```js", ...Array.from({ length: 30 }, (_, i) => `x${i}`)].join("\n");
+  const out = foldLongFences(md, 25);
+  assert.ok(out.startsWith("<details><summary>code, js (30 lines)</summary>"));
+  assert.ok(out.includes("</details>"));
 });
