@@ -104,7 +104,7 @@ test("getUpdates: offset, timeout, allowed_updates", async () => {
   const c = new TelegramClient("T", { fetchImpl: ff.fetchImpl });
   await c.getUpdates(42, 30);
   const body = JSON.parse(String(ff.calls[0].init?.body ?? "{}"));
-  assert.deepEqual(body, { offset: 42, timeout: 30, allowed_updates: ["message", "callback_query", "edited_message"] });
+  assert.deepEqual(body, { offset: 42, timeout: 30, allowed_updates: ["message", "callback_query", "edited_message", "stopped_message_generation"] });
 });
 
 async function waitFor(cond: () => boolean, timeoutMs = 2000): Promise<void> {
@@ -214,4 +214,42 @@ test("pollLoop: already stopping → returns without any call", async () => {
     sleep: async () => {},
   });
   assert.equal(ff.calls.length, 0);
+});
+
+test("sendRichMessage: rich_message param, optional reply_to_message", async () => {
+  const ff = makeFakeFetch(() => ({ status: 200, body: { ok: true, result: { message_id: 9, chat: { id: 7, type: "private" }, date: 1 } } }));
+  const c = new TelegramClient("T", { fetchImpl: ff.fetchImpl });
+  const msg = await c.sendRichMessage(7, { markdown: "| a | b |" }, { replyToId: 4 });
+  assert.equal(msg.message_id, 9);
+  assert.equal(ff.calls[0].url, "https://api.telegram.org/botT/sendRichMessage");
+  const body = JSON.parse(String(ff.calls[0].init?.body ?? "{}"));
+  assert.deepEqual(body, { chat_id: 7, rich_message: { markdown: "| a | b |" }, reply_to_message: { message_id: 4 } });
+});
+
+test("sendRichMessage: no replyToId omits reply_to_message", async () => {
+  const ff = makeFakeFetch(() => ({ status: 200, body: { ok: true, result: { message_id: 5, chat: { id: 7, type: "private" }, date: 1 } } }));
+  const c = new TelegramClient("T", { fetchImpl: ff.fetchImpl });
+  const rich = { markdown: "# hi" };
+  await c.sendRichMessage(7, rich);
+  const body = JSON.parse(String(ff.calls[0].init?.body ?? "{}"));
+  assert.equal(body.chat_id, 7);
+  assert.deepEqual(body.rich_message, rich);
+  assert.ok(!("reply_to_message" in body));
+});
+
+test("sendRichMessageDraft: draft_id + can_stop only when true; omitted when falsy", async () => {
+  const ff = makeFakeFetch(() => ({ status: 200, body: { ok: true, result: true } }));
+  const c = new TelegramClient("T", { fetchImpl: ff.fetchImpl });
+  assert.equal(await c.sendRichMessageDraft(7, 3, { markdown: "x" }, true), true);
+  assert.deepEqual(JSON.parse(String(ff.calls[0].init?.body)), { chat_id: 7, draft_id: 3, rich_message: { markdown: "x" }, can_stop: true });
+  assert.equal(await c.sendRichMessageDraft(7, 4, { markdown: "y" }), true);
+  const body2 = JSON.parse(String(ff.calls[1].init?.body));
+  assert.equal("can_stop" in body2, false);
+  assert.equal(body2.draft_id, 4);
+});
+
+test("sendRichMessage: 400 surfaces as TgError (fallback trigger)", async () => {
+  const ff = makeFakeFetch(() => ({ status: 400, body: { ok: false, error_code: 400, description: "Bad Request: rich message parse error" } }));
+  const c = new TelegramClient("T", { fetchImpl: ff.fetchImpl });
+  await assert.rejects(c.sendRichMessage(7, { markdown: "<broken" }), (e: unknown) => e instanceof TgError && e.code === 400);
 });

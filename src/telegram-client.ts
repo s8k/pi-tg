@@ -67,6 +67,22 @@ export interface TgUpdate {
   message?: TgMessage;
   edited_message?: TgMessage;
   callback_query?: TgCallbackQuery;
+  /** Bot API 10.2: the user pressed the Stop button on a draft we created. */
+  stopped_message_generation?: MessageGenerationStopped;
+}
+
+/** One of `markdown` | `html` | `blocks` must be set (Bot API 10.2, InputRichMessage). */
+export interface InputRichMessage {
+  markdown?: string;
+  html?: string;
+  blocks?: unknown[];
+}
+
+/** Update sent when a user stops a draft message (Bot API 10.2). */
+export interface MessageGenerationStopped {
+  chat: TgChat;
+  message_thread_id?: number;
+  draft_id: number;
 }
 
 export interface TgBotMe {
@@ -218,7 +234,33 @@ export class TelegramClient {
     return this.call("answerCallbackQuery", p);
   }
 
+  sendRichMessage(
+    chatId: number,
+    richMessage: InputRichMessage,
+    opts?: { replyToId?: number },
+  ): Promise<TgSentMessage> {
+    const p: Record<string, unknown> = { chat_id: chatId, rich_message: richMessage };
+    if (opts?.replyToId) p.reply_to_message = { message_id: opts.replyToId };
+    return this.call("sendRichMessage", p) as Promise<TgSentMessage>;
+  }
+
+  /**
+   * Creates or updates an ephemeral draft (~30 s window). `canStop` adds the
+   * native Stop button, which produces a `stopped_message_generation` update.
+   * Returns true on success, false if the draft no longer exists.
+   */
+  sendRichMessageDraft(
+    chatId: number,
+    draftId: number,
+    richMessage: InputRichMessage,
+    canStop?: boolean,
+  ): Promise<boolean> {
+    const p: Record<string, unknown> = { chat_id: chatId, draft_id: draftId, rich_message: richMessage };
+    if (canStop) p.can_stop = true;
+    return this.call("sendRichMessageDraft", p) as Promise<boolean>;
+  }
+
   getUpdates(offset: number, timeoutSec = 50): Promise<TgUpdate[]> {
-    return this.call("getUpdates", { offset, timeout: timeoutSec, allowed_updates: ["message", "callback_query", "edited_message"] }) as Promise<TgUpdate[]>;
+    return this.call("getUpdates", { offset, timeout: timeoutSec, allowed_updates: ["message", "callback_query", "edited_message", "stopped_message_generation"] }) as Promise<TgUpdate[]>;
   }
 }
