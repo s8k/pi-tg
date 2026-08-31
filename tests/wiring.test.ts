@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { makeOut, makeTelegaPi, type CtxLike, type ClientLike, type PiLike } from "../src/wiring.ts";
+import { makeOut, makeTelegaPi, ctxIsAlive, type CtxLike, type ClientLike, type PiLike } from "../src/wiring.ts";
 import { TelegaState } from "../src/state.ts";
 
 test("makeOut: send → addSent + persist, default parseMode HTML", async () => {
@@ -140,4 +140,73 @@ test("makeTelegaPi: no ctx at all → safe defaults, no throw", () => {
   assert.equal(t.messageCount(), 0);
   assert.equal(t.currentModel(), undefined);
   assert.deepEqual(t.allModels(), []);
+});
+
+/**
+ * Mimics a pi ctx after session replacement: pi invalidates the session’s
+ * ExtensionRunner, so EVERY property/method access on a captured ctx throws.
+ */
+function makeStaleCtx(): CtxLike {
+  const stale = new Error("This extension ctx is stale after session replacement or reload.");
+  const boom = () => {
+    throw stale;
+  };
+  return {
+    get cwd(): string { throw stale; },
+    get mode(): string { throw stale; },
+    get hasUI(): boolean { throw stale; },
+    isIdle: boom,
+    abort: boom,
+    shutdown: boom,
+    compact: boom,
+    getContextUsage: boom,
+    get model(): CtxLike["model"] { throw stale; },
+    get thinkingLevel(): CtxLike["thinkingLevel"] { throw stale; },
+    get scopedModels(): CtxLike["scopedModels"] { throw stale; },
+    get modelRegistry(): CtxLike["modelRegistry"] { throw stale; },
+    get sessionManager(): CtxLike["sessionManager"] { throw stale; },
+    get ui(): CtxLike["ui"] { throw stale; },
+  };
+}
+
+test("ctxIsAlive: live ctx passes, stale (throwing) ctx fails, undefined fails", () => {
+  assert.equal(ctxIsAlive(makeFakeCtx()), true);
+  assert.equal(ctxIsAlive(makeStaleCtx()), false);
+  assert.equal(ctxIsAlive(undefined), false);
+});
+
+test("makeTelegaPi: stale cmdCtx (post /new) falls back to live sessionCtx — the /new crash", () => {
+  // /new: the /tg internal command captures cmdCtx of the old session, the
+  // replacement invalidates it, session_start installs a fresh sessionCtx.
+  // The adapter must ignore the stale cmdCtx and serve from sessionCtx.
+  const t = makeTelegaPi({ pi: {} as PiLike, getCmdCtx: () => makeStaleCtx(), getSessionCtx: () => makeFakeCtx(), listSessions: async () => [] });
+  assert.equal(t.cwd, "/proj");
+  assert.equal(t.isIdle(), true);
+  assert.equal(t.currentModel()?.id, "a");
+  assert.equal(t.currentThinking(), undefined);
+  assert.equal(t.messageCount(), 2);
+  assert.deepEqual(t.contextUsage(), { tokens: 100, contextWindow: 1000, percent: 10 });
+  assert.equal(t.currentSessionPath(), "/proj/s.jsonl");
+  assert.equal(t.scopedModels().length, 1);
+  assert.equal(t.allModels().length, 2);
+});
+
+test("makeTelegaPi: live cmdCtx still preferred over sessionCtx (capability: newSession/switchSession/waitForIdle)", async () => {
+  let newCalls = 0;
+  const cmd = makeFakeCtx({ newSession: async () => { newCalls++; return { cancelled: false }; } });
+  const sess = makeFakeCtx(); // no newSession
+  const t = makeTelegaPi({ pi: {} as PiLike, getCmdCtx: () => cmd, getSessionCtx: () => sess, listSessions: async () => [] });
+  t.newSession();
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(newCalls, 1);
+});
+
+test("makeTelegaPi: ALL ctxs stale → safe defaults, no throw (teardown window)", () => {
+  const t = makeTelegaPi({ pi: {} as PiLike, getCmdCtx: () => makeStaleCtx(), getSessionCtx: () => makeStaleCtx(), listSessions: async () => [] });
+  assert.equal(t.cwd, "");
+  assert.equal(t.isIdle(), true);
+  assert.equal(t.currentModel(), undefined);
+  assert.equal(t.messageCount(), 0);
+  assert.deepEqual(t.allModels(), []);
+  assert.throws(() => t.abort()); // requireCtx: loud, but contained by the bridge’s dispatch wrapper
 });

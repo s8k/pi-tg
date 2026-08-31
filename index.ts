@@ -12,7 +12,7 @@ import type { Out, TelegaPi } from "./src/session-bridge.ts";
 import { Mirror } from "./src/mirror.ts";
 import type { MirrorMessage } from "./src/mirror.ts";
 import { renderQr, qrWidgetFactory, tokenLooksValid, notAuthorizedText } from "./src/onboarding.ts";
-import { makeOut, makeTelegaPi } from "./src/wiring.ts";
+import { makeOut, makeTelegaPi, ctxIsAlive } from "./src/wiring.ts";
 
 const CFG = { path: join(getAgentDir(), "pi-telega.json") };
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -51,7 +51,11 @@ export default function piTelega(pi: ExtensionAPI): void {
   };
 
   const ui = (text: string, level: "info" | "warning" | "error" = "info"): void => {
-    (sessionCtx ?? cmdCtx)?.ui.notify(text, level);
+    // During the teardown→replacement window both captured ctxs can be stale;
+    // a stale notify would throw, and if it happens inside a .catch callback it
+    // becomes an unhandled rejection (process crash). Probe before notifying.
+    const c = ctxIsAlive(sessionCtx) ? sessionCtx : ctxIsAlive(cmdCtx) ? cmdCtx : undefined;
+    c?.ui.notify(text, level);
   };
 
   // mirror handlers are fire-and-forget: a transient Telegram error must not
@@ -171,11 +175,12 @@ export default function piTelega(pi: ExtensionAPI): void {
     const c = client ?? new TelegramClient(token, {});
     try {
       const me = await c.getMe();
+      if (!ctxIsAlive(ctx)) return; // session replaced mid-flight → ctx is stale
       const qr = renderQr(`https://t.me/${me.username}`);
       if (ctx.mode === "tui" && ctx.hasUI) ctx.ui.setWidget("pi-telega-qr", qrWidgetFactory(qr)); // factory form: array form is capped at 10 lines
       else ctx.ui.notify(`open https://t.me/${me.username} in Telegram`, "info");
     } catch (err) {
-      ctx.ui.notify(`pi-telega: getMe failed: ${String(err)}`, "error");
+      ui(`pi-telega: getMe failed: ${String(err)}`, "error");
     }
   }
 
@@ -208,7 +213,10 @@ export default function piTelega(pi: ExtensionAPI): void {
         const old = pollPromise;
         stopping = true;
         if (old) await old.catch(() => {});
-        pollPromise = startPolling();
+        // A session replacement can happen while we were waiting above — in that
+        // case this handler's ctx is stale and must not be used any more.
+        if (!ctxIsAlive(ctx)) return;
+        pollPromise = startPolling().catch((err) => ui(`pi-telega: ${String(err)}`, "error"));
         void pollPromise;
         ctx.ui.notify("pi-telega: token saved, poller restarted. Run /tg pair to show the QR.", "info");
         return;
@@ -229,14 +237,21 @@ export default function piTelega(pi: ExtensionAPI): void {
 
   pi.on("session_start", (event, ctx) => {
     sessionCtx = ctx;
+    // Every previously captured ctx belongs to the torn-down session (pi caches
+    // extension instances across replacements but invalidates the old
+    // ExtensionRunner) — drop the command ctx so nothing stale can shadow the
+    // fresh sessionCtx. See pi docs: “reestablish any in-memory state in session_start”.
+    cmdCtx = undefined;
     cfg = loadConfig(CFG);
     state = new TelegaState(cfg.lastOffset ?? 0);
     state.restoreSentIds(cfg.sentMessageIds ?? []);
+    // A failure here (e.g. in onSessionReplaced) must surface as a TUI notice,
+    // never as an unhandled rejection that kills the pi process.
     pollPromise = (async () => {
       await startPolling();
       const pa = cfg.pendingAction;
       if (pa && bridge) await bridge.onSessionReplaced(pa.chatId);
-    })();
+    })().catch((err) => ui(`pi-telega: ${String(err)}`, "error"));
     void pollPromise;
   });
 

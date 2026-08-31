@@ -71,8 +71,33 @@ export interface TelegaPiDeps {
   listSessions(cwd: string): Promise<PiSessionInfo[]>;
 }
 
+/**
+ * Liveness probe for a captured pi ctx. After a session replacement or
+ * reload, pi invalidates the session's ExtensionRunner and EVERY access to a
+ * captured ctx (even a bare property read) throws, so one cheap read
+ * reliably distinguishes live from stale.
+ */
+export function ctxIsAlive(c: { cwd: string } | undefined): c is { cwd: string } {
+  if (!c) return false;
+  try {
+    void c.cwd;
+  } catch {
+    return false;
+  }
+  return true;
+}
+
 export function makeTelegaPi(deps: TelegaPiDeps): TelegaPi {
-  const ctx = (): CtxLike | undefined => deps.getCmdCtx() ?? deps.getSessionCtx();
+  // Prefer the command ctx (it adds waitForIdle/newSession/switchSession), but
+  // skip any stale one — after /new or /sessions-switch the old command ctx is
+  // invalidated while a fresh sessionCtx arrives via the new session_start.
+  const ctx = (): CtxLike | undefined => {
+    const cmd = deps.getCmdCtx();
+    if (ctxIsAlive(cmd)) return cmd;
+    const sess = deps.getSessionCtx();
+    if (ctxIsAlive(sess)) return sess;
+    return undefined;
+  };
   const requireCtx = (): CtxLike => ctx() ?? (() => { throw new Error("no active pi context"); })();
   return {
     get cwd() {
