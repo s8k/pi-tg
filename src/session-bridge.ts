@@ -226,10 +226,11 @@ export class SessionBridge {
       case "compact":
         await out.send(action.chatId, "🗜 Compacting history… (may take a moment)");
         pi.compact((ok, detail) => {
+          // fire-and-forget result: a failed send must not become an unhandled rejection
           void out.send(
             action.chatId,
             ok ? `✓ Compacted${detail ? ` — ${detail}` : "."}` : `⚠️ Compact failed${detail ? `: ${detail}` : "."}`
-          );
+          ).catch(() => { /* best effort — compact itself already ran */ });
         });
         return;
       case "new":

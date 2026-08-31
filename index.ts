@@ -54,6 +54,12 @@ export default function piTelega(pi: ExtensionAPI): void {
     (sessionCtx ?? cmdCtx)?.ui.notify(text, level);
   };
 
+  // mirror handlers are fire-and-forget: a transient Telegram error must not
+  // become an unhandled rejection (Node ≥15 default = crash the pi process)
+  const safe = (p: Promise<unknown> | undefined): void => {
+    void p?.catch((err) => ui(`pi-telega mirror error: ${String(err)}`, "error"));
+  };
+
   async function startPolling(): Promise<void> {
     const gen = ++pollGen;
     stopping = false;
@@ -241,27 +247,27 @@ export default function piTelega(pi: ExtensionAPI): void {
   // ── mirror events ──
 
   pi.on("agent_start", () => {
-    void currentMirror?.onAgentStart();
+    safe(currentMirror?.onAgentStart());
   });
   pi.on("agent_end", (event) => {
-    void currentMirror?.onAgentEnd(event.messages as unknown as MirrorMessage[]);
+    safe(currentMirror?.onAgentEnd(event.messages as unknown as MirrorMessage[]));
   });
   pi.on("message_start", (event) => {
-    void currentMirror?.onAssistantStart(event.message as unknown as MirrorMessage);
+    safe(currentMirror?.onAssistantStart(event.message as unknown as MirrorMessage));
   });
   pi.on("message_update", (event) => {
-    void currentMirror?.onAssistantUpdate(event.message as unknown as MirrorMessage);
+    safe(currentMirror?.onAssistantUpdate(event.message as unknown as MirrorMessage));
   });
   pi.on("message_end", (event) => {
-    void currentMirror?.onAssistantEnd(event.message as unknown as MirrorMessage);
+    safe(currentMirror?.onAssistantEnd(event.message as unknown as MirrorMessage));
   });
   pi.on("tool_execution_start", (event) => {
-    void currentMirror?.onToolStart(event.toolCallId, event.toolName, event.args);
+    safe(currentMirror?.onToolStart(event.toolCallId, event.toolName, event.args));
   });
   pi.on("tool_execution_end", (event) => {
-    void currentMirror?.onToolEnd(event.toolCallId, event.isError);
+    safe(currentMirror?.onToolEnd(event.toolCallId, event.isError));
   });
   pi.on("ui_prompt_start", (event) => {
-    void currentMirror?.onUiPromptStart(event.title);
+    safe(currentMirror?.onUiPromptStart(event.title));
   });
 }

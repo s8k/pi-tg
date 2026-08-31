@@ -107,3 +107,23 @@ test("compact: progress note + completion callback posts result", async () => {
   await new Promise((r) => setTimeout(r, 0));
   assert.ok(out.calls[out.calls.length - 1].text?.includes("Compacted"));
 });
+
+test("compact callback: a failed result send must not produce an unhandled rejection", async () => {
+  const pi = new FakePi();
+  const out = new FakeOut();
+  const bridge = new SessionBridge(makeDeps(pi.build(), out));
+  await bridge.dispatch({ kind: "compact", chatId: 7 });
+  out.sendFailsWith = new Error("network down");
+  const unhandled: unknown[] = [];
+  const onRej = (reason: unknown): void => {
+    unhandled.push(reason);
+  };
+  process.on("unhandledRejection", onRej);
+  try {
+    pi.compactDone?.(true, "ok");
+    await new Promise((r) => setTimeout(r, 20));
+  } finally {
+    process.off("unhandledRejection", onRej);
+  }
+  assert.equal(unhandled.length, 0, `unhandled rejections: ${unhandled.map(String).join("; ")}`);
+});
