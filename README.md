@@ -48,6 +48,8 @@ phone (Telegram) ⇄ Bot API long polling ⇄ pi-telega (in-process) ⇄ pi TUI 
 | `/thinking` | available thinking levels with buttons |
 | `/status` | model, thinking, context usage, message count, busy state |
 | `/stop` | abort the current turn |
+| `/mute` | stop agent output (working msg, tools, answers); commands still work |
+| `/unmute` | resume agent output |
 | `/compact` | compact context (result reported when done) |
 | `/name <text>` | rename the session |
 | `/kill` | confirm → graceful TUI shutdown |
@@ -60,8 +62,9 @@ phone (Telegram) ⇄ Bot API long polling ⇄ pi-telega (in-process) ⇄ pi TUI 
 | `/tg` | session card (TUI widget or notification) |
 | `/tg:config <bot_token>` | save bot token, restart poller |
 | `/tg:pair` | show QR (only while unpaired) |
+| `/tg:unpair` | unpair the phone (bot silent until a new `/start`) |
 
-All three appear in the TUI’s `/` completion list (type `/tg` and Tab).
+All four appear in the TUI’s `/` completion list (type `/tg` and Tab).
 The poller also injects `/tg internal …` (machine-only, not listed).
 
 ## Configuration
@@ -76,6 +79,7 @@ Env `PI_TELEGA_BOT_TOKEN` overrides the stored token.
 | `streamEditMs` | `1500` | throttle for streaming reply edits |
 | `toolPreviewChars` | `300` | tool argument preview length cap |
 | `askClearOnSwitch` | `true` | ask “clear?” when switching sessions |
+| `muted` | `false` | agent output suppressed (`/mute`/`/unmute` from the phone) |
 | `maxSessionList` | `20` | `/sessions` list cap |
 | `sentMessageIds` | `[]` | recent sent message ids (dedupe; capped at 500) |
 | `lastOffset` | `0` | long-poll offset (survives restarts) |

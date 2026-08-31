@@ -23,6 +23,8 @@ test("round-trip: every dispatchable action", () => {
     { kind: "killAsk", chatId: 7 },
     { kind: "kill", chatId: 7, yes: true },
     { kind: "kill", chatId: 7, yes: false },
+    { kind: "mute", chatId: 7 },
+    { kind: "unmute", chatId: 7 },
     { kind: "clear", chatId: 7, doIt: true },
     { kind: "prompt", chatId: 7, text: "hello\nworld \"quoted\"" },
   ];

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -83,14 +83,14 @@ function makeCtx() {
   return { ctx, notices, widgets };
 }
 
-const USAGE = "Usage: /tg | /tg:config <bot_token> | /tg:pair";
+const USAGE = "Usage: /tg | /tg:config <bot_token> | /tg:pair | /tg:unpair";
 
 // ── registration ──
 
-test("registers exactly the user-facing commands: tg, tg:config, tg:pair", () => {
+test("registers exactly the user-facing commands: tg, tg:config, tg:pair, tg:unpair", () => {
   const { pi, cap } = makeFakePi();
   piTelega(pi);
-  assert.deepEqual([...cap.commands.keys()].sort(), ["tg", "tg:config", "tg:pair"]);
+  assert.deepEqual([...cap.commands.keys()].sort(), ["tg", "tg:config", "tg:pair", "tg:unpair"]);
 });
 
 test("command descriptions follow pi's `<args> — Description` format", () => {
@@ -109,9 +109,11 @@ test("command descriptions follow pi's `<args> — Description` format", () => {
     "<bot_token> — Save Telegram bot token, restart poller",
   );
   assert.equal(cap.commands.get("tg:pair")!.description, "Show pairing QR (only while unpaired)");
+  assert.equal(cap.commands.get("tg:unpair")!.description, "Unpair the phone (bot silent until a new /start)");
   // no-arg commands must not carry an arg hint
   assert.ok(!/<[a-z_]+>/i.test(cap.commands.get("tg")!.description ?? ""));
   assert.ok(!/<[a-z_]+>/i.test(cap.commands.get("tg:pair")!.description ?? ""));
+  assert.ok(!/<[a-z_]+>/i.test(cap.commands.get("tg:unpair")!.description ?? ""));
 });
 
 // ── /tg (session card) ──
@@ -227,5 +229,33 @@ test("/tg:pair already paired → guard message, no QR attempt", async () => {
   await cap.commands.get("tg:pair")!.handler("", ctx);
   const last = notices.at(-1)!;
   assert.match(last.text, /already paired with owner 42/);
-  assert.match(last.text, /Delete .* to re-pair/);
+  assert.match(last.text, /Run \/tg:unpair to unpair/);
+});
+
+// ── /tg:unpair ──
+
+test("/tg:unpair paired → clears ownerId, persists, confirms", async () => {
+  writeFileSync(CFG_PATH, JSON.stringify({ ownerId: 42 }), "utf-8");
+  const { pi, cap } = makeFakePi();
+  piTelega(pi);
+  const session = makeCtx();
+  await cap.events.get("session_start")![0]!({ reason: "startup" }, session.ctx);
+  const { ctx, notices } = makeCtx();
+  await cap.commands.get("tg:unpair")!.handler("", ctx);
+  const last = notices.at(-1)!;
+  assert.match(last.text, /unpaired/);
+  assert.equal(last.level, "info");
+  const back = JSON.parse(readFileSync(CFG_PATH, "utf-8"));
+  assert.equal(back.ownerId, undefined);
+});
+
+test("/tg:unpair unpaired → notice, no crash", async () => {
+  writeFileSync(CFG_PATH, JSON.stringify({}), "utf-8");
+  const { pi, cap } = makeFakePi();
+  piTelega(pi);
+  const session = makeCtx();
+  await cap.events.get("session_start")![0]!({ reason: "startup" }, session.ctx);
+  const { ctx, notices } = makeCtx();
+  await cap.commands.get("tg:unpair")!.handler("", ctx);
+  assert.match(notices.at(-1)!.text, /not paired/);
 });

@@ -103,6 +103,8 @@ export function helpText(): string {
     "<b>/thinking</b> — pick the thinking level",
     "<b>/status</b> — session info",
     "<b>/stop</b> — Esc (abort the current turn)",
+    "<b>/mute</b> — stop agent output (commands still work)",
+    "<b>/unmute</b> — resume agent output",
     "<b>/compact</b> — compact the history",
     "<b>/name &lt;text&gt;</b> — rename this session",
     "<b>/kill</b> — shut down pi",
@@ -168,12 +170,12 @@ export class SessionBridge {
   }
 
   private statusText(): string {
-    const { pi } = this.deps;
+    const { pi, cfg } = this.deps;
     const model = pi.currentModel();
     const usage = pi.contextUsage();
     const name = pi.getSessionName() ?? "Untitled session";
     return [
-      `📊 <b>${escapeHtml(name)}</b> — ${pi.isIdle() ? "idle" : "busy"}`,
+      `📊 <b>${escapeHtml(name)}</b> — ${pi.isIdle() ? "idle" : "busy"}${cfg.muted ? " · 🔇 muted" : ""}`, 
       `<code>${escapeHtml(pi.cwd)}</code>`,
       `model: ${model ? escapeHtml(model.name) : "n/a"} · thinking: ${pi.currentThinking() ?? "default"}`,
       `context: ${usage?.percent != null ? `${usage.percent}%` : "n/a"}${usage?.tokens != null ? ` (${usage.tokens}/${usage.contextWindow})` : ""}`,
@@ -222,6 +224,16 @@ export class SessionBridge {
           pi.abort();
           await out.send(action.chatId, "⏹ Stopping…");
         }
+        return;
+      case "mute":
+        cfg.muted = true;
+        await this.deps.persist();
+        await out.send(action.chatId, "🔇 Muted — I won’t post agent output (progress, tools, answers) until you send /unmute. Commands still work.");
+        return;
+      case "unmute":
+        cfg.muted = false;
+        await this.deps.persist();
+        await out.send(action.chatId, "🔊 Unmuted — agent output is back on.");
         return;
       case "compact":
         await out.send(action.chatId, "🗜 Compacting history… (may take a moment)");

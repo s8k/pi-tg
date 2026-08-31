@@ -27,6 +27,8 @@ export type TgAction =
   | { kind: "thinkingSet"; chatId: number; index: number }
   | { kind: "status"; chatId: number }
   | { kind: "stop"; chatId: number }
+  | { kind: "mute"; chatId: number }
+  | { kind: "unmute"; chatId: number }
   | { kind: "compact"; chatId: number }
   | { kind: "nameSet"; chatId: number; name: string }
   | { kind: "killAsk"; chatId: number }
@@ -87,6 +89,8 @@ export function route(update: TgUpdate, ownerId: number | undefined): TgAction {
       case "thinking": return { kind: "thinkingList", chatId };
       case "status": return { kind: "status", chatId };
       case "stop": return { kind: "stop", chatId };
+      case "mute": return { kind: "mute", chatId };
+      case "unmute": return { kind: "unmute", chatId };
       case "compact": return { kind: "compact", chatId };
       case "name": return { kind: "nameSet", chatId, name: rest };
       case "kill": return { kind: "killAsk", chatId };

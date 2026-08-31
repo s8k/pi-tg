@@ -1,6 +1,6 @@
 import type { TgAction } from "./router.ts";
 
-const PLAIN = new Set(["start", "help", "new", "sessions", "modelList", "thinkingList", "status", "stop", "compact", "killAsk"]);
+const PLAIN = new Set(["start", "help", "new", "sessions", "modelList", "thinkingList", "status", "stop", "mute", "unmute", "compact", "killAsk"]);
 const INDEX = new Set(["sessionActivate", "switchOk", "modelSet", "thinkingSet"]);
 
 /**

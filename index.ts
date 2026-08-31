@@ -186,7 +186,7 @@ export default function piTelega(pi: ExtensionAPI): void {
 
   // ── terminal commands ──
 
-  const TG_USAGE = "Usage: /tg | /tg:config <bot_token> | /tg:pair";
+  const TG_USAGE = "Usage: /tg | /tg:config <bot_token> | /tg:pair | /tg:unpair";
 
   async function runConfig(token: string, ctx: ExtensionCommandContext): Promise<void> {
     if (!tokenLooksValid(token)) {
@@ -208,10 +208,22 @@ export default function piTelega(pi: ExtensionAPI): void {
 
   async function runPair(ctx: ExtensionCommandContext): Promise<void> {
     if (cfg.ownerId) {
-      ctx.ui.notify(`pi-telega: already paired with owner ${cfg.ownerId}. Delete ${CFG.path} to re-pair.`, "info");
+      ctx.ui.notify(`pi-telega: already paired with owner ${cfg.ownerId}. Run /tg:unpair to unpair.`, "info");
       return;
     }
     await showQr(ctx);
+  }
+
+  async function runUnpair(ctx: ExtensionCommandContext): Promise<void> {
+    if (!cfg.ownerId) {
+      ctx.ui.notify("pi-telega: not paired — nothing to unpair.", "info");
+      return;
+    }
+    cfg.ownerId = undefined;
+    ownerChatId = undefined; // Mirror must stop posting to the stale chat
+    await persist();
+    if (!ctxIsAlive(ctx)) return; // session replaced while persisting
+    ctx.ui.notify("pi-telega: unpaired. Bot is silent until a new account presses /start (/tg:pair shows the QR).", "info");
   }
 
   // One entry per command in pi's `/` completion list (see pi extensions docs).
@@ -256,6 +268,14 @@ export default function piTelega(pi: ExtensionAPI): void {
     handler: async (_args: string, ctx: ExtensionCommandContext) => {
       cmdCtx = ctx;
       await runPair(ctx);
+    },
+  });
+
+  pi.registerCommand("tg:unpair", {
+    description: "Unpair the phone (bot silent until a new /start)",
+    handler: async (_args: string, ctx: ExtensionCommandContext) => {
+      cmdCtx = ctx;
+      await runUnpair(ctx);
     },
   });
 

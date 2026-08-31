@@ -25,6 +25,7 @@ test("unpaired: /start → pair, anything else → notAuthorized", () => {
   assert.deepEqual(route(msgUpdate(2, 42, "/start@MyBot"), undefined), { kind: "pair", chatId: 7, fromId: 42 });
   assert.deepEqual(route(msgUpdate(3, 42, "hi"), undefined), { kind: "notAuthorized", chatId: 7, fromId: 42 });
   assert.deepEqual(route(msgUpdate(4, 42, "/new"), undefined), { kind: "notAuthorized", chatId: 7, fromId: 42 });
+  assert.deepEqual(route(msgUpdate(5, 42, "/mute"), undefined), { kind: "notAuthorized", chatId: 7, fromId: 42 });
 });
 
 test("paired: non-owner rejected; owner commands map", () => {
@@ -42,6 +43,8 @@ test("paired: non-owner rejected; owner commands map", () => {
   assert.deepEqual(route(msgUpdate(10, owner, "/compact"), owner), { kind: "compact", chatId: 7 });
   assert.deepEqual(route(msgUpdate(11, owner, "/name My Project"), owner), { kind: "nameSet", chatId: 7, name: "My Project" });
   assert.deepEqual(route(msgUpdate(12, owner, "/kill"), owner), { kind: "killAsk", chatId: 7 });
+  assert.deepEqual(route(msgUpdate(15, owner, "/mute"), owner), { kind: "mute", chatId: 7 });
+  assert.deepEqual(route(msgUpdate(16, owner, "/unmute"), owner), { kind: "unmute", chatId: 7 });
   assert.deepEqual(route(msgUpdate(13, owner, "/bogus"), owner), { kind: "unknown", chatId: 7, text: "/bogus" });
   assert.deepEqual(route(msgUpdate(14, owner, "just some prompt text"), owner), { kind: "prompt", chatId: 7, text: "just some prompt text" });
 });

@@ -69,6 +69,7 @@ export class Mirror {
   /** agent_start: post the “working” message with [⏹ Stop]. */
   async onAgentStart(): Promise<void> {
     const { out, state } = this.deps;
+    if (this.deps.cfg.muted) return; // muted: no new agent output
     const chatId = this.deps.getChatId();
     if (chatId === undefined) return;
     const id = await out.send(chatId, "🤖 Working…", {
@@ -80,6 +81,7 @@ export class Mirror {
   /** tool_execution_start: post a status line (plain text). */
   async onToolStart(toolCallId: string, toolName: string, args: unknown): Promise<void> {
     const { out, state, cfg } = this.deps;
+    if (cfg.muted) return;
     const chatId = this.deps.getChatId();
     if (chatId === undefined) return;
     const line = `⚙ ${toolName}: ${toolPreview(toolName, args, cfg.toolPreviewChars)} …`;
@@ -110,6 +112,7 @@ export class Mirror {
   /** message_start (assistant only). */
   async onAssistantStart(msg: MirrorMessage): Promise<void> {
     if (msg.role !== "assistant") return;
+    if (this.deps.cfg.muted) return;
     const chatId = this.deps.getChatId();
     if (chatId === undefined) return;
     this.streamText = "";
@@ -167,15 +170,21 @@ export class Mirror {
     const chatId = this.deps.getChatId();
     if (chatId !== undefined) {
       const wid = state.getWorking();
+      const muted = this.deps.cfg.muted;
+      // A working message posted *before* the mute is always finalized (a
+      // stuck “Working…” line is worse than one closing line); the answer
+      // itself is suppressed while muted.
       if (stopReason === "aborted") {
         if (wid !== undefined) await out.edit(chatId, wid, "⏹ interrupted", { parseMode: null, replyMarkup: { inline_keyboard: [] } });
-        if (finalText) await this.sendAnswer(chatId, finalText);
+        if (!muted && finalText) await this.sendAnswer(chatId, finalText);
       } else if (stopReason === "error" || errMsg) {
         if (wid !== undefined) await out.edit(chatId, wid, `⚠️ error: ${errMsg ?? stopReason ?? "unknown"}`, { parseMode: null, replyMarkup: { inline_keyboard: [] } });
       } else {
-        const label = finalText ? "✅ Done — answer below" : "✅ Done (no reply text)";
+        const label = muted
+          ? finalText ? "✅ Done (muted — answer not sent)" : "✅ Done (muted)"
+          : finalText ? "✅ Done — answer below" : "✅ Done (no reply text)";
         if (wid !== undefined) await out.edit(chatId, wid, label, { parseMode: null, replyMarkup: { inline_keyboard: [] } });
-        if (finalText) await this.sendAnswer(chatId, finalText);
+        if (!muted && finalText) await this.sendAnswer(chatId, finalText);
       }
     }
     state.setWorking(undefined);
@@ -184,6 +193,7 @@ export class Mirror {
 
   /** ui_prompt_start: pi is blocking on a terminal permission dialog. */
   async onUiPromptStart(title?: string): Promise<void> {
+    if (this.deps.cfg.muted) return;
     const chatId = this.deps.getChatId();
     if (chatId === undefined) return;
     const t = title ? `: ${title}` : "";

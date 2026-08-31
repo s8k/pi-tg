@@ -26,6 +26,7 @@ test("loadConfig: missing file → defaults", () => {
   assert.equal(cfg.askClearOnSwitch, true);
   assert.equal(cfg.maxSessionList, 20);
   assert.deepEqual(cfg.sentMessageIds, []);
+  assert.equal(cfg.muted, false);
 });
 
 test("saveConfig/loadConfig round-trip", () => {
@@ -59,6 +60,14 @@ test("sanitize: sentMessageIds capped at 500 (newest kept) + deduped + invalid d
   assert.equal(cfg.sentMessageIds.length, 500);
   assert.equal(cfg.sentMessageIds[0], 101);   // oldest 1..100 dropped
   assert.equal(cfg.sentMessageIds[499], 600);  // newest kept
+});
+
+test("sanitize: muted is a strict boolean, default false", () => {
+  assert.equal(sanitize({ muted: true }).muted, true);
+  assert.equal(sanitize({ muted: false }).muted, false);
+  assert.equal(sanitize({}).muted, false);
+  assert.equal(sanitize({ muted: "yes" }).muted, false);
+  assert.equal(DEFAULTS.muted, false);
 });
 
 test("sanitize: clamps and drops invalid fields", () => {
