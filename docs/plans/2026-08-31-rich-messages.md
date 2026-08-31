@@ -865,7 +865,8 @@ test("chunkRich: oversized fence re-emitted per chunk WITH language; all lines p
   const chunks = chunkRich(md, CAP);
   assert.ok(chunks.length >= 2);
   for (const c of chunks) {
-    assert.ok(c.startsWith("```python\n"), JSON.stringify(c.slice(0, 40)));
+    const body = c.startsWith("(continued)\n") ? c.slice("(continued)\n".length) : c;
+    assert.ok(body.startsWith("```python\n"), JSON.stringify(body.slice(0, 40)));
     assert.ok(c.trimEnd().endsWith("```"));
     assert.ok(c.length <= CAP);
   }
@@ -881,7 +882,8 @@ test("chunkRich: oversized table keeps header+separator in every piece; rows pre
   const chunks = chunkRich(md, CAP);
   assert.ok(chunks.length >= 2);
   for (const c of chunks) {
-    assert.ok(c.startsWith(header + "\n" + sep), JSON.stringify(c.slice(0, 60)));
+    const body = c.startsWith("(continued)\n") ? c.slice("(continued)\n".length) : c;
+    assert.ok(body.startsWith(header + "\n" + sep), JSON.stringify(body.slice(0, 60)));
     assert.ok(c.length <= CAP);
   }
   const all = chunks.map((c, i) => (i === 0 ? c : c.slice("(continued)\n".length))).join("\n");
@@ -924,15 +926,14 @@ Expected: the new tests FAIL (`chunkRich is not a function`); old tests pass.
 
 ```ts
 /**
- * Pack rich units into chunks ≤ cap (chunks ≥ 2 prefixed with the marker).
+ * Pack rich units into chunks ≤ cap (chunks ≥ 2 prefixed with the marker;
+ * `MARKER` and `hardCut` are reused from the legacy section above).
  * A unit bigger than the whole cap is split inside, by type:
  * fence → code lines (fence+language re-emitted per piece);
  * table → rows (header + separator repeated per piece);
  * details → unwrap, then re-pack the content;
  * anything else → hard character cut (last resort, as in the legacy path).
  */
-const MARKER = "(continued)\n";
-
 export function chunkRich(md: string, cap = RICH_CAP): string[] {
   return packRichUnits(richUnits(md), cap).map((r, i) => (i === 0 ? r : MARKER + r));
 }
@@ -952,9 +953,11 @@ function packRichUnits(units: RichUnit[], cap: number): string[] {
     // Full cap only for the very first piece of the very first chunk (the only
     // chunk that never carries the marker) — same rule as the legacy packer.
     const capNow = raw.length === 0 && cur === "" ? cap : cap - MARKER.length;
-    const sep = cur === "" ? 0 : 1;
+    // Blank line between blocks: in the markdown tier a single \n is a soft
+    // break WITHIN a paragraph, so blocks must be separated by \n\n.
+    const sep = cur === "" ? 0 : 2;
     if (cur.length + sep + u.text.length <= capNow) {
-      cur = cur === "" ? u.text : cur + "\n" + u.text;
+      cur = cur === "" ? u.text : cur + "\n\n" + u.text;
     } else {
       push();
       cur = u.text;
@@ -1142,7 +1145,8 @@ export function tailView(md: string, cap = RICH_CAP): string {
   const keep: string[] = [];
   let len = 0;
   for (let i = units.length - 1; i >= 0; i--) {
-    const add = units[i].text.length + (keep.length > 0 ? 1 : 0);
+    // blank line between blocks (markdown tier: single \n is a soft break)
+    const add = units[i].text.length + (keep.length > 0 ? 2 : 0);
     if (len + add <= budget) { keep.unshift(units[i].text); len += add; }
     else break;
   }
@@ -1150,7 +1154,7 @@ export function tailView(md: string, cap = RICH_CAP): string {
     const last = units[units.length - 1].text;
     return "⋯\n" + last.slice(last.length - budget);
   }
-  return "⋯\n" + keep.join("\n");
+  return "⋯\n" + keep.join("\n\n");
 }
 ```
 
