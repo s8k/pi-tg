@@ -93,6 +93,27 @@ test("registers exactly the user-facing commands: tg, tg:config, tg:pair", () =>
   assert.deepEqual([...cap.commands.keys()].sort(), ["tg", "tg:config", "tg:pair"]);
 });
 
+test("command descriptions follow pi's `<args> — Description` format", () => {
+  const { pi, cap } = makeFakePi();
+  piTelega(pi);
+  // pi renders the completion line as `/<name>  <description>`; built-ins such
+  // as /thinking combine their arg hint and description as
+  // `<level> — Set thinking level`. Extension commands expose only `description`,
+  // so commands that take args must carry the hint up front: `<args> — Description`.
+  assert.equal(
+    cap.commands.get("tg")!.description,
+    "Show session card (model, context usage, session path)",
+  );
+  assert.equal(
+    cap.commands.get("tg:config")!.description,
+    "<bot_token> — Save Telegram bot token, restart poller",
+  );
+  assert.equal(cap.commands.get("tg:pair")!.description, "Show pairing QR (only while unpaired)");
+  // no-arg commands must not carry an arg hint
+  assert.ok(!/<[a-z_]+>/i.test(cap.commands.get("tg")!.description ?? ""));
+  assert.ok(!/<[a-z_]+>/i.test(cap.commands.get("tg:pair")!.description ?? ""));
+});
+
 // ── /tg (session card) ──
 
 test("/tg with no args → session card widget", async () => {

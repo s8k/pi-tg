@@ -217,7 +217,7 @@ export default function piTelega(pi: ExtensionAPI): void {
   // One entry per command in pi's `/` completion list (see pi extensions docs).
   // `tg:config` / `tg:pair` use colon names the same way skills use /skill:name.
   pi.registerCommand("tg", {
-    description: "pi-telega session card (model, context usage, session path)",
+    description: "Show session card (model, context usage, session path)",
     getArgumentCompletions: (prefix: string) => {
       const items = [{ value: "internal", label: "internal", description: "machine dispatch (poller → TUI)" }];
       const filtered = items.filter((i) => i.value.startsWith(prefix));
@@ -242,7 +242,9 @@ export default function piTelega(pi: ExtensionAPI): void {
   });
 
   pi.registerCommand("tg:config", {
-    description: "Save Telegram bot token, restart poller (<bot_token>)",
+    // Format matches pi's built-in completion lines, e.g. /thinking:
+    // `<args> — Description` (the extension API exposes no argumentHint).
+    description: "<bot_token> — Save Telegram bot token, restart poller",
     handler: async (args: string, ctx: ExtensionCommandContext) => {
       cmdCtx = ctx;
       await runConfig(args.trim(), ctx);
