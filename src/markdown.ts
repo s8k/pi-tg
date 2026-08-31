@@ -506,3 +506,28 @@ function unfoldDetails(text: string): string {
   s = s.replace(/<summary>([\s\S]*?)<\/summary>/i, (_m, t: string) => t.trim());
   return s.replace(/^\n+/, "");
 }
+
+/**
+ * Draft overflow view: if the text is over cap, keep the TAIL (what the user
+ * cares about most), back the cut off to the nearest block boundary, and
+ * prefix a single "⋯" line. Whole blocks only; a single oversized unit falls
+ * back to a hard character tail (the draft is a live preview, not the answer).
+ */
+export function tailView(md: string, cap = RICH_CAP): string {
+  if (md.length <= cap) return md;
+  const units = richUnits(md);
+  const budget = cap - "⋯\n".length;
+  const keep: string[] = [];
+  let len = 0;
+  for (let i = units.length - 1; i >= 0; i--) {
+    // blank line between blocks (markdown tier: single \n is a soft break)
+    const add = units[i].text.length + (keep.length > 0 ? 2 : 0);
+    if (len + add <= budget) { keep.unshift(units[i].text); len += add; }
+    else break;
+  }
+  if (keep.length === 0) {
+    const last = units[units.length - 1].text;
+    return "⋯\n" + last.slice(last.length - budget);
+  }
+  return "⋯\n" + keep.join("\n\n");
+}

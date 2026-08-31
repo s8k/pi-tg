@@ -1,6 +1,6 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { chunkMarkdown, chunkRich, chunkText, escapeAttr, escapeHtml, foldLongFences, inlineToHtml, markdownToHtml, RICH_CAP, richUnits, toPlainText } from "../src/markdown.ts";
+import { chunkMarkdown, chunkRich, chunkText, escapeAttr, escapeHtml, foldLongFences, inlineToHtml, markdownToHtml, RICH_CAP, richUnits, tailView, toPlainText } from "../src/markdown.ts";
 
 describe("escape", () => {
   test("escapeHtml: & < >", () => {
@@ -319,4 +319,52 @@ test("chunkRich: length is counted in JS units, not bytes", () => {
   const md = "é".repeat(31_900); // 31 900 JS units but 63 800 UTF-8 bytes
   assert.ok(Buffer.byteLength(md) > 32_768, "precondition: bytes exceed the documented limit");
   assert.equal(chunkRich(md, RICH_CAP).length, 1, "31 900 units must fit under RICH_CAP=32 000 in one chunk");
+});
+test("tailView: under cap → unchanged", () => {
+  assert.equal(tailView("small\n\ndoc", 200), "small\n\ndoc");
+});
+
+test("tailView: over cap → '⋯' prefix, ≤ cap, keeps the TAIL as whole blocks", () => {
+  const blocks = Array.from({ length: 30 }, (_, i) => `p${i} ` + "x".repeat(30));
+  const md = blocks.join("\n\n");
+  const out = tailView(md, 200);
+  assert.ok(out.startsWith("⋯\n"));
+  assert.ok(out.length <= 200, `got ${out.length}`);
+  const kept = out.slice("⋯\n".length);
+  // kept text is a contiguous tail of the source (newline-normalized)
+  const norm = (s: string) => s.replace(/\n+/g, "\n");
+  assert.ok(norm(md).endsWith(norm(kept)), "kept must be the tail");
+  // no half-block at the top: the first kept block is a complete source block
+  const first = kept.split("\n")[0];
+  assert.ok(blocks.some((b) => b.startsWith(first.slice(0, 5))), "first kept block is a whole block");
+});
+
+test("tailView: a table is never cut in half — it's kept whole or dropped entirely", () => {
+  const header = "| a | b |";
+  const sep = "| --- | --- |";
+  const table = [header, sep, ...Array.from({ length: 10 }, (_, i) => `| r${i} | v |`)].join("\n");
+  const md = `${"lead ".repeat(20)}\n\n${table}`;
+  const out = tailView(md, 200);
+  const kept = out.slice(out.startsWith("⋯\n") ? "⋯\n".length : 0);
+  if (kept.includes(header)) {
+    // table kept whole: header and last row together, in order
+    assert.ok(kept.startsWith(header + "\n" + sep) || kept.includes(header + "\n" + sep + "\n| r0"));
+    assert.ok(kept.includes("| r9 | v |"));
+  }
+  assert.ok(kept.length <= 200);
+});
+
+test("tailView: single giant unit → hard tail (last resort), still ≤ cap", () => {
+  const md = "g".repeat(500);
+  const out = tailView(md, 200);
+  assert.ok(out.startsWith("⋯\n"));
+  assert.ok(out.length <= 200);
+  assert.ok(out.endsWith("g".repeat(198)), "keeps the final characters");
+});
+
+test("tailView: default cap is RICH_CAP", () => {
+  const md = Array.from({ length: 4000 }, () => "x".repeat(10)).join("\n"); // 39 999 chars
+  const out = tailView(md);
+  assert.ok(out.length <= RICH_CAP);
+  assert.ok(out.startsWith("⋯\n"));
 });
