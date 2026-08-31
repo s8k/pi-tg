@@ -1,6 +1,6 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { chunkMarkdown, chunkText, escapeAttr, escapeHtml, inlineToHtml, markdownToHtml, toPlainText } from "../src/markdown.ts";
+import { chunkMarkdown, chunkText, escapeAttr, escapeHtml, inlineToHtml, markdownToHtml, RICH_CAP, richUnits, toPlainText } from "../src/markdown.ts";
 
 describe("escape", () => {
   test("escapeHtml: & < >", () => {
@@ -156,4 +156,52 @@ describe("toPlainText", () => {
   test("fence content kept verbatim (no HTML)", () => {
     assert.equal(toPlainText("```\n<a & b>\n```"), "<a & b>");
   });
+});
+
+// ── rich pipeline (Bot API 10.2) ──
+
+test("RICH_CAP: exported number with margin under the documented 32768", () => {
+  assert.ok(RICH_CAP >= 16_000 && RICH_CAP < 32_768, `RICH_CAP=${RICH_CAP}`);
+});
+
+test("richUnits: paragraph / heading / fence / list / table / blank handling", () => {
+  const md = [
+    "# Title", "", "Para one", "", "- a", "- b", "",
+    "| h1 | h2 |", "| --- | --- |", "| v1 | v2 |", "",
+    "```js", "const x = 1;", "```", "", "tail para",
+  ].join("\n");
+  const u = richUnits(md);
+  assert.deepEqual(u.map((x) => x.type), ["heading", "paragraph", "list", "table", "fence", "paragraph"]);
+  assert.equal(u[0].text, "# Title");
+  assert.equal(u[1].text, "Para one");
+  assert.equal(u[2].text, "- a\n- b");
+  assert.equal(u[3].text, "| h1 | h2 |\n| --- | --- |\n| v1 | v2 |");
+  assert.equal(u[4].text, "```js\nconst x = 1;\n```");
+  assert.equal(u[5].text, "tail para");
+});
+
+test("richUnits: adjacent paragraph lines merge; blank lines separate", () => {
+  const u = richUnits("l1\nl2\n\nl3");
+  assert.deepEqual(u.map((x) => x.text), ["l1\nl2", "l3"]);
+});
+
+test("richUnits: unclosed fence (streaming) → single fence unit to EOF", () => {
+  const u = richUnits("before\n\n```py\nprint(1)\nprint(2)");
+  assert.deepEqual(u.map((x) => x.type), ["paragraph", "fence"]);
+  assert.equal(u[1].text, "```py\nprint(1)\nprint(2)");
+});
+
+test("richUnits: table needs a separator row after the header", () => {
+  const u = richUnits("| a | b |\n\ntext"); // no separator → not a table (two plain paragraphs)
+  assert.deepEqual(u.map((x) => x.type), ["paragraph", "paragraph"]);
+  assert.equal(u[0].text, "| a | b |");
+});
+
+test("richUnits: <details> region → one details unit", () => {
+  const md = "a\n\n<details><summary>more</summary>\n\ninner text\n\n</details>\n\nb";
+  const u = richUnits(md);
+  assert.deepEqual(u.map((x) => x.type), ["paragraph", "details", "paragraph"]);
+  assert.ok(u[1].text.startsWith("<details>"));
+  assert.ok(u[1].text.endsWith("</details>"));
+  assert.ok(u[1].text.includes("inner text"));
 });

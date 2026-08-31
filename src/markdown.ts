@@ -264,3 +264,93 @@ export function toPlainText(md: string): string {
   }
   return out.join("\n");
 }
+
+// ─────────────────────────── Rich pipeline (Bot API 10.2+) ───────────────────────────
+
+/** Internal rich-message cap (documented: 32768 UTF-8 chars; margin pending Task 0 spike). */
+export const RICH_CAP = 32_000;
+
+export type RichUnitType = "fence" | "table" | "heading" | "list" | "blockquote" | "hr" | "details" | "paragraph";
+
+export interface RichUnit {
+  type: RichUnitType;
+  text: string; // verbatim markdown of the block
+}
+
+const isTableRow = (line: string): boolean => {
+  const t = line.trim();
+  return t.startsWith("|") && t.endsWith("|") && t.length >= 2;
+};
+const isTableSep = (line: string): boolean => line.includes("-") && /^[\s|:-]+$/.test(line.trim());
+const DETAILS_OPEN_RE = /^\s*<details>/i;
+const DETAILS_CLOSE_RE = /^\s*<\/details>/i;
+
+/**
+ * Top-level block parse (verbatim — no rendering). Powers folding, chunking and
+ * the tail view. One implementation; the legacy converter is untouched.
+ */
+export function richUnits(md: string): RichUnit[] {
+  const lines = md.replace(/\r\n?/g, "\n").split("\n");
+  const units: RichUnit[] = [];
+  let para: string[] = [];
+  const flushPara = () => {
+    if (para.length > 0) { units.push({ type: "paragraph", text: para.join("\n") }); para = []; }
+  };
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    const fence = FENCE_OPEN_RE.exec(line);
+    if (fence) {
+      flushPara();
+      const buf: string[] = [line];
+      const closeRe = fenceCloseRe(fence[1]);
+      i++;
+      while (i < lines.length && !closeRe.test(lines[i])) { buf.push(lines[i]); i++; }
+      if (i < lines.length) { buf.push(lines[i]); i++; } // consume close (EOF = still streaming)
+      units.push({ type: "fence", text: buf.join("\n") });
+      continue;
+    }
+    if (DETAILS_OPEN_RE.test(line)) {
+      flushPara();
+      const buf: string[] = [line];
+      i++;
+      while (i < lines.length && !DETAILS_CLOSE_RE.test(lines[i])) { buf.push(lines[i]); i++; }
+      if (i < lines.length) { buf.push(lines[i]); i++; }
+      units.push({ type: "details", text: buf.join("\n") });
+      continue;
+    }
+    if (line.trim() === "") { flushPara(); i++; continue; }
+    if (HEADING_RE.test(line) || HR_RE.test(line)) {
+      flushPara();
+      units.push({ type: HR_RE.test(line) ? "hr" : "heading", text: line });
+      i++;
+      continue;
+    }
+    if (UL_RE.test(line) || OL_RE.test(line)) {
+      flushPara();
+      const buf: string[] = [];
+      while (i < lines.length && (UL_RE.test(lines[i]) || OL_RE.test(lines[i]))) { buf.push(lines[i]); i++; }
+      units.push({ type: "list", text: buf.join("\n") });
+      continue;
+    }
+    if (BQ_RE.test(line)) {
+      flushPara();
+      const buf: string[] = [];
+      while (i < lines.length && BQ_RE.test(lines[i])) { buf.push(lines[i]); i++; }
+      units.push({ type: "blockquote", text: buf.join("\n") });
+      continue;
+    }
+    if (isTableRow(line) && i + 1 < lines.length && isTableSep(lines[i + 1])) {
+      flushPara();
+      const buf: string[] = [line, lines[i + 1]];
+      i += 2;
+      while (i < lines.length && isTableRow(lines[i])) { buf.push(lines[i]); i++; }
+      units.push({ type: "table", text: buf.join("\n") });
+      continue;
+    }
+    para.push(line);
+    i++;
+  }
+  flushPara();
+  return units;
+}
