@@ -11,7 +11,7 @@ import { SessionBridge } from "./src/session-bridge.ts";
 import type { Out, TelegaPi } from "./src/session-bridge.ts";
 import { Mirror } from "./src/mirror.ts";
 import type { MirrorMessage } from "./src/mirror.ts";
-import { renderQr, tokenLooksValid, notAuthorizedText } from "./src/onboarding.ts";
+import { renderQr, qrWidgetFactory, tokenLooksValid, notAuthorizedText } from "./src/onboarding.ts";
 import { makeOut, makeTelegaPi } from "./src/wiring.ts";
 
 const CFG = { path: join(getAgentDir(), "pi-telega.json") };
@@ -172,7 +172,7 @@ export default function piTelega(pi: ExtensionAPI): void {
     try {
       const me = await c.getMe();
       const qr = renderQr(`https://t.me/${me.username}`);
-      if (ctx.mode === "tui" && ctx.hasUI) ctx.ui.setWidget("pi-telega-qr", qr.split("\n"));
+      if (ctx.mode === "tui" && ctx.hasUI) ctx.ui.setWidget("pi-telega-qr", qrWidgetFactory(qr)); // factory form: array form is capped at 10 lines
       else ctx.ui.notify(`open https://t.me/${me.username} in Telegram`, "info");
     } catch (err) {
       ctx.ui.notify(`pi-telega: getMe failed: ${String(err)}`, "error");

@@ -17,6 +17,26 @@ export function renderQr(text: string): string {
   return pad + "\n" + rows.join("\n") + "\n" + pad;
 }
 
+/**
+ * Structural subset of pi-tui's Component (render + invalidate).
+ * pi's setWidget caps *string[]* content at 10 lines and appends
+ * "... (widget truncated)" — a 25×25 QR is 27 lines, so the QR must be
+ * passed as a component factory instead.
+ */
+export interface QrWidgetComponent {
+  render(width: number): string[];
+  invalidate(): void;
+}
+
+/** Component factory for ctx.ui.setWidget(key, factory) — renders the full QR, uncapped. */
+export function qrWidgetFactory(qr: string): (tui: unknown, theme: unknown) => QrWidgetComponent {
+  const lines = qr.split("\n");
+  return (_tui, _theme) => ({
+    render: () => lines,
+    invalidate: () => {},
+  });
+}
+
 /** BotFather token shape: <digits>:<20+ alnum/-_>. Real validation is getMe() in the bridge. */
 export function tokenLooksValid(token: string): boolean {
   return /^\d+:[A-Za-z0-9_-]{20,}$/.test(token.trim());
