@@ -82,6 +82,23 @@ test("no chatId: agent_end still clears state, sends nothing", async () => {
   assert.equal(deps.state.getWorking(), undefined);
 });
 
+test("agent_end markdown answer: chunks sent as final HTML, never double-escaped", async () => {
+  const out = new FakeOut();
+  const deps = makeMirrorDeps(out);
+  const mirror = new Mirror(deps);
+  await mirror.onAgentStart();
+  const md = "Answer: **42**\n\n```\ncode <x>\n```\n- one";
+  await mirror.onAgentEnd([m(md, "stop")]);
+  const answer = out.calls.filter((c) => c.kind === "send" && c.text !== "🤖 Working…");
+  assert.equal(answer.length, 1);
+  const sent = answer[0].text!;
+  assert.ok(sent.includes("<b>42</b>"), `expected a real <b> tag, got: ${JSON.stringify(sent)}`);
+  assert.ok(sent.includes("<pre>code &lt;x&gt;</pre>"), `expected a real <pre> block, got: ${JSON.stringify(sent)}`);
+  assert.ok(!sent.includes("&lt;b&gt;"), "no double-escaped bold");
+  assert.ok(!sent.includes("&lt;pre&gt;"), "no double-escaped pre");
+  assert.equal(answer[0].opts?.parseMode, "HTML");
+});
+
 test("onUiPromptStart: notes the blocking terminal prompt", async () => {
   const out = new FakeOut();
   const mirror = new Mirror(makeMirrorDeps(out));

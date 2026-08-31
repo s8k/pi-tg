@@ -2,7 +2,7 @@ import type { Out } from "./session-bridge.ts";
 import type { TelegaState } from "./state.ts";
 import type { TelegaConfig } from "./config.ts";
 import { CB } from "./router.ts";
-import { chunkMarkdown, markdownToHtml, TG_MAX_LEN } from "./markdown.ts";
+import { chunkMarkdown, TG_MAX_LEN } from "./markdown.ts";
 
 /** Structural (pi-free) view of pi messages. */
 export interface MirrorContent {
@@ -144,9 +144,10 @@ export class Mirror {
 
   // --- finalization ---
 
+  /** Send final HTML chunks as-is — chunkMarkdown already returns rendered HTML. */
   private async sendAnswer(chatId: number, md: string): Promise<void> {
     for (const chunk of chunkMarkdown(md)) {
-      await this.deps.out.send(chatId, markdownToHtml(chunk), { parseMode: "HTML" });
+      await this.deps.out.send(chatId, chunk, { parseMode: "HTML" });
     }
   }
 
