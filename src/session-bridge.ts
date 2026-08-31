@@ -69,6 +69,10 @@ export interface Out {
     opts?: { parseMode?: "HTML" | null; replyMarkup?: unknown }
   ): Promise<boolean>; // false = text unchanged (not an error)
   delete(chatId: number, messageId: number): Promise<void>; // idempotent
+  /** Rich message (markdown pass-through); records the sent id; returns it. */
+  sendRich(chatId: number, md: string): Promise<number | undefined>;
+  /** Ephemeral draft; the same draftId refreshes in place. */
+  sendDraft(chatId: number, draftId: number, md: string, canStop?: boolean): Promise<boolean>;
 }
 
 export interface BridgeDeps {

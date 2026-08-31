@@ -76,17 +76,20 @@ export class FakePi {
 }
 
 export interface FakeOutCall {
-  kind: "send" | "edit" | "delete";
+  kind: "send" | "edit" | "delete" | "sendRich" | "sendDraft";
   chatId: number;
   messageId?: number;
   text?: string;
   opts?: { parseMode?: "HTML" | null; replyToId?: number; replyMarkup?: unknown };
+  draftId?: number;
+  canStop?: boolean;
 }
 
 export class FakeOut {
   calls: FakeOutCall[] = [];
   nextMessageId = 100;
   sendFailsWith: Error | undefined;
+  sendRichFailsWith: Error | undefined;
 
   send = async (chatId: number, text: string, opts?: FakeOutCall["opts"]): Promise<number | undefined> => {
     if (this.sendFailsWith) throw this.sendFailsWith;
@@ -99,5 +102,14 @@ export class FakeOut {
   };
   delete = async (chatId: number, messageId: number): Promise<void> => {
     this.calls.push({ kind: "delete", chatId, messageId });
+  };
+  sendRich = async (chatId: number, md: string): Promise<number | undefined> => {
+    if (this.sendRichFailsWith) throw this.sendRichFailsWith;
+    this.calls.push({ kind: "sendRich", chatId, text: md });
+    return this.nextMessageId++;
+  };
+  sendDraft = async (chatId: number, draftId: number, md: string, canStop?: boolean): Promise<boolean> => {
+    this.calls.push({ kind: "sendDraft", chatId, text: md, draftId, canStop });
+    return true;
   };
 }
