@@ -15,6 +15,8 @@ export function makeDeps(pi: TelegaPi, out: FakeOut, cfg: Partial<TelegaConfig> 
       toolPreviewChars: 300,
       askClearOnSwitch: true,
       maxSessionList: 20,
+      draftHeartbeatMs: 17_000,
+      codeFoldLines: 25,
       muted: false,
       sentMessageIds: [],
       ...cfg,

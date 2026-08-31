@@ -13,6 +13,10 @@ export interface TelegaConfig {
   toolPreviewChars: number;
   askClearOnSwitch: boolean;
   maxSessionList: number;
+  /** Re-send cadence of the rich draft (keeps the ~30 s ephemeral window alive). */
+  draftHeartbeatMs: number;
+  /** Code fences with a body of more than this many lines are wrapped in a closed <details>. */
+  codeFoldLines: number;
   /** When true, agent output (mirror) is suppressed; command replies still work. */
   muted: boolean;
   /** IDs of bot-sent messages, for chat cleaning (capped at 500, newest last). */
@@ -32,12 +36,14 @@ export interface ConfigOptions {
 
 export const DEFAULTS: Pick<
   TelegaConfig,
-  "streamEditMs" | "toolPreviewChars" | "askClearOnSwitch" | "maxSessionList" | "muted" | "sentMessageIds"
+  "streamEditMs" | "toolPreviewChars" | "askClearOnSwitch" | "maxSessionList" | "draftHeartbeatMs" | "codeFoldLines" | "muted" | "sentMessageIds"
 > = {
   streamEditMs: 1500,
   toolPreviewChars: 300,
   askClearOnSwitch: true,
   maxSessionList: 20,
+  draftHeartbeatMs: 17_000,
+  codeFoldLines: 25,
   muted: false,
   sentMessageIds: [],
 };
@@ -88,6 +94,8 @@ export function sanitize(raw: unknown): TelegaConfig {
     toolPreviewChars: clampInt(obj.toolPreviewChars, DEFAULTS.toolPreviewChars, 50, 1_000),
     askClearOnSwitch: typeof obj.askClearOnSwitch === "boolean" ? obj.askClearOnSwitch : DEFAULTS.askClearOnSwitch,
     maxSessionList: clampInt(obj.maxSessionList, DEFAULTS.maxSessionList, 5, 50),
+    draftHeartbeatMs: clampInt(obj.draftHeartbeatMs, DEFAULTS.draftHeartbeatMs, 5_000, 25_000),
+    codeFoldLines: clampInt(obj.codeFoldLines, DEFAULTS.codeFoldLines, 5, 500),
     muted: typeof obj.muted === "boolean" ? obj.muted : DEFAULTS.muted,
     sentMessageIds: capSentIds(obj.sentMessageIds),
     lastOffset: typeof obj.lastOffset === "number" && Number.isFinite(obj.lastOffset) ? obj.lastOffset : undefined,

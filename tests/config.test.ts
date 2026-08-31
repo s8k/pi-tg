@@ -90,3 +90,17 @@ test("sanitize: clamps and drops invalid fields", () => {
   const ok = sanitize({ pendingAction: { type: "activate", chatId: 7, path: "C:/x/s.jsonl" } });
   assert.deepEqual(ok.pendingAction, { type: "activate", chatId: 7, path: "C:/x/s.jsonl" });
 });
+
+test("sanitize: draftHeartbeatMs default 17000, valid 5000..25000 kept, out-of-range → default", () => {
+  assert.equal(sanitize({}).draftHeartbeatMs, 17000);
+  assert.equal(sanitize({ draftHeartbeatMs: 6000 }).draftHeartbeatMs, 6000);
+  assert.equal(sanitize({ draftHeartbeatMs: 1000 }).draftHeartbeatMs, 17000); // below min → default
+  assert.equal(sanitize({ draftHeartbeatMs: 99_999 }).draftHeartbeatMs, 17000); // above max → default
+});
+
+test("sanitize: codeFoldLines default 25, valid 5..500 kept, out-of-range → default", () => {
+  assert.equal(sanitize({}).codeFoldLines, 25);
+  assert.equal(sanitize({ codeFoldLines: 40 }).codeFoldLines, 40);
+  assert.equal(sanitize({ codeFoldLines: 2 }).codeFoldLines, 25); // below min → default
+  assert.equal(sanitize({ codeFoldLines: "x" }).codeFoldLines, 25); // not a number → default
+});
