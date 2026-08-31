@@ -46,6 +46,11 @@ const CMD_RE = /^\/([a-zA-Z0-9_]+)(?:@[a-zA-Z0-9_]+)?\s*(.*)$/;
  * - unknown command names and stale buttons → ignore/unknown (never crash)
  */
 export function route(update: TgUpdate, ownerId: number | undefined): TgAction {
+  // The rich draft's native Stop button (Bot API 10.2). Reuses the existing
+  // `stop` action: the bridge aborts the turn and mirrors a ⏹ message.
+  const stopped = update.stopped_message_generation;
+  if (stopped) return { kind: "stop", chatId: stopped.chat.id };
+
   const cb = update.callback_query;
   if (cb) {
     const chatId = cb.message?.chat.id ?? -1;

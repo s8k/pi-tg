@@ -64,3 +64,11 @@ test("callbacks: owner only, vocabulary maps, stale → ignore", () => {
   assert.deepEqual(route(cbUpdate(10, owner, "garbage"), owner), { kind: "ignore" });
   assert.deepEqual(route(cbUpdate(11, owner, "s:999999"), owner), { kind: "sessionActivate", chatId: 7, index: 999999 });
 });
+
+test("stopped_message_generation → stop (the draft's native Stop button)", () => {
+  const a = route(
+    { update_id: 9, stopped_message_generation: { chat: { id: 55, type: "private" }, draft_id: 3 } },
+    42,
+  );
+  assert.deepEqual(a, { kind: "stop", chatId: 55 });
+});
