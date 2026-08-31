@@ -1,6 +1,6 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { chunkMarkdown, chunkText, escapeAttr, escapeHtml, foldLongFences, inlineToHtml, markdownToHtml, RICH_CAP, richUnits, toPlainText } from "../src/markdown.ts";
+import { chunkMarkdown, chunkRich, chunkText, escapeAttr, escapeHtml, foldLongFences, inlineToHtml, markdownToHtml, RICH_CAP, richUnits, toPlainText } from "../src/markdown.ts";
 
 describe("escape", () => {
   test("escapeHtml: & < >", () => {
@@ -244,4 +244,79 @@ test("foldLongFences: unclosed long fence (streaming) also wrapped", () => {
   const out = foldLongFences(md, 25);
   assert.ok(out.startsWith("<details><summary>code, js (30 lines)</summary>"));
   assert.ok(out.includes("</details>"));
+});
+const CAP = 200; // small cap so the tests stay readable; packing logic is cap-agnostic
+
+test("chunkRich: small doc → one chunk, no marker", () => {
+  assert.deepEqual(chunkRich("hello\n\nworld"), ["hello\n\nworld"]);
+});
+
+test("chunkRich: marker from chunk 2; all chunks ≤ cap; no unit split across chunks", () => {
+  const md = ["# Head", "p1", "p2", "p3"].join("\n\n").replace(/p(\d)/g, (_m, d) => "x".repeat(70) + d);
+  const chunks = chunkRich(md, CAP);
+  assert.ok(chunks.length >= 2);
+  for (const c of chunks) assert.ok(c.length <= CAP, `chunk ${c.length} > ${CAP}`);
+  assert.ok(!chunks[0].startsWith("(continued)"));
+  for (const c of chunks.slice(1)) assert.ok(c.startsWith("(continued)\n"));
+  // reassembled content (minus markers, newlines normalized) equals the source
+  const norm = (s: string) => s.replace(/\n+/g, "\n");
+  const joined = chunks.map((c, i) => (i === 0 ? c : c.slice("(continued)\n".length))).join("\n");
+  assert.equal(norm(joined), norm(md));
+});
+
+test("chunkRich: oversized fence re-emitted per chunk WITH language; all lines preserved", () => {
+  const body = Array.from({ length: 30 }, (_, i) => `l${i} ` + "x".repeat(10)).join("\n");
+  const md = "```python\n" + body + "\n```";
+  const chunks = chunkRich(md, CAP);
+  assert.ok(chunks.length >= 2);
+  for (const c of chunks) {
+    const body = c.startsWith("(continued)\n") ? c.slice("(continued)\n".length) : c;
+    assert.ok(body.startsWith("```python\n"), JSON.stringify(body.slice(0, 40)));
+    assert.ok(c.trimEnd().endsWith("```"));
+    assert.ok(c.length <= CAP);
+  }
+  const all = chunks.map((c, i) => (i === 0 ? c : c.slice("(continued)\n".length))).join("\n");
+  for (let i = 0; i < 30; i++) assert.ok(all.includes(`l${i} `), `line ${i} lost`);
+});
+
+test("chunkRich: oversized table keeps header+separator in every piece; rows preserved", () => {
+  const header = "| col-a | col-b |";
+  const sep = "| --- | --- |";
+  const rows = Array.from({ length: 20 }, (_, i) => `| row-${i} | ${"y".repeat(15)} |`);
+  const md = [header, sep, ...rows].join("\n");
+  const chunks = chunkRich(md, CAP);
+  assert.ok(chunks.length >= 2);
+  for (const c of chunks) {
+    const body = c.startsWith("(continued)\n") ? c.slice("(continued)\n".length) : c;
+    assert.ok(body.startsWith(header + "\n" + sep), JSON.stringify(body.slice(0, 60)));
+    assert.ok(c.length <= CAP);
+  }
+  const all = chunks.map((c, i) => (i === 0 ? c : c.slice("(continued)\n".length))).join("\n");
+  for (const r of rows) assert.ok(all.includes(r), r);
+});
+
+test("chunkRich: oversized <details> unit unwrapped (summary kept as plain line, content split)", () => {
+  const inner = Array.from({ length: 30 }, (_, i) => `i${i} ` + "z".repeat(8)).join("\n");
+  const md = `<details><summary>code (30 lines)</summary>\n\n${inner}\n\n</details>`;
+  const chunks = chunkRich(md, CAP);
+  assert.ok(chunks.length >= 2);
+  for (const c of chunks) assert.ok(c.length <= CAP);
+  // hard-cut may break a line mid-character-run, so compare newline-stripped content
+  const flatAll = chunks.map((c, i) => (i === 0 ? c : c.slice("(continued)\n".length))).join("\n").replace(/\n/g, "");
+  assert.ok(!flatAll.includes("<details>"), "wrapper must be gone");
+  assert.equal(flatAll, "code (30 lines)" + inner.replace(/\n/g, ""));
+});
+
+test("chunkRich: single giant paragraph → hard-cut pieces ≤ cap", () => {
+  const md = "a".repeat(500);
+  const chunks = chunkRich(md, CAP);
+  assert.equal(chunks.length, 3);
+  for (const c of chunks) assert.ok(c.length <= CAP);
+  assert.equal(chunks.map((c, i) => (i === 0 ? c : c.slice("(continued)\n".length))).join(""), md);
+});
+
+test("chunkRich: length is counted in JS units, not bytes", () => {
+  const md = "é".repeat(31_900); // 31 900 JS units but 63 800 UTF-8 bytes
+  assert.ok(Buffer.byteLength(md) > 32_768, "precondition: bytes exceed the documented limit");
+  assert.equal(chunkRich(md, RICH_CAP).length, 1, "31 900 units must fit under RICH_CAP=32 000 in one chunk");
 });

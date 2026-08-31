@@ -385,3 +385,124 @@ export function foldLongFences(md: string, foldLines = 25): string {
   }
   return out.join("\n");
 }
+
+/**
+ * Pack rich units into chunks ≤ cap (chunks ≥ 2 prefixed with the marker;
+ * `MARKER` and `hardCut` are reused from the legacy section above).
+ * A unit bigger than the whole cap is split inside, by type:
+ * fence → code lines (fence+language re-emitted per piece);
+ * table → rows (header + separator repeated per piece);
+ * details → unwrap, then re-pack the content;
+ * anything else → hard character cut (last resort, as in the legacy path).
+ */
+export function chunkRich(md: string, cap = RICH_CAP): string[] {
+  return packRichUnits(richUnits(md), cap).map((r, i) => (i === 0 ? r : MARKER + r));
+}
+
+function packRichUnits(units: RichUnit[], cap: number): string[] {
+  const raw: string[] = [];
+  let cur = "";
+  const push = () => {
+    if (cur !== "") { raw.push(cur); cur = ""; }
+  };
+  for (const u of units) {
+    if (u.text.length > cap - MARKER.length) {
+      push();
+      raw.push(...splitRichUnit(u, cap));
+      continue;
+    }
+    // Full cap only for the very first piece of the very first chunk (the only
+    // chunk that never carries the marker) — same rule as the legacy packer.
+    const capNow = raw.length === 0 && cur === "" ? cap : cap - MARKER.length;
+    // Blank line between blocks: in the markdown tier a single \n is a soft
+    // break WITHIN a paragraph, so blocks must be separated by \n\n.
+    const sep = cur === "" ? 0 : 2;
+    if (cur.length + sep + u.text.length <= capNow) {
+      cur = cur === "" ? u.text : cur + "\n\n" + u.text;
+    } else {
+      push();
+      cur = u.text;
+    }
+  }
+  push();
+  return raw;
+}
+
+function splitRichUnit(u: RichUnit, cap: number): string[] {
+  if (u.type === "fence") return splitFence(u.text, cap - MARKER.length);
+  if (u.type === "table") return splitTable(u.text, cap - MARKER.length);
+  // reserve the marker budget too: any piece may become a non-first chunk
+  if (u.type === "details") return packRichUnits(richUnits(unfoldDetails(u.text)), cap - MARKER.length);
+  return hardCut(u.text, cap - MARKER.length);
+}
+
+function splitFence(text: string, cap: number): string[] {
+  const lines = text.split("\n");
+  const open = lines[0];
+  let body = lines.slice(1);
+  const closeRe = fenceCloseRe((FENCE_OPEN_RE.exec(open)?.[1]) ?? "```");
+  let close: string | undefined;
+  if (body.length > 0 && closeRe.test(body[body.length - 1])) {
+    close = body[body.length - 1];
+    body = body.slice(0, -1);
+  }
+  const overhead = open.length + 1 + (close ? close.length + 1 : 0);
+  const bodyCap = Math.max(1, cap - overhead);
+  const pieces: string[] = [];
+  const emit = (chunk: string[]) => {
+    pieces.push([open, ...chunk, ...(close ? [close] : [])].join("\n"));
+  };
+  let cur: string[] = [];
+  let len = 0;
+  const flush = () => {
+    if (cur.length > 0) { emit(cur); cur = []; len = 0; }
+  };
+  for (const bl of body) {
+    if (bl.length > bodyCap) {
+      flush(); // one over-long code line: hard cut (last resort)
+      for (const piece of hardCut(bl, bodyCap)) emit([piece]);
+      continue;
+    }
+    const add = (cur.length > 0 ? 1 : 0) + bl.length;
+    if (len + add <= bodyCap) { cur.push(bl); len += add; }
+    else { flush(); cur = [bl]; len = bl.length; }
+  }
+  flush();
+  return pieces.length > 0 ? pieces : [open + (close ? "\n" + close : "")];
+}
+
+function splitTable(text: string, cap: number): string[] {
+  const lines = text.split("\n");
+  const header = lines.slice(0, 2); // header + separator
+  const rows = lines.slice(2);
+  const overhead = header.reduce((a, l) => a + l.length + 1, 0);
+  const rowsCap = Math.max(1, cap - overhead);
+  const pieces: string[] = [];
+  const emit = (chunk: string[]) => {
+    pieces.push([...header, ...chunk].join("\n"));
+  };
+  let cur: string[] = [];
+  let len = 0;
+  const flush = () => {
+    if (cur.length > 0) { emit(cur); cur = []; len = 0; }
+  };
+  for (const row of rows) {
+    if (row.length > rowsCap) {
+      flush(); // one over-long row: hard cut (last resort)
+      for (const piece of hardCut(row, rowsCap)) emit([piece]);
+      continue;
+    }
+    const add = (cur.length > 0 ? 1 : 0) + row.length;
+    if (len + add <= rowsCap) { cur.push(row); len += add; }
+    else { flush(); cur = [row]; len = row.length; }
+  }
+  flush();
+  return pieces.length > 0 ? pieces : [text];
+}
+
+/** Drop the details wrapper, keep the summary text as a plain leading line. */
+function unfoldDetails(text: string): string {
+  let s = text.replace(/<details[^>]*>/i, "").replace(/<\/details>/i, "");
+  s = s.replace(/<summary>([\s\S]*?)<\/summary>/i, (_m, t: string) => t.trim());
+  return s.replace(/^\n+/, "");
+}
