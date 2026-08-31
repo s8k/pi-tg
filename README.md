@@ -30,8 +30,8 @@ phone (Telegram) ⇄ Bot API long polling ⇄ pi-telega (in-process) ⇄ pi TUI 
 
 1. `npm install` in this repo
 2. Start pi with the extension: `pi -e /abs/path/to/pi-telega/index.ts`
-3. In the TUI: `/tg config <bot-token>`
-4. `/tg pair` → a QR widget appears
+3. In the TUI: `/tg:config <bot_token>`
+4. `/tg:pair` → a QR widget appears
 5. Phone: scan the QR → open the bot → `/start` → ✅ paired.
    From now on only your Telegram user ID is served.
 
@@ -58,12 +58,15 @@ phone (Telegram) ⇄ Bot API long polling ⇄ pi-telega (in-process) ⇄ pi TUI 
 | Command | Action |
 |---|---|
 | `/tg` | session card (TUI widget or notification) |
-| `/tg config <token>` | save bot token, restart poller |
-| `/tg pair` | show QR (only while unpaired) |
+| `/tg:config <bot_token>` | save bot token, restart poller |
+| `/tg:pair` | show QR (only while unpaired) |
+
+All three appear in the TUI’s `/` completion list (type `/tg` and Tab).
+The poller also injects `/tg internal …` (machine-only, not listed).
 
 ## Configuration
 
-File: `~/.pi/agent/pi-telega.json` (atomic writes; created on first `/tg config`).
+File: `~/.pi/agent/pi-telega.json` (atomic writes; created on first `/tg:config`).
 Env `PI_TELEGA_BOT_TOKEN` overrides the stored token.
 
 | Field | Default | Meaning |

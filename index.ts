@@ -89,7 +89,7 @@ export default function piTelega(pi: ExtensionAPI): void {
     };
     bridge = new SessionBridge(deps);
     if (!token) {
-      ui("pi-telega: no bot token — run /tg config <token>", "warning");
+      ui("pi-telega: no bot token — run /tg:config <bot_token>", "warning");
       return;
     }
     let username: string | undefined;
@@ -169,7 +169,7 @@ export default function piTelega(pi: ExtensionAPI): void {
   async function showQr(ctx: ExtensionCommandContext): Promise<void> {
     const token = getBotToken(cfg, CFG);
     if (!token) {
-      ctx.ui.notify("pi-telega: no token yet — run /tg config <token>", "warning");
+      ctx.ui.notify("pi-telega: no token yet — run /tg:config <bot_token>", "warning");
       return;
     }
     const c = client ?? new TelegramClient(token, {});
@@ -184,52 +184,76 @@ export default function piTelega(pi: ExtensionAPI): void {
     }
   }
 
-  // ── terminal command ──
+  // ── terminal commands ──
 
+  const TG_USAGE = "Usage: /tg | /tg:config <bot_token> | /tg:pair";
+
+  async function runConfig(token: string, ctx: ExtensionCommandContext): Promise<void> {
+    if (!tokenLooksValid(token)) {
+      ctx.ui.notify("pi-telega: invalid token (expected <digits>:<alnum/ -_>, e.g. 123456:AAH…)", "error");
+      return;
+    }
+    cfg.botToken = token;
+    await persist();
+    const old = pollPromise;
+    stopping = true;
+    if (old) await old.catch(() => {});
+    // A session replacement can happen while we were waiting above — in that
+    // case this handler's ctx is stale and must not be used any more.
+    if (!ctxIsAlive(ctx)) return;
+    pollPromise = startPolling().catch((err) => ui(`pi-telega: ${String(err)}`, "error"));
+    void pollPromise;
+    ctx.ui.notify("pi-telega: token saved, poller restarted. Run /tg:pair to show the QR.", "info");
+  }
+
+  async function runPair(ctx: ExtensionCommandContext): Promise<void> {
+    if (cfg.ownerId) {
+      ctx.ui.notify(`pi-telega: already paired with owner ${cfg.ownerId}. Delete ${CFG.path} to re-pair.`, "info");
+      return;
+    }
+    await showQr(ctx);
+  }
+
+  // One entry per command in pi's `/` completion list (see pi extensions docs).
+  // `tg:config` / `tg:pair` use colon names the same way skills use /skill:name.
   pi.registerCommand("tg", {
-    description: "Drive pi from Telegram — /tg (card) | /tg config <token> | /tg pair | /tg internal …",
+    description: "pi-telega session card (model, context usage, session path)",
+    getArgumentCompletions: (prefix: string) => {
+      const items = [{ value: "internal", label: "internal", description: "machine dispatch (poller → TUI)" }];
+      const filtered = items.filter((i) => i.value.startsWith(prefix));
+      return filtered.length > 0 ? filtered : null;
+    },
     handler: async (args: string, ctx: ExtensionCommandContext) => {
       cmdCtx = ctx;
-      const parts = args.trim().split(/\s+/);
-      const sub = parts[0] ?? "";
+      const sub = args.trim().split(/\s+/)[0] ?? "";
       if (sub === "internal") {
+        // Machine-only path: the Telegram poller injects these.
         const action = parseInternal(args.trim());
         if (action && bridge) await bridge.dispatch(action);
         else ctx.ui.notify("pi-telega: bad /tg internal payload", "error");
         return;
       }
-      if (sub === "") {
-        showCard(ctx);
+      if (sub !== "") {
+        ctx.ui.notify(TG_USAGE, "error");
         return;
       }
-      if (sub === "config") {
-        const token = parts.slice(1).join(" ").trim();
-        if (!tokenLooksValid(token)) {
-          ctx.ui.notify("pi-telega: invalid token (expected <digits>:<alnum/ -_>, e.g. 123456:AAH…)", "error");
-          return;
-        }
-        cfg.botToken = token;
-        await persist();
-        const old = pollPromise;
-        stopping = true;
-        if (old) await old.catch(() => {});
-        // A session replacement can happen while we were waiting above — in that
-        // case this handler's ctx is stale and must not be used any more.
-        if (!ctxIsAlive(ctx)) return;
-        pollPromise = startPolling().catch((err) => ui(`pi-telega: ${String(err)}`, "error"));
-        void pollPromise;
-        ctx.ui.notify("pi-telega: token saved, poller restarted. Run /tg pair to show the QR.", "info");
-        return;
-      }
-      if (sub === "pair") {
-        if (cfg.ownerId) {
-          ctx.ui.notify(`pi-telega: already paired with owner ${cfg.ownerId}. Delete ${CFG.path} to re-pair.`, "info");
-          return;
-        }
-        await showQr(ctx);
-        return;
-      }
-      ctx.ui.notify("Usage: /tg | /tg config <token> | /tg pair", "info");
+      showCard(ctx);
+    },
+  });
+
+  pi.registerCommand("tg:config", {
+    description: "Save Telegram bot token, restart poller (<bot_token>)",
+    handler: async (args: string, ctx: ExtensionCommandContext) => {
+      cmdCtx = ctx;
+      await runConfig(args.trim(), ctx);
+    },
+  });
+
+  pi.registerCommand("tg:pair", {
+    description: "Show pairing QR (only while unpaired)",
+    handler: async (_args: string, ctx: ExtensionCommandContext) => {
+      cmdCtx = ctx;
+      await runPair(ctx);
     },
   });
 
