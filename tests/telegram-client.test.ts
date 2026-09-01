@@ -38,6 +38,16 @@ test("call: 429 exhausted (3 retries) → throws TgError(429)", async () => {
   assert.equal(ff.calls.length, 4);
 });
 
+test("sendRichMessageDraft: 429 is NOT retried (ephemeral payload) — one request, retryAfter surfaced", async () => {
+  const ff = makeFakeFetch(() => ({ status: 429, body: { ok: false, error_code: 429, description: "Too Many Requests", parameters: { retry_after: 25 } } }));
+  const c = new TelegramClient("T", { fetchImpl: ff.fetchImpl, sleep: async () => {} });
+  await assert.rejects(
+    c.sendRichMessageDraft(7, 1, { markdown: "x" }),
+    (e: unknown) => e instanceof TgError && e.code === 429 && e.retryAfter === 25,
+  );
+  assert.equal(ff.calls.length, 1, "the mirror paces the retry via its failure cooldown");
+});
+
 test("call: network failure → TgNetworkError", async () => {
   const ff = makeFakeFetch(() => {
     throw new Error("ECONNREFUSED");

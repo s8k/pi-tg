@@ -1,11 +1,22 @@
 /**
  * Per-turn agent-event mirroring on top of the rich draft (Bot API 10.2).
  *
- * One ephemeral rich draft per agent turn: same draft_id re-sent on every
- * content update plus a heartbeat (keeps the ~30 s window alive). Content =
- * latest assistant markdown (long fences folded, tail-viewed at RICH_CAP)
- * + a tool-status footer. Finalization = sendRichMessage → legacy HTML
- * chunk → plain text. Mute = fully silent.
+ * One ephemeral rich draft per agent turn: same draft_id re-sent on content
+ * updates plus a heartbeat (keeps the ~30 s window alive). Content = latest
+ * assistant markdown (long fences folded, tail-viewed at RICH_CAP) + a
+ * tool-status footer. Finalization = sendRichMessage → legacy HTML chunk →
+ * plain text. Mute = fully silent.
+ *
+ * Draft sending is paced and self-limiting (Bot API allows ~1 msg/s per chat
+ * and a 429 must never cascade into a request flood):
+ *  - at most ONE draft call in flight; later updates coalesce into a single
+ *    follow-up with the latest content (no concurrent 429-retry chains);
+ *  - the success cooldown (streamEditMs) applies to ALL senders (stream
+ *    updates, tool events, heartbeat) — no bursts in the same second;
+ *  - failure cooldown honors the 429 retry_after (streamEditMs otherwise;
+ *    a long quiet window for 400s, which cannot heal without new content);
+ *  - notifications are state-change only: first failure, one re-note per 5
+ *    min while failing, one recovery note.
  */
 import type { Out } from "./session-bridge.ts";
 import type { TelegaState } from "./state.ts";
@@ -47,6 +58,11 @@ export function assistantText(msg: MirrorMessage): string {
 
 const THINKING = "<tg-thinking>working…</tg-thinking>";
 
+/** A 400 means this content is unparseable — quiet long cooldown; the same content cannot heal. */
+const DRAFT_400_COOLDOWN_MS = 60_000;
+/** While a draft keeps failing, re-notify at most this often (dead channel ≠ silent one). */
+const DRAFT_FAIL_RENOTIFY_MS = 300_000;
+
 interface ToolLine {
   text: string;
   done: boolean;
@@ -61,8 +77,11 @@ export interface MirrorDeps {
   now(): number;
   setTimer(fn: () => void, ms: number): unknown;
   clearTimer(handle: unknown): void;
-  /** Surfaced when a draft update fails (the next update retries; no machinery). */
-  notify?: (msg: string) => void;
+  /**
+   * Surfaced on draft failure state changes only: first failure (error), a
+   * periodic "still failing" note while it persists, and recovery (info).
+   */
+  notify?: (msg: string, level?: "info" | "warning" | "error") => void;
 }
 
 export class Mirror {
@@ -71,7 +90,11 @@ export class Mirror {
   private draftId = 0;
   private draftActive = false;
   private answerText = ""; // latest assistant markdown (the draft body)
-  private lastDraftSend = 0;
+  private nextDraftAt = 0; // earliest time a new draft attempt is allowed (throttle + failure cooldown)
+  private draftInflight: Promise<void> | undefined;
+  private draftDirty = false; // content changed while a draft call was in flight
+  private draftFailStreak = 0;
+  private draftLastFailNotifyAt = 0;
   private hbTimer: unknown;
   private toolLines: ToolLine[] = [];
   private inflight = new Map<string, number>();
@@ -88,12 +111,16 @@ export class Mirror {
     this.draftSeq += 1;
     this.draftId = this.draftSeq;
     this.answerText = "";
-    this.lastDraftSend = 0;
+    this.nextDraftAt = 0;
+    this.draftDirty = false;
+    this.draftFailStreak = 0;
+    this.draftLastFailNotifyAt = 0;
+    this.draftInflight = undefined; // a stale call from the prior turn may settle later; its finally is gen-guarded
     this.toolLines = [];
     this.inflight.clear();
     this.uiPromptLine = undefined;
     this.draftActive = true;
-    await this.sendDraft(true);
+    this.requestDraft(true);
     this.armHeartbeat();
   }
 
@@ -104,7 +131,7 @@ export class Mirror {
     if (deps.cfg.muted || !this.draftActive) return;
     this.hbTimer = deps.setTimer(() => {
       this.hbTimer = undefined;
-      void this.sendDraft(true);
+      this.requestDraft(true);
       this.armHeartbeat();
     }, deps.cfg.draftHeartbeatMs);
   }
@@ -114,16 +141,69 @@ export class Mirror {
     this.hbTimer = undefined;
   }
 
-  private async sendDraft(canStop: boolean): Promise<void> {
-    const { cfg, out } = this.deps;
+  /**
+   * Entry point for every draft sender (stream updates, tool events,
+   * assistant end, heartbeat). Pacing lives here:
+   *  - nothing before `nextDraftAt` (stream throttle / failure cooldown);
+   *  - at most one call in flight; a request while in flight only marks
+   *    `draftDirty` — the follow-up after completion carries the latest
+   *    content (no concurrent 429-retry chains, no stale overwrites).
+   */
+  private requestDraft(canStop: boolean): void {
+    const { cfg } = this.deps;
     if (cfg.muted || !this.draftActive) return;
+    if (this.deps.getChatId() === undefined) return;
+    if (this.deps.now() < this.nextDraftAt) return;
+    if (this.draftInflight) {
+      this.draftDirty = true;
+      return;
+    }
+    this.draftInflight = this.runDraft(canStop, this.draftSeq);
+  }
+
+  private async runDraft(canStop: boolean, gen: number): Promise<void> {
+    const { cfg, out } = this.deps;
     const chatId = this.deps.getChatId();
-    if (chatId === undefined) return;
+    if (chatId === undefined || cfg.muted || !this.draftActive) {
+      this.draftInflight = undefined;
+      return;
+    }
     try {
       await out.sendDraft(chatId, this.draftId, this.draftContent(), canStop);
-      this.lastDraftSend = this.deps.now();
+      this.nextDraftAt = this.deps.now() + cfg.streamEditMs;
+      if (this.draftFailStreak > 0) {
+        this.deps.notify?.(`draft updates recovered after ${this.draftFailStreak} failure(s)`, "info");
+        this.draftFailStreak = 0;
+      }
     } catch (err) {
-      this.deps.notify?.(`draft update failed: ${String(err)}`);
+      this.draftFailStreak++;
+      if (err instanceof TgError && err.code === 400) {
+        // Same content will 400 identically: long quiet cooldown (a content change / next turn re-triggers).
+        this.nextDraftAt = this.deps.now() + DRAFT_400_COOLDOWN_MS;
+      } else {
+        // Honor the 429 retry_after the API told us to wait; never retry sooner than the stream throttle.
+        const retryAfter = err instanceof TgError ? err.retryAfter : undefined;
+        const cooldown = retryAfter != null ? Math.max(retryAfter * 1000, cfg.streamEditMs) : cfg.streamEditMs;
+        this.nextDraftAt = this.deps.now() + cooldown;
+      }
+      const first = this.draftFailStreak === 1;
+      const due = this.deps.now() - this.draftLastFailNotifyAt >= DRAFT_FAIL_RENOTIFY_MS;
+      if (first || due) {
+        this.deps.notify?.(
+          first
+            ? `draft updates failing: ${String(err)} — retrying`
+            : `draft updates still failing (${this.draftFailStreak}×, last: ${String(err)})`,
+          "error",
+        );
+        this.draftLastFailNotifyAt = this.deps.now();
+      }
+    } finally {
+      if (gen !== this.draftSeq) return; // a new turn owns the draft now
+      this.draftInflight = undefined;
+      if (this.draftDirty) {
+        this.draftDirty = false;
+        this.requestDraft(canStop); // one follow-up with the latest content
+      }
     }
   }
 
@@ -147,7 +227,7 @@ export class Mirror {
     const line = `⚙ ${tool}: ${toolPreview(tool, args, this.deps.cfg.toolPreviewChars)} …`;
     this.inflight.set(toolCallId, this.toolLines.length);
     this.toolLines.push({ text: line, done: false, isError: false });
-    await this.sendDraft(true);
+    this.requestDraft(true);
   }
 
   async onToolEnd(toolCallId: string, isError: boolean): Promise<void> {
@@ -159,7 +239,7 @@ export class Mirror {
     l.done = true;
     l.isError = isError;
     l.text = l.text.replace(/…$/, "").trimEnd() + (isError ? " ✖" : " ✔"); // single space before the mark
-    await this.sendDraft(true);
+    this.requestDraft(true);
   }
 
   async onAssistantStart(msg: MirrorMessage): Promise<void> {
@@ -167,26 +247,28 @@ export class Mirror {
     this.answerText = "";
     // First update of a new message is not throttled (the throttled-at-t=0
     // case only applies to the very first message right after the draft spawn).
-    this.lastDraftSend = this.deps.now() - this.deps.cfg.streamEditMs;
+    this.nextDraftAt = 0;
   }
 
   async onAssistantUpdate(msg: MirrorMessage): Promise<void> {
     if (msg.role !== "assistant") return;
     this.answerText = assistantText(msg);
-    if (this.deps.now() - this.lastDraftSend < this.deps.cfg.streamEditMs) return;
-    await this.sendDraft(true);
+    this.requestDraft(true); // pacing (throttle + failure cooldown) lives inside
   }
 
   async onAssistantEnd(msg: MirrorMessage): Promise<void> {
     if (msg.role !== "assistant") return;
     if (!this.draftActive) return;
-    await this.sendDraft(true); // unthrottled: show the complete message before the next one/turn
+    // Paced like any other sender: if the last success was < streamEditMs ago
+    // the complete text already (mostly) shows; the next message's first
+    // update is forced through via onAssistantStart either way.
+    this.requestDraft(true);
   }
 
   async onUiPromptStart(title?: string): Promise<void> {
     if (!this.draftActive) return;
     this.uiPromptLine = `⚠️ terminal prompt${title ? `: ${title}` : ""} — answer there`;
-    await this.sendDraft(true);
+    this.requestDraft(true);
   }
 
   async onAgentEnd(messages: MirrorMessage[]): Promise<void> {

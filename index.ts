@@ -112,7 +112,7 @@ export default function piTelega(pi: ExtensionAPI): void {
         return t;
       },
       clearTimer: (h) => clearTimeout(h as NodeJS.Timeout),
-      notify: (msg) => ui(msg, "error"),
+      notify: (msg, level) => ui(msg, level ?? "error"),
     });
     currentMirror = mirror;
     await pollLoop({

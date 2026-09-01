@@ -139,6 +139,13 @@ export async function pollLoop(deps: PollerDeps): Promise<void> {
 
 const MAX_429_RETRIES = 3;
 
+/**
+ * Ephemeral-payload methods: the content ages out during a 429 backoff, so a
+ * retry (or a late success) ships stale state. They fail fast with
+ * `retryAfter`; the caller (Mirror) paces the retry with fresh content.
+ */
+const NO_429_RETRY = new Set<string>(["sendRichMessageDraft"]);
+
 export class TelegramClient {
   token: string;
   private fetchImpl: FetchLike;
@@ -153,6 +160,7 @@ export class TelegramClient {
   /** One Bot API call: JSON POST, ok:false → TgError, 429 → sleep retry_after & retry (max 3). */
   async call(method: string, params: Record<string, unknown> = {}): Promise<unknown> {
     const url = `https://api.telegram.org/bot${this.token}/${method}`;
+    const max429 = NO_429_RETRY.has(method) ? 0 : MAX_429_RETRIES;
     let attempt = 0;
     for (;;) {
       let res: Response;
@@ -179,7 +187,7 @@ export class TelegramClient {
       }
       if (data.ok) return data.result;
       const code = data.error_code ?? 0;
-      if (code === 429 && attempt < MAX_429_RETRIES) {
+      if (code === 429 && attempt < max429) {
         attempt++;
         await this.sleep((data.parameters?.retry_after ?? 3) * 1000);
         continue;
