@@ -282,6 +282,36 @@ expected UX, not a bug.
 Already verified (by owner): re-sending a draft with the same `draft_id` resets
 the ~30 s window.
 
+## Spike results (2026-08-31, live Bot API 10.3)
+
+1. **`RICH_CAP` semantics (question 1).** The 32 768 limit applies to the
+   **rendered** rich text, not the markdown source (a 32 912-source-char
+   formatted article was accepted — syntax like `#`, `|`, ``` is free).
+   Pure-ASCII boundary is exact: 32 768 OK / 32 769 → 400
+   `RICH_MESSAGE_TEXT_TOO_LONG`. Multibyte chars count discounted (é×65 536 /
+   🎉×65 536 pass at 131–262 KB; a×32 768 + é×40 000 fails) — consistent with
+   each multibyte byte counting ≈ 12.5–50 %. **`RICH_CAP = 32 000` (JS units of
+   markdown source) is safe as-is**: rendered ≤ source, and per JS unit ASCII
+   counts 1.0 vs 0.25 (é) / 0.25 (🎉), so the adjusted length never exceeds the
+   32 000 < 32 768 boundary. No constant change.
+2. **`<tg-thinking>` (question 2).** Renders our own inner text ("working…") as
+   an iridescent silver label, visible immediately on the first draft send →
+   keep `<tg-thinking>working…</tg-thinking>` (no emoji prefix).
+3. **Entity detection (question 3).** Plain-text tier: URLs and emails are
+   auto-linked; phone numbers are **not** — identical to the legacy HTML path,
+   so no `skip_entity_detection`. Inside-code-fence variant left unverified
+   (cosmetic only; legacy also doesn't linkify inside code).
+4. **Stop button (beyond the spike list).** With `can_stop: true` the button
+   appears **to the right of the input box** (not on the message bubble) and is
+   visible even for one-shot, never-updated drafts. Click →
+   `stopped_message_generation` with the live shape `{ chat: {…full Chat…},
+   draft_id: "<string>" }` — `draft_id` arrives as a **string** (docs say
+   Integer). Code fix applied: `MessageGenerationStopped.draft_id: string`,
+   router test pinned to the live payload.
+5. **Client rendering note.** ~32 k final messages display collapsed at ~16 k
+   with a “Show more” popup; full text is intact and readable (verified with a
+   unique tail marker).
+
 ## Parking lot (explicit v2 non-goals)
 
 - Table styling (`is_bordered`/`is_striped`/`is_compact`, alignment, colspan)

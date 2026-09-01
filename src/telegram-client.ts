@@ -67,7 +67,7 @@ export interface TgUpdate {
   message?: TgMessage;
   edited_message?: TgMessage;
   callback_query?: TgCallbackQuery;
-  /** Bot API 10.2: the user pressed the Stop button on a draft we created. */
+  /** Bot API 10.3: the user pressed the Stop button on a draft we created. */
   stopped_message_generation?: MessageGenerationStopped;
 }
 
@@ -78,11 +78,15 @@ export interface InputRichMessage {
   blocks?: unknown[];
 }
 
-/** Update sent when a user stops a draft message (Bot API 10.2). */
+/**
+ * Update sent when a user stops a draft message (Bot API 10.3).
+ * Spike 2026-08-31: `draft_id` arrives as a *string* (e.g. "6"), despite the
+ * docs calling it an Integer; `chat` is a full Chat object, not `chat_id`.
+ */
 export interface MessageGenerationStopped {
   chat: TgChat;
   message_thread_id?: number;
-  draft_id: number;
+  draft_id: string;
 }
 
 export interface TgBotMe {

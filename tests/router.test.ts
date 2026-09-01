@@ -66,9 +66,17 @@ test("callbacks: owner only, vocabulary maps, stale → ignore", () => {
 });
 
 test("stopped_message_generation → stop (the draft's native Stop button)", () => {
-  const a = route(
-    { update_id: 9, stopped_message_generation: { chat: { id: 55, type: "private" }, draft_id: 3 } },
-    42,
-  );
-  assert.deepEqual(a, { kind: "stop", chatId: 55 });
+  // Spike 2026-08-31 (live Bot API 10.3 payload): draft_id is a STRING, and
+  // the update carries a full chat object.
+  const live = {
+    update_id: 920563834,
+    stopped_message_generation: {
+      chat: { id: 55, first_name: "Ya", username: "x", type: "private" },
+      draft_id: "6",
+    },
+  };
+  assert.deepEqual(route(live, 42), { kind: "stop", chatId: 55 });
+  // ownerId is irrelevant: the draft's Stop button only ever comes from the
+  // user it was shown to (we only send drafts in the owner's private chat).
+  assert.deepEqual(route(live, undefined), { kind: "stop", chatId: 55 });
 });

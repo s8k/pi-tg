@@ -137,6 +137,33 @@ get linkified inside code? If yes and it looks bad, add
 **Step 7: Clean up** — `rm scratch/spike-rich.mjs`; delete the spike messages
 from the chat. Update `RICH_CAP` below if the spike contradicts 32 000.
 
+**✅ Spike results (2026-08-31, bot @redacted_bot 0000000000, chat 123456)**
+
+1. **Limit semantics.** The 32 768 limit applies to the **rendered rich text**,
+   not the markdown source (a 32 912-*source*-char article with headings/table/
+   code was accepted). Pure-ASCII boundary: 32 768 OK / 32 769 →
+   400 `RICH_MESSAGE_TEXT_TOO_LONG`. Multibyte chars count **discounted**:
+   é×65 536 (131 KB) OK, 🎉×65 536 (262 KB) OK, but a×32 768 + é×40 000 FAILS —
+   consistent with each multibyte byte counting ≈ 12.5–50 %.
+2. **RICH_CAP = 32 000 kept** (no `src/markdown.ts` change). Worst case within
+   the cap: all-ASCII source → 32 000 ≤ 32 768; multibyte content only lowers
+   the adjusted count (per JS unit: `a` 1.0, `é` 0.25, 🎉 0.25) → always safe.
+3. **`<tg-thinking>`** renders our own text ("working…") as an iridescent silver
+   label → keep the `working…` label from Task 9.
+4. **Stop button.** With `can_stop: true` it appears **to the right of the input
+   box** (not on the message) — visible even for one-shot, never-updated
+   drafts. Click → `stopped_message_generation` update with the *live* shape
+   `{ chat: {…full Chat…}, draft_id: "<string>" }` — `draft_id` is a **string**
+   despite the docs saying Integer. → Code fix: `draft_id: number → string` in
+   `MessageGenerationStopped` + router test pinned to the live shape.
+5. **Entity detection (markdown tier, plain text).** URL and email → tappable
+   links; phone number → **not** linked (same as the legacy HTML path → no
+   `skip_entity_detection` needed). Inside-code-fence variant not explicitly
+   verified; expected: not linkified (matches legacy), cosmetic only.
+6. **Client rendering note.** ~32 k messages display collapsed at ~16 k with a
+   “Show more” popup; full text intact and readable (verified with a 32 912-char
+   document, unique tail marker).
+
 ---
 
 ### Task 1: Config fields `draftHeartbeatMs` + `codeFoldLines`
