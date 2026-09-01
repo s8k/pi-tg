@@ -18,8 +18,6 @@ const SENT_CAP = 500;
 export class TelegaState {
   private sent: number[] = [];
   private offset: number;
-  private workingMsgId: number | undefined;
-  private toolMsgIds = new Map<string, number>();
   private sessionList: SessionListItem[] = [];
   private modelList: string[] = [];
   private thinkingList: PiThinkingLevel[] = [];
@@ -54,21 +52,6 @@ export class TelegaState {
   }
 
   // instance-scoped
-  setWorking(id: number | undefined): void {
-    this.workingMsgId = id;
-  }
-  getWorking(): number | undefined {
-    return this.workingMsgId;
-  }
-  setToolMsg(toolCallId: string, msgId: number): void {
-    this.toolMsgIds.set(toolCallId, msgId);
-  }
-  getToolMsg(toolCallId: string): number | undefined {
-    return this.toolMsgIds.get(toolCallId);
-  }
-  clearToolMsgs(): void {
-    this.toolMsgIds.clear();
-  }
   setSessionList(items: SessionListItem[]): void {
     this.sessionList = items;
   }

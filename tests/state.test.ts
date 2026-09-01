@@ -33,20 +33,11 @@ test("restoreSentIds: capped + copied", () => {
   assert.equal(s.sentIds().length, 500); // stored copy, not the reference
 });
 
-test("offset + working + tool-msg lifecycle", () => {
+test("offset lifecycle", () => {
   const s = new TelegaState(41);
   assert.equal(s.getOffset(), 41);
   s.setOffset(42);
   assert.equal(s.getOffset(), 42);
-  s.setWorking(7);
-  assert.equal(s.getWorking(), 7);
-  s.setWorking(undefined);
-  assert.equal(s.getWorking(), undefined);
-  s.setToolMsg("tc1", 11);
-  assert.equal(s.getToolMsg("tc1"), 11);
-  assert.equal(s.getToolMsg("tc2"), undefined);
-  s.clearToolMsgs();
-  assert.equal(s.getToolMsg("tc1"), undefined);
 });
 
 test("list caches: index + out of range", () => {
