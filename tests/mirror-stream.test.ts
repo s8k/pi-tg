@@ -1,63 +1,87 @@
+// Per-turn streaming: the rich draft lifecycle (same draft_id, throttled,
+// heartbeat via the injected fake timer).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { Mirror, type MirrorMessage } from "../src/mirror.ts";
-import { TG_MAX_LEN } from "../src/markdown.ts";
-import { FakeOut } from "./fake-pi.ts";
+import { Mirror } from "../src/mirror.ts";
 import { makeMirrorDeps } from "./mirror-helpers.ts";
 
-const m = (t: string): MirrorMessage => ({ role: "assistant", content: [{ type: "text", text: t }] });
-
-test("stream: placeholder → throttled edits → end deletes stream msg", async () => {
-  const out = new FakeOut();
-  const deps = makeMirrorDeps(out); // streamEditMs default 1500
-  const mirror = new Mirror(deps);
-  await mirror.onAssistantStart(m(""));
-  assert.equal(out.calls[0].text, "…");
-  await mirror.onAssistantUpdate(m("ab"));
-  assert.equal(out.calls.length, 1); // within 1500ms → no edit
-  deps.advance(1600);
-  await mirror.onAssistantUpdate(m("abcd"));
-  assert.equal(out.calls.length, 2);
-  assert.equal(out.calls[1].kind, "edit");
-  assert.equal(out.calls[1].text, "abcd");
-  deps.advance(10);
-  await mirror.onAssistantUpdate(m("abcde")); // too soon → throttled
-  assert.equal(out.calls.length, 2);
-  await mirror.onAssistantEnd(m("abcde"));
-  assert.ok(out.calls.some((c) => c.kind === "delete"));
+test("agent_start creates a draft (draft_id 1, can_stop) with the thinking label", async () => {
+  const { deps, out } = makeMirrorDeps();
+  const m = new Mirror(deps);
+  await m.onAgentStart();
+  const drafts = out.calls.filter((c) => c.kind === "sendDraft");
+  assert.equal(drafts.length, 1);
+  assert.equal(drafts[0].draftId, 1);
+  assert.equal(drafts[0].canStop, true);
+  assert.equal(drafts[0].text, "<tg-thinking>working…</tg-thinking>");
+  assert.equal(out.calls.filter((c) => c.kind === "send").length, 0, "no legacy Working… message");
 });
 
-test("stream: non-assistant messages ignored", async () => {
-  const out = new FakeOut();
-  const mirror = new Mirror(makeMirrorDeps(out));
-  await mirror.onAssistantStart({ role: "user", content: [] });
-  await mirror.onAssistantUpdate({ role: "user", content: [{ type: "text", text: "x" }] });
-  await mirror.onAssistantEnd({ role: "user", content: [{ type: "text", text: "x" }] });
-  assert.equal(out.calls.length, 0);
+test("assistant updates refresh the same draft, throttled by streamEditMs", async () => {
+  const { deps, out, advance } = makeMirrorDeps();
+  const m = new Mirror(deps);
+  await m.onAgentStart();
+  out.calls.length = 0;
+  await m.onAssistantUpdate({ role: "assistant", content: "Hello" });
+  assert.equal(out.calls.filter((c) => c.kind === "sendDraft").length, 0, "throttled at t=0 (draft just sent)");
+  advance(1500);
+  await m.onAssistantUpdate({ role: "assistant", content: "Hello world" });
+  const drafts = out.calls.filter((c) => c.kind === "sendDraft");
+  assert.equal(drafts.length, 1);
+  assert.equal(drafts[0].draftId, 1, "same draft_id refreshed, not a new draft");
+  assert.equal(drafts[0].text, "Hello world");
 });
 
-test("stream: oversize text truncated mid-stream (≤ TG_MAX_LEN, ellipsis)", async () => {
-  const out = new FakeOut();
-  const deps = makeMirrorDeps(out);
-  const mirror = new Mirror(deps);
-  await mirror.onAssistantStart(m(""));
-  deps.advance(2000);
-  await mirror.onAssistantUpdate(m("a".repeat(5000)));
-  const edit = out.calls.find((c) => c.kind === "edit");
-  assert.ok(edit?.text, "an edit must have happened");
-  assert.ok(edit!.text!.length <= TG_MAX_LEN);
-  assert.ok(edit!.text!.endsWith("…"));
+test("assistant_start of a NEW message resets the throttle window", async () => {
+  const { deps, out } = makeMirrorDeps();
+  const m = new Mirror(deps);
+  await m.onAgentStart();
+  await m.onAssistantStart({ role: "assistant" });
+  out.calls.length = 0;
+  await m.onAssistantUpdate({ role: "assistant", content: "first words" });
+  const drafts = out.calls.filter((c) => c.kind === "sendDraft");
+  assert.equal(drafts.length, 1, "first update of a new message is not throttled");
+  assert.equal(drafts[0].text, "first words");
 });
 
-test("multiple assistant messages: each stream msg deleted", async () => {
-  const out = new FakeOut();
-  const deps = makeMirrorDeps(out);
-  const mirror = new Mirror(deps);
-  await mirror.onAssistantStart(m(""));
-  await mirror.onAssistantEnd(m("first"));
-  await mirror.onAssistantStart(m(""));
-  deps.advance(2000);
-  await mirror.onAssistantUpdate(m("second"));
-  await mirror.onAssistantEnd(m("second"));
-  assert.equal(out.calls.filter((c) => c.kind === "delete").length, 2);
+test("multiple assistant messages in one turn: draft shows the LATEST text", async () => {
+  const { deps, out, advance } = makeMirrorDeps();
+  const m = new Mirror(deps);
+  await m.onAgentStart();
+  await m.onAssistantStart({ role: "assistant" });
+  advance(1600);
+  await m.onAssistantUpdate({ role: "assistant", content: "first message" });
+  await m.onAssistantEnd({ role: "assistant" });
+  await m.onAssistantStart({ role: "assistant" });
+  await m.onAssistantUpdate({ role: "assistant", content: "second message" });
+  const drafts = out.calls.filter((c) => c.kind === "sendDraft");
+  assert.equal(drafts[drafts.length - 1].text, "second message");
+  assert.equal(drafts.every((d) => d.draftId === 1), true, "one draft for the whole turn");
+});
+
+test("heartbeat re-sends the same draft_id every draftHeartbeatMs", async () => {
+  const { deps, out, advance, fireTimer } = makeMirrorDeps({ draftHeartbeatMs: 17000 });
+  const m = new Mirror(deps);
+  await m.onAgentStart();
+  out.calls.length = 0;
+  advance(17000);
+  fireTimer();
+  const drafts = out.calls.filter((c) => c.kind === "sendDraft");
+  assert.equal(drafts.length, 1);
+  assert.equal(drafts[0].draftId, 1);
+  assert.equal(drafts[0].text, "<tg-thinking>working…</tg-thinking>");
+});
+
+test("heartbeat stops at agent_end; a new turn gets a new draft_id", async () => {
+  const { deps, out, advance, fireTimer } = makeMirrorDeps({ draftHeartbeatMs: 17000 });
+  const m = new Mirror(deps);
+  await m.onAgentStart();
+  await m.onAgentEnd([{ role: "assistant", content: "done" }]);
+  out.calls.length = 0;
+  advance(17000);
+  fireTimer();
+  assert.equal(out.calls.filter((c) => c.kind === "sendDraft").length, 0, "no heartbeat after agent_end");
+  await m.onAgentStart();
+  const last = out.calls.filter((c) => c.kind === "sendDraft").at(-1);
+  assert.equal(last?.draftId, 2, "fresh draft_id per turn");
 });

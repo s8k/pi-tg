@@ -100,7 +100,20 @@ export default function piTelega(pi: ExtensionAPI): void {
       return;
     }
     deps.botUsername = username;
-    const mirror = new Mirror({ out: outAdapter, state, cfg, getChatId: () => ownerChatId, now: () => Date.now() });
+    const mirror = new Mirror({
+      out: outAdapter,
+      state,
+      cfg,
+      getChatId: () => ownerChatId,
+      now: () => Date.now(),
+      setTimer: (fn, ms) => {
+        const t = setTimeout(fn, ms);
+        t.unref?.(); // don't hold the process open if pi exits mid-turn
+        return t;
+      },
+      clearTimer: (h) => clearTimeout(h as NodeJS.Timeout),
+      notify: (msg) => ui(msg, "error"),
+    });
     currentMirror = mirror;
     await pollLoop({
       client,

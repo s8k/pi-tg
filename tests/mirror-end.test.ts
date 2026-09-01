@@ -1,109 +1,109 @@
+// Finalization: rich → legacy HTML → plain; error/abort/no-text paths.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { Mirror, type MirrorMessage } from "../src/mirror.ts";
-import { TG_MAX_LEN } from "../src/markdown.ts";
-import { FakeOut } from "./fake-pi.ts";
+import { Mirror } from "../src/mirror.ts";
+import { RICH_CAP } from "../src/markdown.ts";
+import { TgError } from "../src/telegram-client.ts";
 import { makeMirrorDeps } from "./mirror-helpers.ts";
 
-const m = (t: string, stopReason?: string): MirrorMessage => ({
-  role: "assistant",
-  content: [{ type: "text", text: t }],
-  stopReason,
+test("normal end → single rich message; no status line", async () => {
+  const { deps, out } = makeMirrorDeps();
+  const m = new Mirror(deps);
+  await m.onAgentStart();
+  await m.onAgentEnd([{ role: "assistant", content: [{ type: "text", text: "**bold** answer" }] }]);
+  const rich = out.calls.filter((c) => c.kind === "sendRich");
+  assert.equal(rich.length, 1);
+  assert.equal(rich[0].text, "**bold** answer");
+  assert.equal(out.calls.filter((c) => c.kind === "send").length, 0, "no ✅ Done / Working… line on the normal path");
 });
 
-test("agent_end ok: working → ✅ Done (button cleared), answer posted as HTML chunks", async () => {
-  const out = new FakeOut();
-  const deps = makeMirrorDeps(out);
-  const mirror = new Mirror(deps);
-  await mirror.onAgentStart();
-  const big = "x".repeat(5000);
-  await mirror.onAgentEnd([m("mid", "toolUse"), m(big, "stop")]);
-  const edit = out.calls.find((c) => c.kind === "edit");
-  assert.ok(edit?.text?.includes("✅ Done"));
-  assert.deepEqual(edit?.opts?.replyMarkup, { inline_keyboard: [] }); // Stop button gone
-  const sends = out.calls.filter((c) => c.kind === "send" && typeof c.text === "string" && c.text !== "🤖 Working…");
-  assert.ok(sends.length >= 2, `expected chunked answer, got ${sends.length}`);
-  for (const s of sends) assert.ok(s.text!.length <= TG_MAX_LEN);
-  assert.equal(sends[0].opts?.parseMode, "HTML");
-  assert.equal(deps.state.getWorking(), undefined);
+test("answer over RICH_CAP → chunkRich rich chunks, marker from 2nd", async () => {
+  const md = "x".repeat(40_000);
+  const { deps, out } = makeMirrorDeps();
+  const m = new Mirror(deps);
+  await m.onAgentStart();
+  await m.onAgentEnd([{ role: "assistant", content: md }]);
+  const rich = out.calls.filter((c) => c.kind === "sendRich");
+  assert.equal(rich.length, 2);
+  const t0 = rich[0]?.text;
+  const t1 = rich[1]?.text;
+  assert.ok(t0 !== undefined && !t0.startsWith("(continued)"));
+  assert.ok(t1 !== undefined && t1.startsWith("(continued)\n"));
+  for (const c of rich) assert.ok((c.text ?? "").length <= RICH_CAP);
 });
 
-test("agent_end aborted: ⏹ interrupted + partial text posted", async () => {
-  const out = new FakeOut();
-  const deps = makeMirrorDeps(out);
-  const mirror = new Mirror(deps);
-  await mirror.onAgentStart();
-  await mirror.onAgentEnd([m("partial answer here", "aborted")]);
-  const edit = out.calls.find((c) => c.kind === "edit");
-  assert.equal(edit?.text, "⏹ interrupted");
-  const answer = out.calls.filter((c) => c.kind === "send" && c.text !== "🤖 Working…");
-  assert.equal(answer.length, 1);
-  assert.ok(answer[0].text!.includes("partial answer here"));
+test("rich 400 → legacy HTML chunks (parse_mode HTML)", async () => {
+  const { deps, out } = makeMirrorDeps();
+  out.sendRichFailsWith = new TgError("sendRichMessage", 400, "rich parse error");
+  const m = new Mirror(deps);
+  await m.onAgentStart();
+  await m.onAgentEnd([{ role: "assistant", content: "hello" }]);
+  const html = out.calls.filter((c) => c.kind === "send" && c.opts?.parseMode === "HTML");
+  assert.equal(html.length, 1);
+  assert.equal(html[0].text, "hello");
+  assert.equal(out.calls.filter((c) => c.kind === "sendRich").length, 0);
 });
 
-test("agent_end error: ⚠️ error note, no answer chunks", async () => {
-  const out = new FakeOut();
-  const deps = makeMirrorDeps(out);
-  const mirror = new Mirror(deps);
-  await mirror.onAgentStart();
-  await mirror.onAgentEnd([m("", "error"), { role: "assistant", content: [], error: { message: "boom <x>" } }]);
-  const edit = out.calls.find((c) => c.kind === "edit");
-  assert.ok(edit?.text?.startsWith("⚠️ error:"));
-  assert.equal(out.calls.filter((c) => c.kind === "send" && c.text !== "🤖 Working…").length, 0);
+test("rich 400 → HTML 400 → plain text (full fallback chain)", async () => {
+  const { deps, out } = makeMirrorDeps();
+  out.sendRichFailsWith = new TgError("sendRichMessage", 400, "rich");
+  out.sendHtmlFailsWith = new TgError("sendMessage", 400, "html");
+  const m = new Mirror(deps);
+  await m.onAgentStart();
+  await m.onAgentEnd([{ role: "assistant", content: "text <broken" }]);
+  const plain = out.calls.filter((c) => c.kind === "send" && c.opts?.parseMode === null);
+  assert.equal(plain.length, 1);
+  assert.equal(plain[0].text, "text <broken");
 });
 
-test("agent_end no reply text: Done (no reply text), no chunks", async () => {
-  const out = new FakeOut();
-  const deps = makeMirrorDeps(out);
-  const mirror = new Mirror(deps);
-  await mirror.onAgentStart();
-  await mirror.onAgentEnd([m("", "stop")]);
-  const edit = out.calls.find((c) => c.kind === "edit");
-  assert.ok(edit?.text?.includes("no reply text"));
-  assert.equal(out.calls.filter((c) => c.kind === "send" && c.text !== "🤖 Working…").length, 0);
+test("non-400 error propagates (no silent fallback)", async () => {
+  const { deps, out } = makeMirrorDeps();
+  out.sendRichFailsWith = new TgError("sendRichMessage", 429, "rate limited");
+  const m = new Mirror(deps);
+  await m.onAgentStart();
+  await assert.rejects(m.onAgentEnd([{ role: "assistant", content: "hi" }]));
 });
 
-test("agent_end clears tool msg ids", async () => {
-  const out = new FakeOut();
-  const deps = makeMirrorDeps(out);
-  const mirror = new Mirror(deps);
-  await mirror.onToolStart("t1", "bash", "x");
-  await mirror.onAgentEnd([m("hi", "stop")]);
-  assert.equal(deps.state.getToolMsg("t1"), undefined);
+test("error end → plain ⚠️ line, no rich answer", async () => {
+  const { deps, out } = makeMirrorDeps();
+  const m = new Mirror(deps);
+  await m.onAgentStart();
+  await m.onAgentEnd([{ role: "assistant", content: "partial", stopReason: "error", errorMessage: "boom" }]);
+  const plain = out.calls.filter((c) => c.kind === "send");
+  assert.equal(plain.length, 1);
+  assert.equal(plain[0].text, "⚠️ error: boom");
+  assert.equal(out.calls.filter((c) => c.kind === "sendRich").length, 0);
 });
 
-test("no chatId: agent_end still clears state, sends nothing", async () => {
-  const out = new FakeOut();
-  const deps = makeMirrorDeps(out, {}, null); // null = no chat yet (helper sentinel)
-  const mirror = new Mirror(deps);
-  deps.state.setWorking(5);
-  await mirror.onAgentEnd([m("hi", "stop")]);
-  assert.equal(out.calls.length, 0);
-  assert.equal(deps.state.getWorking(), undefined);
+test("aborted → '⏹  interrupted' (space after emoji) + rich partial answer", async () => {
+  const { deps, out } = makeMirrorDeps();
+  const m = new Mirror(deps);
+  await m.onAgentStart();
+  await m.onAgentEnd([{ role: "assistant", content: [{ type: "text", text: "partial" }], stopReason: "aborted" }]);
+  const plain = out.calls.filter((c) => c.kind === "send");
+  assert.equal(plain.length, 1);
+  assert.equal(plain[0].text, "⏹  interrupted");
+  const rich = out.calls.filter((c) => c.kind === "sendRich");
+  assert.equal(rich.length, 1);
+  assert.equal(rich[0].text, "partial");
 });
 
-test("agent_end markdown answer: chunks sent as final HTML, never double-escaped", async () => {
-  const out = new FakeOut();
-  const deps = makeMirrorDeps(out);
-  const mirror = new Mirror(deps);
-  await mirror.onAgentStart();
-  const md = "Answer: **42**\n\n```\ncode <x>\n```\n- one";
-  await mirror.onAgentEnd([m(md, "stop")]);
-  const answer = out.calls.filter((c) => c.kind === "send" && c.text !== "🤖 Working…");
-  assert.equal(answer.length, 1);
-  const sent = answer[0].text!;
-  assert.ok(sent.includes("<b>42</b>"), `expected a real <b> tag, got: ${JSON.stringify(sent)}`);
-  assert.ok(sent.includes("<pre>code &lt;x&gt;</pre>"), `expected a real <pre> block, got: ${JSON.stringify(sent)}`);
-  assert.ok(!sent.includes("&lt;b&gt;"), "no double-escaped bold");
-  assert.ok(!sent.includes("&lt;pre&gt;"), "no double-escaped pre");
-  assert.equal(answer[0].opts?.parseMode, "HTML");
+test("aborted with no text → label only", async () => {
+  const { deps, out } = makeMirrorDeps();
+  const m = new Mirror(deps);
+  await m.onAgentStart();
+  await m.onAgentEnd([{ role: "assistant", content: "", stopReason: "aborted" }]);
+  assert.equal(out.calls.filter((c) => c.kind === "send").length, 1);
+  assert.equal(out.calls.filter((c) => c.kind === "sendRich").length, 0);
 });
 
-test("onUiPromptStart: notes the blocking terminal prompt", async () => {
-  const out = new FakeOut();
-  const mirror = new Mirror(makeMirrorDeps(out));
-  await mirror.onUiPromptStart("allow bash?");
-  const t = out.calls[0].text as string;
-  assert.ok(t.includes("permission prompt"));
-  assert.ok(t.includes("allow bash?"));
+test("normal end with no reply text → '✅ Done (no reply text)'", async () => {
+  const { deps, out } = makeMirrorDeps();
+  const m = new Mirror(deps);
+  await m.onAgentStart();
+  await m.onAgentEnd([]);
+  const plain = out.calls.filter((c) => c.kind === "send");
+  assert.equal(plain.length, 1);
+  assert.equal(plain[0].text, "✅ Done (no reply text)");
+  assert.equal(out.calls.filter((c) => c.kind === "sendRich").length, 0);
 });

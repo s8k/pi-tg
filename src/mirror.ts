@@ -1,53 +1,56 @@
+/**
+ * Per-turn agent-event mirroring on top of the rich draft (Bot API 10.2).
+ *
+ * One ephemeral rich draft per agent turn: same draft_id re-sent on every
+ * content update plus a heartbeat (keeps the ~30 s window alive). Content =
+ * latest assistant markdown (long fences folded, tail-viewed at RICH_CAP)
+ * + a tool-status footer. Finalization = sendRichMessage → legacy HTML
+ * chunk → plain text. Mute = fully silent.
+ */
 import type { Out } from "./session-bridge.ts";
 import type { TelegaState } from "./state.ts";
 import type { TelegaConfig } from "./config.ts";
-import { CB } from "./router.ts";
-import { chunkMarkdown, TG_MAX_LEN } from "./markdown.ts";
+import { RICH_CAP, foldLongFences, tailView, chunkRich, chunkMarkdown, chunkText, toPlainText } from "./markdown.ts";
+import { TgError } from "./telegram-client.ts";
 
-/** Structural (pi-free) view of pi messages. */
-export interface MirrorContent {
-  type: string;
-  text?: string;
-}
 export interface MirrorMessage {
-  role: string;
-  content: MirrorContent[];
+  role?: string;
+  content?: unknown;
   stopReason?: string;
-  error?: { message?: string };
+  errorMessage?: string;
 }
 
-export function assistantText(m: MirrorMessage): string {
-  return m.content
-    .filter((c) => c.type === "text" && typeof c.text === "string")
-    .map((c) => c.text as string)
-    .join("");
-}
-
-const PREVIEW_DEFAULT = 80;
-const ARG_KEYS: Record<string, string> = {
-  bash: "command",
-  read: "path",
-  write: "path",
-  edit: "path",
-  grep: "pattern",
-  glob: "pattern",
-  ls: "path",
-  find: "pattern",
-};
-
-/** One-line argument preview for tool status lines. */
-export function toolPreview(toolName: string, args: unknown, maxChars = PREVIEW_DEFAULT): string {
-  let s: string;
-  if (typeof args === "string") s = args;
-  else if (args && typeof args === "object") {
-    const key = ARG_KEYS[toolName];
-    const v = key ? (args as Record<string, unknown>)[key] : undefined;
-    s = v != null && typeof v === "string" ? v : JSON.stringify(args);
-  } else {
-    s = String(args);
-  }
-  s = s.replace(/\s+/g, " ").trim();
+/** Preview text for a tool call (kept inside the draft footer). */
+export function toolPreview(tool: string, args: unknown, maxChars: number): string {
+  const a = args as Record<string, unknown> | undefined;
+  if (tool === "bash" && typeof a?.command === "string") return a.command;
+  if (tool === "read" && typeof a?.path === "string") return a.path;
+  if (tool === "write" && typeof a?.path === "string") return a.path;
+  if (tool === "edit" && typeof a?.path === "string") return a.path;
+  if (typeof a?.file_path === "string") return a.file_path;
+  if (typeof a?.path === "string") return a.path;
+  if (typeof a?.url === "string") return a.url;
+  if (typeof a?.query === "string") return a.query;
+  const s = JSON.stringify(args ?? {});
   return s.length > maxChars ? s.slice(0, maxChars) + "…" : s;
+}
+
+export function assistantText(msg: MirrorMessage): string {
+  const c = msg.content;
+  if (typeof c === "string") return c;
+  if (Array.isArray(c))
+    return c
+      .map((p) => (typeof p === "object" && p !== null && "text" in p ? String((p as { text: unknown }).text) : ""))
+      .join("");
+  return "";
+}
+
+const THINKING = "<tg-thinking>working…</tg-thinking>";
+
+interface ToolLine {
+  text: string;
+  done: boolean;
+  isError: boolean;
 }
 
 export interface MirrorDeps {
@@ -55,148 +58,191 @@ export interface MirrorDeps {
   state: TelegaState;
   cfg: TelegaConfig;
   getChatId(): number | undefined;
-  now(): number; // injectable clock (stream throttling)
+  now(): number;
+  setTimer(fn: () => void, ms: number): unknown;
+  clearTimer(handle: unknown): void;
+  /** Surfaced when a draft update fails (the next update retries; no machinery). */
+  notify?: (msg: string) => void;
 }
 
 export class Mirror {
   private deps: MirrorDeps;
-  private toolLines = new Map<string, string>();
+  private draftSeq = 0;
+  private draftId = 0;
+  private draftActive = false;
+  private answerText = ""; // latest assistant markdown (the draft body)
+  private lastDraftSend = 0;
+  private hbTimer: unknown;
+  private toolLines: ToolLine[] = [];
+  private inflight = new Map<string, number>();
+  private uiPromptLine: string | undefined;
 
   constructor(deps: MirrorDeps) {
     this.deps = deps;
   }
 
-  /** agent_start: post the “working” message with [⏹ Stop]. */
   async onAgentStart(): Promise<void> {
-    const { out, state } = this.deps;
-    if (this.deps.cfg.muted) return; // muted: no new agent output
-    const chatId = this.deps.getChatId();
-    if (chatId === undefined) return;
-    const id = await out.send(chatId, "🤖 Working…", {
-      replyMarkup: { inline_keyboard: [[{ text: "⏹ Stop", callback_data: CB.STOP }]] },
-    });
-    if (id !== undefined) state.setWorking(id);
+    const { cfg } = this.deps;
+    if (cfg.muted) return; // fully silent: no draft at all
+    if (this.deps.getChatId() === undefined) return;
+    this.draftSeq += 1;
+    this.draftId = this.draftSeq;
+    this.answerText = "";
+    this.lastDraftSend = 0;
+    this.toolLines = [];
+    this.inflight.clear();
+    this.uiPromptLine = undefined;
+    this.draftActive = true;
+    await this.sendDraft(true);
+    this.armHeartbeat();
   }
 
-  /** tool_execution_start: post a status line (plain text). */
-  async onToolStart(toolCallId: string, toolName: string, args: unknown): Promise<void> {
-    const { out, state, cfg } = this.deps;
-    if (cfg.muted) return;
+  private armHeartbeat(): void {
+    const { deps } = this;
+    deps.clearTimer(this.hbTimer);
+    this.hbTimer = undefined;
+    if (deps.cfg.muted || !this.draftActive) return;
+    this.hbTimer = deps.setTimer(() => {
+      this.hbTimer = undefined;
+      void this.sendDraft(true);
+      this.armHeartbeat();
+    }, deps.cfg.draftHeartbeatMs);
+  }
+
+  private stopHeartbeat(): void {
+    this.deps.clearTimer(this.hbTimer);
+    this.hbTimer = undefined;
+  }
+
+  private async sendDraft(canStop: boolean): Promise<void> {
+    const { cfg, out } = this.deps;
+    if (cfg.muted || !this.draftActive) return;
     const chatId = this.deps.getChatId();
     if (chatId === undefined) return;
-    const line = `⚙ ${toolName}: ${toolPreview(toolName, args, cfg.toolPreviewChars)} …`;
-    const id = await out.send(chatId, line, { parseMode: null });
-    if (id !== undefined) {
-      state.setToolMsg(toolCallId, id);
-      this.toolLines.set(toolCallId, line);
+    try {
+      await out.sendDraft(chatId, this.draftId, this.draftContent(), canStop);
+      this.lastDraftSend = this.deps.now();
+    } catch (err) {
+      this.deps.notify?.(`draft update failed: ${String(err)}`);
     }
   }
 
-  /** tool_execution_end: mark the status line done. */
-  async onToolEnd(toolCallId: string, isError: boolean): Promise<void> {
-    const { out, state } = this.deps;
-    const chatId = this.deps.getChatId();
-    if (chatId === undefined) return;
-    const id = state.getToolMsg(toolCallId);
-    const line = this.toolLines.get(toolCallId);
-    this.toolLines.delete(toolCallId);
-    if (id === undefined || line === undefined) return;
-    await out.edit(chatId, id, `${line} ${isError ? "✖" : "✔"}`, { parseMode: null });
+  private draftContent(): string {
+    const { cfg } = this.deps;
+    const body = tailView(foldLongFences(this.answerText, cfg.codeFoldLines), RICH_CAP);
+    const footer = this.footerLines();
+    if (footer.length > 0) return body.length > 0 ? `${body}\n\n${footer.join("\n")}` : footer.join("\n");
+    return body.length > 0 ? body : THINKING;
   }
 
-  // --- streaming (assistant messages) ---
-  private streamMsgId: number | undefined;
-  private streamText = "";
-  private lastStreamEdit = 0;
+  private footerLines(): string[] {
+    const lines = this.toolLines.filter((l) => !l.done).map((l) => l.text);
+    for (const l of this.toolLines.filter((l) => l.done).slice(-3)) lines.push(l.text);
+    if (this.uiPromptLine !== undefined) lines.push(this.uiPromptLine);
+    return lines;
+  }
 
-  /** message_start (assistant only). */
+  async onToolStart(toolCallId: string, tool: string, args: unknown): Promise<void> {
+    if (!this.draftActive) return;
+    const line = `⚙ ${tool}: ${toolPreview(tool, args, this.deps.cfg.toolPreviewChars)} …`;
+    this.inflight.set(toolCallId, this.toolLines.length);
+    this.toolLines.push({ text: line, done: false, isError: false });
+    await this.sendDraft(true);
+  }
+
+  async onToolEnd(toolCallId: string, isError: boolean): Promise<void> {
+    if (!this.draftActive) return;
+    const idx = this.inflight.get(toolCallId);
+    this.inflight.delete(toolCallId);
+    if (idx === undefined) return;
+    const l = this.toolLines[idx];
+    l.done = true;
+    l.isError = isError;
+    l.text = l.text.replace(/…$/, "").trimEnd() + (isError ? " ✖" : " ✔"); // single space before the mark
+    await this.sendDraft(true);
+  }
+
   async onAssistantStart(msg: MirrorMessage): Promise<void> {
     if (msg.role !== "assistant") return;
-    if (this.deps.cfg.muted) return;
-    const chatId = this.deps.getChatId();
-    if (chatId === undefined) return;
-    this.streamText = "";
-    this.lastStreamEdit = 0;
-    const id = await this.deps.out.send(chatId, "…", { parseMode: null });
-    this.streamMsgId = id;
+    this.answerText = "";
+    // First update of a new message is not throttled (the throttled-at-t=0
+    // case only applies to the very first message right after the draft spawn).
+    this.lastDraftSend = this.deps.now() - this.deps.cfg.streamEditMs;
   }
 
-  /** message_update (assistant only): throttled plain-text edit. */
   async onAssistantUpdate(msg: MirrorMessage): Promise<void> {
     if (msg.role !== "assistant") return;
-    if (this.streamMsgId === undefined) return;
-    this.streamText = assistantText(msg);
-    if (this.deps.now() - this.lastStreamEdit < this.deps.cfg.streamEditMs) return;
-    let text = this.streamText;
-    if (text.length > TG_MAX_LEN - 1) text = text.slice(0, TG_MAX_LEN - 2) + " …";
-    this.lastStreamEdit = this.deps.now();
-    await this.deps.out.edit(this.deps.getChatId()!, this.streamMsgId, text || "…", { parseMode: null });
+    this.answerText = assistantText(msg);
+    if (this.deps.now() - this.lastDraftSend < this.deps.cfg.streamEditMs) return;
+    await this.sendDraft(true);
   }
 
-  /** message_end (assistant only): drop the stream message. */
   async onAssistantEnd(msg: MirrorMessage): Promise<void> {
     if (msg.role !== "assistant") return;
-    const chatId = this.deps.getChatId();
-    const id = this.streamMsgId;
-    this.streamMsgId = undefined;
-    this.streamText = "";
-    if (chatId !== undefined && id !== undefined) {
-      await this.deps.out.delete(chatId, id).catch(() => {});
-    }
+    if (!this.draftActive) return;
+    await this.sendDraft(true); // unthrottled: show the complete message before the next one/turn
   }
 
-  // --- finalization ---
-
-  /** Send final HTML chunks as-is — chunkMarkdown already returns rendered HTML. */
-  private async sendAnswer(chatId: number, md: string): Promise<void> {
-    for (const chunk of chunkMarkdown(md)) {
-      await this.deps.out.send(chatId, chunk, { parseMode: "HTML" });
-    }
+  async onUiPromptStart(title?: string): Promise<void> {
+    if (!this.draftActive) return;
+    this.uiPromptLine = `⚠️ terminal prompt${title ? `: ${title}` : ""} — answer there`;
+    await this.sendDraft(true);
   }
 
-  /** agent_end: finalize working message; post the last non-empty assistant text. */
   async onAgentEnd(messages: MirrorMessage[]): Promise<void> {
-    const { out, state } = this.deps;
+    this.stopHeartbeat();
+    this.draftActive = false;
     let finalText = "";
     let stopReason: string | undefined;
     let errMsg: string | undefined;
     for (const msg of messages) {
       if (msg.role !== "assistant") continue;
       const t = assistantText(msg);
-      if (t.length > 0) finalText = t;
+      if (t.trim()) finalText = t;
       if (msg.stopReason) stopReason = msg.stopReason;
-      if (msg.error?.message) errMsg = msg.error.message;
+      if (msg.errorMessage) errMsg = msg.errorMessage;
     }
-    const chatId = this.deps.getChatId();
-    if (chatId !== undefined) {
-      const wid = state.getWorking();
-      const muted = this.deps.cfg.muted;
-      // A working message posted *before* the mute is always finalized (a
-      // stuck “Working…” line is worse than one closing line); the answer
-      // itself is suppressed while muted.
-      if (stopReason === "aborted") {
-        if (wid !== undefined) await out.edit(chatId, wid, "⏹ interrupted", { parseMode: null, replyMarkup: { inline_keyboard: [] } });
-        if (!muted && finalText) await this.sendAnswer(chatId, finalText);
-      } else if (stopReason === "error" || errMsg) {
-        if (wid !== undefined) await out.edit(chatId, wid, `⚠️ error: ${errMsg ?? stopReason ?? "unknown"}`, { parseMode: null, replyMarkup: { inline_keyboard: [] } });
-      } else {
-        const label = muted
-          ? finalText ? "✅ Done (muted — answer not sent)" : "✅ Done (muted)"
-          : finalText ? "✅ Done — answer below" : "✅ Done (no reply text)";
-        if (wid !== undefined) await out.edit(chatId, wid, label, { parseMode: null, replyMarkup: { inline_keyboard: [] } });
-        if (!muted && finalText) await this.sendAnswer(chatId, finalText);
-      }
-    }
-    state.setWorking(undefined);
-    state.clearToolMsgs();
-  }
-
-  /** ui_prompt_start: pi is blocking on a terminal permission dialog. */
-  async onUiPromptStart(title?: string): Promise<void> {
-    if (this.deps.cfg.muted) return;
     const chatId = this.deps.getChatId();
     if (chatId === undefined) return;
-    const t = title ? `: ${title}` : "";
-    await this.deps.out.send(chatId, `⚠️ pi is waiting in the terminal (permission prompt${t}). Answer there.`, { parseMode: null });
+    const { out } = this.deps;
+
+    if (stopReason === "error" || errMsg) {
+      await out.send(chatId, `⚠️ error: ${errMsg ?? stopReason ?? "unknown"}`, { parseMode: null });
+      return;
+    }
+    if (stopReason === "aborted") {
+      await out.send(chatId, "⏹  interrupted", { parseMode: null });
+      if (!this.deps.cfg.muted && finalText) await this.sendAnswer(chatId, finalText);
+      return;
+    }
+    if (this.deps.cfg.muted) return; // fully silent
+    if (finalText) await this.sendAnswer(chatId, finalText);
+    else await out.send(chatId, "✅ Done (no reply text)", { parseMode: null });
+  }
+
+  /**
+   * Finalize an answer: fold long fences, chunk at RICH_CAP (block boundaries),
+   * send as rich messages. On a 400 (rich parse failed) the WHOLE answer is
+   * re-sent through the legacy HTML path; on a 400 there, plain text. (The
+   * 400-after-some-chunks-already-sent edge duplicates content — accepted,
+   * same policy as the design doc: per-send fallback for the whole answer.)
+   */
+  private async sendAnswer(chatId: number, md: string): Promise<void> {
+    const { out } = this.deps;
+    const folded = foldLongFences(md, this.deps.cfg.codeFoldLines);
+    const pieces = folded.length <= RICH_CAP ? [folded] : chunkRich(folded);
+    try {
+      for (const p of pieces) await out.sendRich(chatId, p);
+      return;
+    } catch (err) {
+      if (!(err instanceof TgError && err.code === 400)) throw err;
+    }
+    try {
+      for (const chunk of chunkMarkdown(md)) await out.send(chatId, chunk, { parseMode: "HTML" });
+      return;
+    } catch (err) {
+      if (!(err instanceof TgError && err.code === 400)) throw err;
+    }
+    for (const chunk of chunkText(toPlainText(md))) await out.send(chatId, chunk, { parseMode: null });
   }
 }

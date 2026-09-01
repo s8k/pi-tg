@@ -1,67 +1,85 @@
+// Tool status lines live INSIDE the draft footer (sending separate bot
+// messages would kill the draft).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { Mirror, assistantText, toolPreview, type MirrorMessage } from "../src/mirror.ts";
-import { FakeOut } from "./fake-pi.ts";
+import { Mirror, toolPreview } from "../src/mirror.ts";
 import { makeMirrorDeps } from "./mirror-helpers.ts";
 
-test("toolPreview: known args, unknown JSON, whitespace, truncation", () => {
-  assert.equal(toolPreview("bash", { command: "ls -la" }), "ls -la");
-  assert.equal(toolPreview("read", { path: "C:/x/y.ts" }), "C:/x/y.ts");
-  assert.equal(toolPreview("mystery", { a: 1 }), '{"a":1}');
-  assert.equal(toolPreview("bash", "  echo   hi  "), "echo hi");
-  assert.equal(toolPreview("bash", { command: "x".repeat(200) }), "x".repeat(80) + "…");
-  assert.equal(toolPreview("bash", { command: "x".repeat(200) }, 10), "x".repeat(10) + "…");
+const lastDraft = (out: { calls: { kind: string; text?: string }[] }): { text: string } => {
+  const d = out.calls.filter((c) => c.kind === "sendDraft").at(-1) as { text: string } | undefined;
+  assert.ok(d, "a draft update exists");
+  return d;
+};
+
+test("tool start → footer line in the draft; NO separate tool message", async () => {
+  const { deps, out } = makeMirrorDeps();
+  const m = new Mirror(deps);
+  await m.onAgentStart();
+  await m.onToolStart("c1", "bash", { command: "ls -la" });
+  assert.ok(lastDraft(out).text.includes("⚙ bash: ls -la …"));
+  assert.equal(out.calls.filter((c) => c.kind === "send").length, 0);
 });
 
-test("assistantText: joins text parts, ignores non-text", () => {
-  const m: MirrorMessage = {
-    role: "assistant",
-    content: [{ type: "text", text: "Hello " }, { type: "image" }, { type: "text", text: "world" }],
-  };
-  assert.equal(assistantText(m), "Hello world");
+test("tool end ✔ and error end ✖", async () => {
+  const { deps, out } = makeMirrorDeps();
+  const m = new Mirror(deps);
+  await m.onAgentStart();
+  await m.onToolStart("c1", "bash", { command: "long build" });
+  assert.ok(lastDraft(out).text.includes("⚙ bash: long build …"));
+  await m.onToolEnd("c1", true);
+  assert.ok(lastDraft(out).text.includes("⚙ bash: long build ✖"));
+  await m.onToolStart("c2", "read", { path: "src/a.ts" });
+  await m.onToolEnd("c2", false);
+  assert.ok(lastDraft(out).text.includes("⚙ read: src/a.ts ✔"));
 });
 
-test("onAgentStart: posts working message with Stop button + tracks id", async () => {
-  const out = new FakeOut();
-  const deps = makeMirrorDeps(out);
-  const mirror = new Mirror(deps);
-  await mirror.onAgentStart();
-  assert.equal(out.calls.length, 1);
-  assert.equal(out.calls[0].text, "🤖 Working…");
-  const kb = out.calls[0].opts!.replyMarkup as { inline_keyboard: { text: string; callback_data: string }[][] };
-  assert.equal(kb.inline_keyboard[0][0].callback_data, "stop");
-  assert.equal(deps.state.getWorking(), 100);
+test("footer keeps in-flight lines + only the LAST 3 completions", async () => {
+  const { deps, out } = makeMirrorDeps();
+  const m = new Mirror(deps);
+  await m.onAgentStart();
+  const specs: [string, string, unknown][] = [
+    ["c1", "read", { path: "a.ts" }],
+    ["c2", "bash", { command: "b" }],
+    ["c3", "write", { path: "c.ts" }],
+    ["c4", "edit", { path: "d.ts" }],
+    ["c5", "bash", { command: "e" }],
+  ];
+  for (const [id, tool, args] of specs) {
+    await m.onToolStart(id, tool, args);
+    await m.onToolEnd(id, false);
+  }
+  const t = lastDraft(out).text;
+  assert.ok(t.includes("write: c.ts ✔"));
+  assert.ok(t.includes("edit: d.ts ✔"));
+  assert.ok(t.includes("bash: e ✔"));
+  assert.ok(!t.includes("read: a.ts"), "older completion dropped");
+  assert.ok(!t.includes("bash: b ✔"), "older completion dropped");
 });
 
-test("onToolStart/onToolEnd: status line then ✔; unknown toolCall ignored", async () => {
-  const out = new FakeOut();
-  const deps = makeMirrorDeps(out);
-  const mirror = new Mirror(deps);
-  await mirror.onToolStart("tc1", "bash", { command: "npm test" });
-  assert.equal(out.calls[0].text, "⚙ bash: npm test …");
-  assert.equal(deps.state.getToolMsg("tc1"), 100);
-  await mirror.onToolEnd("tc1", false);
-  const edits = out.calls.filter((c) => c.kind === "edit");
-  assert.equal(edits.length, 1);
-  assert.equal(edits[0].text, "⚙ bash: npm test … ✔");
-  await mirror.onToolEnd("tc2", false);
-  assert.equal(out.calls.filter((c) => c.kind === "edit").length, 1);
+test("in-flight tool line survives a later completion of another tool", async () => {
+  const { deps, out } = makeMirrorDeps();
+  const m = new Mirror(deps);
+  await m.onAgentStart();
+  await m.onToolStart("c1", "read", { path: "a.ts" });
+  await m.onToolEnd("c1", false);
+  await m.onToolStart("c2", "bash", { command: "npm test" });
+  const t = lastDraft(out).text;
+  assert.ok(t.includes("read: a.ts ✔"), "recent completion kept");
+  assert.ok(t.includes("⚙ bash: npm test …"), "in-flight line kept");
 });
 
-test("onToolEnd: isError marks ✖", async () => {
-  const out = new FakeOut();
-  const mirror = new Mirror(makeMirrorDeps(out));
-  await mirror.onToolStart("tc1", "read", { path: "/nope" });
-  await mirror.onToolEnd("tc1", true);
-  const edit = out.calls.find((c) => c.kind === "edit");
-  assert.equal(edit?.text, "⚙ read: /nope … ✖");
+test("ui_prompt_start → footer line inside the draft (no separate message)", async () => {
+  const { deps, out } = makeMirrorDeps();
+  const m = new Mirror(deps);
+  await m.onAgentStart();
+  await m.onUiPromptStart("allow bash?");
+  assert.ok(lastDraft(out).text.includes("allow bash?"));
+  assert.equal(out.calls.filter((c) => c.kind === "send").length, 0);
 });
 
-test("no chatId yet → every event is a silent no-op", async () => {
-  const out = new FakeOut();
-  const mirror = new Mirror(makeMirrorDeps(out, {}, null));
-  await mirror.onAgentStart();
-  await mirror.onToolStart("t", "bash", "x");
-  await mirror.onToolEnd("t", false);
-  assert.equal(out.calls.length, 0);
+test("toolPreview: bash command / file path / truncated JSON", () => {
+  assert.equal(toolPreview("bash", { command: "ls -la" }, 30), "ls -la");
+  assert.equal(toolPreview("read", { path: "x/y.ts" }, 30), "x/y.ts");
+  assert.equal(toolPreview("weird", { a: "b" }, 30), '{"a":"b"}');
+  assert.ok(toolPreview("weird", { a: "x".repeat(50) }, 30).length <= 32);
 });

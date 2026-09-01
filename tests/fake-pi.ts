@@ -90,9 +90,11 @@ export class FakeOut {
   nextMessageId = 100;
   sendFailsWith: Error | undefined;
   sendRichFailsWith: Error | undefined;
+  sendHtmlFailsWith: Error | undefined; // only when opts.parseMode === "HTML"
 
   send = async (chatId: number, text: string, opts?: FakeOutCall["opts"]): Promise<number | undefined> => {
     if (this.sendFailsWith) throw this.sendFailsWith;
+    if (opts?.parseMode === "HTML" && this.sendHtmlFailsWith) throw this.sendHtmlFailsWith;
     this.calls.push({ kind: "send", chatId, text, opts });
     return this.nextMessageId++;
   };
