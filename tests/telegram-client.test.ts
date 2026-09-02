@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { TelegramClient, TgError, TgNetworkError, pollLoop } from "../src/telegram-client.ts";
+import { BOT_COMMANDS } from "../src/bot-commands.ts";
 import { makeFakeFetch } from "./fake-fetch.ts";
 
 test("call: ok:true → result, correct URL + JSON body", async () => {
@@ -262,4 +263,15 @@ test("sendRichMessage: 400 surfaces as TgError (fallback trigger)", async () => 
   const ff = makeFakeFetch(() => ({ status: 400, body: { ok: false, error_code: 400, description: "Bad Request: rich message parse error" } }));
   const c = new TelegramClient("T", { fetchImpl: ff.fetchImpl });
   await assert.rejects(c.sendRichMessage(7, { markdown: "<broken" }), (e: unknown) => e instanceof TgError && e.code === 400);
+});
+
+test("setMyCommands: posts the full menu (global scope, no language_code)", async () => {
+  const ff = makeFakeFetch(() => ({ status: 200, body: { ok: true, result: true } }));
+  const c = new TelegramClient("T", { fetchImpl: ff.fetchImpl });
+  assert.equal(await c.setMyCommands(), true);
+  assert.equal(ff.calls[0].url, "https://api.telegram.org/botT/setMyCommands");
+  const body = JSON.parse(String(ff.calls[0].init?.body ?? "{}"));
+  assert.deepEqual(body, { commands: BOT_COMMANDS });
+  assert.equal("scope" in body, false);
+  assert.equal("language_code" in body, false);
 });

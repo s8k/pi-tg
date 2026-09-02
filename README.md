@@ -62,6 +62,10 @@ phone (Telegram) ⇄ Bot API long polling ⇄ pi-telega (in-process) ⇄ pi TUI 
 | `/kill` | confirm → graceful TUI shutdown |
 | `/help` | command list |
 
+The Telegram `/` command menu shows these commands — set via `setMyCommands`
+on every poller start (self-healing; single source of truth in
+`src/bot-commands.ts`).
+
 ## Terminal commands
 
 | Command | Action |

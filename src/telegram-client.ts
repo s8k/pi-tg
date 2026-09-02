@@ -1,4 +1,6 @@
 /** Structural fetch — the real global `fetch` satisfies it; tests inject a fake. */
+import { BOT_COMMANDS } from "./bot-commands.ts";
+
 export type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
 
 export class TgError extends Error {
@@ -198,6 +200,11 @@ export class TelegramClient {
 
   getMe(): Promise<TgBotMe> {
     return this.call("getMe") as Promise<TgBotMe>;
+  }
+
+  /** Set the global bot menu (idempotent; the caller treats this best-effort). */
+  setMyCommands(): Promise<unknown> {
+    return this.call("setMyCommands", { commands: BOT_COMMANDS });
   }
 
   sendMessage(

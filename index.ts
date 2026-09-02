@@ -102,6 +102,9 @@ export default function piTelega(pi: ExtensionAPI): void {
       return;
     }
     deps.botUsername = username;
+    // Set the bot menu (self-healing: runs on every poller start). Best-effort:
+    // a failure logs a TUI warning and must never block or stop polling.
+    void client.setMyCommands().catch((err) => ui(`pi-telega: setMyCommands failed: ${String(err)}`, "warning"));
     const mirror = new Mirror({
       out: outAdapter,
       state,
