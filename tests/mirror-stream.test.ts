@@ -2,8 +2,15 @@
 // heartbeat via the injected fake timer).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { Mirror } from "../src/mirror.ts";
+import { Mirror, THINKING_WORDS, thinkingPlaceholder } from "../src/mirror.ts";
 import { makeMirrorDeps } from "./mirror-helpers.ts";
+
+/** Assert the draft text is the thinking label with a word from the list. */
+function assertThinkingLabel(text: string): void {
+  const m = /^<tg-thinking>(\w+)…<\/tg-thinking>$/.exec(text);
+  assert.ok(m, `thinking label shape: ${JSON.stringify(text)}`);
+  assert.ok(THINKING_WORDS.includes(m[1]), `word from list: ${m[1]}`);
+}
 
 test("agent_start creates a draft (draft_id 1, can_stop) with the thinking label", async () => {
   const { deps, out } = makeMirrorDeps();
@@ -13,7 +20,7 @@ test("agent_start creates a draft (draft_id 1, can_stop) with the thinking label
   assert.equal(drafts.length, 1);
   assert.equal(drafts[0].draftId, 1);
   assert.equal(drafts[0].canStop, true);
-  assert.equal(drafts[0].text, "<tg-thinking>working…</tg-thinking>");
+  assertThinkingLabel(drafts[0].text!);
   assert.equal(out.calls.filter((c) => c.kind === "send").length, 0, "no legacy Working… message");
 });
 
@@ -69,7 +76,25 @@ test("heartbeat re-sends the same draft_id every draftHeartbeatMs", async () => 
   const drafts = out.calls.filter((c) => c.kind === "sendDraft");
   assert.equal(drafts.length, 1);
   assert.equal(drafts[0].draftId, 1);
-  assert.equal(drafts[0].text, "<tg-thinking>working…</tg-thinking>");
+  assertThinkingLabel(drafts[0].text!);
+});
+
+test("thinkingPlaceholder: random word from the list, single-char … ellipsis", () => {
+  const orig = Math.random;
+  try {
+    Math.random = () => 0; // first word
+    assert.equal(thinkingPlaceholder(), `<tg-thinking>${THINKING_WORDS[0]}…</tg-thinking>`);
+    Math.random = () => 0.999999999; // last word
+    assert.equal(
+      thinkingPlaceholder(),
+      `<tg-thinking>${THINKING_WORDS[THINKING_WORDS.length - 1]}…</tg-thinking>`,
+    );
+  } finally {
+    Math.random = orig;
+  }
+  assert.ok(THINKING_WORDS.length >= 25, `list is rich (${THINKING_WORDS.length} words)`);
+  assert.ok(!THINKING_WORDS.includes("working"), "old static label is gone");
+  for (const w of THINKING_WORDS) assert.ok(/^[A-Z][a-z]+$/.test(w), `word shape: ${w}`);
 });
 
 test("heartbeat stops at agent_end; a new turn gets a new draft_id", async () => {

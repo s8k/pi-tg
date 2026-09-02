@@ -56,7 +56,42 @@ export function assistantText(msg: MirrorMessage): string {
   return "";
 }
 
-const THINKING = "<tg-thinking>working…</tg-thinking>";
+/** Random verbs for the empty-draft label — a new one per draft content pass, so
+ *  each turn (and heartbeat) shows a different word. */
+export const THINKING_WORDS = [
+  "Pondering",
+  "Deliberating",
+  "Contemplating",
+  "Ruminating",
+  "Unraveling",
+  "Discerning",
+  "Envisioning",
+  "Navigating",
+  "Exploring",
+  "Distilling",
+  "Synthesizing",
+  "Weaving",
+  "Sculpting",
+  "Harmonizing",
+  "Connecting",
+  "Awakening",
+  "Unfolding",
+  "Manifesting",
+  "Bridging",
+  "Illuminating",
+  "Aligning",
+  "Gathering",
+  "Tracing",
+  "Adapting",
+  "Focusing",
+  "Absorbing",
+  "Evolving",
+  "Translating",
+  "Shaping",
+];
+
+export const thinkingPlaceholder = (): string =>
+  `<tg-thinking>${THINKING_WORDS[Math.floor(Math.random() * THINKING_WORDS.length)]}…</tg-thinking>`;
 
 /** A 400 means this content is unparseable — quiet long cooldown; the same content cannot heal. */
 const DRAFT_400_COOLDOWN_MS = 60_000;
@@ -212,7 +247,7 @@ export class Mirror {
     const body = tailView(foldLongFences(this.answerText, cfg.codeFoldLines), RICH_CAP);
     const footer = this.footerLines();
     if (footer.length > 0) return body.length > 0 ? `${body}\n\n${footer.join("\n")}` : footer.join("\n");
-    return body.length > 0 ? body : THINKING;
+    return body.length > 0 ? body : thinkingPlaceholder();
   }
 
   private footerLines(): string[] {
