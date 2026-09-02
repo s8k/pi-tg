@@ -93,6 +93,9 @@ export const THINKING_WORDS = [
 export const thinkingPlaceholder = (): string =>
   `<tg-thinking>${THINKING_WORDS[Math.floor(Math.random() * THINKING_WORDS.length)]}…</tg-thinking>`;
 
+/** The thinking word changes at most once per this many ms (no label flicker). */
+export const THINKING_WORD_MIN_INTERVAL_MS = 5000;
+
 /** A 400 means this content is unparseable — quiet long cooldown; the same content cannot heal. */
 const DRAFT_400_COOLDOWN_MS = 60_000;
 /** While a draft keeps failing, re-notify at most this often (dead channel ≠ silent one). */
@@ -131,6 +134,8 @@ export class Mirror {
   private draftFailStreak = 0;
   private draftLastFailNotifyAt = 0;
   private hbTimer: unknown;
+  private thinkingLabel = "";
+  private thinkingLabelAt = 0;
   private toolLines: ToolLine[] = [];
   private inflight = new Map<string, number>();
   private uiPromptLine: string | undefined;
@@ -247,7 +252,18 @@ export class Mirror {
     const body = tailView(foldLongFences(this.answerText, cfg.codeFoldLines), RICH_CAP);
     const footer = this.footerLines();
     if (footer.length > 0) return body.length > 0 ? `${body}\n\n${footer.join("\n")}` : footer.join("\n");
-    return body.length > 0 ? body : thinkingPlaceholder();
+    return body.length > 0 ? body : this.thinkingLabelNow();
+  }
+
+  /** Current thinking label — re-rolls the random word at most every
+   *  THINKING_WORD_MIN_INTERVAL_MS (per mirror instance, across turns). */
+  private thinkingLabelNow(): string {
+    const now = this.deps.now();
+    if (this.thinkingLabel === "" || now - this.thinkingLabelAt >= THINKING_WORD_MIN_INTERVAL_MS) {
+      this.thinkingLabel = thinkingPlaceholder();
+      this.thinkingLabelAt = now;
+    }
+    return this.thinkingLabel;
   }
 
   private footerLines(): string[] {

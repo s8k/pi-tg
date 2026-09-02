@@ -79,6 +79,60 @@ test("heartbeat re-sends the same draft_id every draftHeartbeatMs", async () => 
   assertThinkingLabel(drafts[0].text!);
 });
 
+/** Extract the word from a <tg-thinking>WORD…</tg-thinking> label. */
+function wordOf(label: string): string {
+  return /^<tg-thinking>(\w+)…<\/tg-thinking>$/.exec(label)?.[1] ?? label;
+}
+
+test("thinking label: word re-rolls at most every 5s (heartbeat within the window keeps it)", async () => {
+  const { deps, out, advance, fireTimer } = makeMirrorDeps();
+  const m = new Mirror(deps);
+  const orig = Math.random;
+  let pick = 0;
+  try {
+    // pick #1 → index 0 ("Pondering"), pick #2 → index 1 ("Deliberating")
+    Math.random = () => (pick++ === 0 ? 0 : 0.04);
+    await m.onAgentStart(); // t=0: word #1
+    const drafts = () => out.calls.filter((c) => c.kind === "sendDraft");
+    const w1 = wordOf(drafts()[0].text!);
+    assert.equal(w1, THINKING_WORDS[0]);
+    advance(3000);
+    fireTimer(); // heartbeat at t=3000, still empty → same word (within 5s)
+    await new Promise((r) => setTimeout(r, 0)); // let the in-flight draft settle
+    const w2 = wordOf(drafts()[1].text!);
+    assert.equal(w2, w1, "no re-roll within the 5s window");
+    assert.equal(pick, 1, "no new word picked within the window");
+    advance(2001);
+    fireTimer(); // t=5001, past the window → a new word
+    await new Promise((r) => setTimeout(r, 0));
+    const w3 = wordOf(drafts()[2].text!);
+    assert.equal(w3, THINKING_WORDS[1], "re-rolled after the 5s window");
+  } finally {
+    Math.random = orig;
+  }
+});
+
+test("thinking label: a new turn started within 5s reuses the current word", async () => {
+  const { deps, out, advance } = makeMirrorDeps();
+  const m = new Mirror(deps);
+  const orig = Math.random;
+  let pick = 0;
+  try {
+    Math.random = () => (pick++ === 0 ? 0 : 0.04);
+    await m.onAgentStart(); // t=0 — word #1 picked
+    advance(1000);
+    await m.onAgentEnd([{ role: "assistant", content: "done" }]);
+    advance(1000); // t=2000 — only 2s after the last word
+    await m.onAgentStart(); // new draft message, same mirror instance
+    const drafts = out.calls.filter((c) => c.kind === "sendDraft");
+    const last = drafts[drafts.length - 1].text!;
+    assert.equal(wordOf(last), THINKING_WORDS[0], "no re-roll within 5s across turns");
+    assert.equal(pick, 1, "no new word picked within the window");
+  } finally {
+    Math.random = orig;
+  }
+});
+
 test("thinkingPlaceholder: random word from the list, single-char … ellipsis", () => {
   const orig = Math.random;
   try {
