@@ -186,6 +186,18 @@ export class SessionBridge {
     ].join("\n");
   }
 
+  /** Stamp a message once the (aborted) turn has actually ended — best effort: a
+   *  failed wait (context gone) or a deleted message is silently ignored. */
+  private async stampAfterIdle(chatId: number, messageId: number, text: string): Promise<void> {
+    const { pi, out } = this.deps;
+    try {
+      await pi.waitForIdle();
+    } catch {
+      return;
+    }
+    await out.edit(chatId, messageId, text).catch(() => { /* message gone */ });
+  }
+
   private async statusText(): Promise<string> {
     const { pi, cfg } = this.deps;
     const model = pi.currentModel();
@@ -239,13 +251,15 @@ export class SessionBridge {
       case "status":
         await out.send(action.chatId, await this.statusText());
         return;
-      case "stop":
+      case "stop": {
         if (pi.isIdle()) await out.send(action.chatId, "Nothing to stop — session is idle.");
         else {
           pi.abort();
-          await out.send(action.chatId, "⏹ Stopping…");
+          const stopMsg = await out.send(action.chatId, "⏹ Stopping…");
+          if (stopMsg !== undefined) void this.stampAfterIdle(action.chatId, stopMsg, "⏹ Stopping… ✔️");
         }
         return;
+      }
       case "mute":
         cfg.muted = true;
         await this.deps.persist();
@@ -282,11 +296,11 @@ export class SessionBridge {
         const reloadingMsg = await out.send(action.chatId, "🔄 Reloading extensions…");
         pi.reload((ok, detail) => {
           if (ok) {
-            // Confirmed: stamp the original message with ✅ (best effort — it may
+            // Confirmed: stamp the original message with ✔️ (best effort — it may
             // have been deleted meanwhile; a failed edit must not become an
             // unhandled rejection)
             if (reloadingMsg !== undefined) {
-              void out.edit(action.chatId, reloadingMsg, "🔄 Reloading extensions… ✅").catch(() => { /* gone */ });
+              void out.edit(action.chatId, reloadingMsg, "🔄 Reloading extensions… ✔️").catch(() => { /* gone */ });
             }
             return;
           }

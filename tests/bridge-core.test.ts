@@ -36,6 +36,32 @@ test("stop: idle → note only; busy → abort + note", async () => {
   assert.ok(lastSend(out2).includes("idle"));
 });
 
+test("stop: busy → '⏹ Stopping…' gets stamped '✔️' once the agent is idle again", async () => {
+  const pi = new FakePi({ busy: true });
+  const out = new FakeOut();
+  const bridge = new SessionBridge(makeDeps(pi.build(), out));
+  await bridge.dispatch({ kind: "stop", chatId: 7 });
+  assert.equal(pi.abortCalls, 1);
+  const stopSend = out.calls.find((c) => c.kind === "send" && c.text === "⏹ Stopping…");
+  assert.ok(stopSend, "stop message sent");
+  await new Promise((r) => setTimeout(r, 10)); // the stamp is fire-and-forget
+  const edit = out.calls.find((c) => c.kind === "edit");
+  assert.ok(edit, "the 'Stopping…' message is edited once idle");
+  assert.equal(edit.messageId, stopSend.messageId);
+  assert.equal(edit.text, "⏹ Stopping… ✔️");
+});
+
+test("stop: waitForIdle rejects (context gone) → no stamp, no crash", async () => {
+  const pi = new FakePi({ busy: true });
+  const adapter = pi.build();
+  adapter.waitForIdle = async () => { throw new Error("no active pi context"); };
+  const out = new FakeOut();
+  const bridge = new SessionBridge(makeDeps(adapter, out));
+  await bridge.dispatch({ kind: "stop", chatId: 7 });
+  await new Promise((r) => setTimeout(r, 10));
+  assert.ok(!out.calls.some((c) => c.kind === "edit"), "no stamp when the wait fails");
+});
+
 test("status: card format 🆔/📁/🤖/📖/📨, plain session name, rounded context percent", async () => {
   const pi = new FakePi({
     cwd: "/proj",

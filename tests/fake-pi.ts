@@ -42,7 +42,11 @@ export class FakePi {
     const impl: TelegaPi = {
       cwd: self.opts.cwd ?? "/proj",
       isIdle: () => !self.opts.busy,
-      abort: () => self.abortCalls++,
+      // a real abort ends the current turn → the agent goes idle again
+      abort: () => {
+        self.abortCalls++;
+        self.opts.busy = false;
+      },
       sendPrompt: (text, deliverAs) => self.sentPrompts.push({ text, deliverAs }),
       newSession: () => self.newSessionCalls++,
       switchSession: (path) => self.switchSessions.push(path),

@@ -53,7 +53,7 @@ test("onSessionReplaced: reload pending → card posted, NO clear question (sess
   assert.ok(texts[0].startsWith("📌"));
 });
 
-test("reload onDone(true) → stamps the 'Reloading…' message with ✅ (best effort)", async () => {
+test("reload onDone(true) → stamps the 'Reloading…' message with ✔️ (best effort)", async () => {
   const pi = new FakePi();
   const out = new FakeOut();
   const bridge = new SessionBridge(makeDeps(pi.build(), out));
@@ -64,7 +64,7 @@ test("reload onDone(true) → stamps the 'Reloading…' message with ✅ (best e
   const edit = out.calls.find((c) => c.kind === "edit");
   assert.ok(edit, "the 'Reloading…' message is edited on success");
   assert.equal(edit.messageId, reloadingId);
-  assert.equal(edit.text, "🔄 Reloading extensions… ✅");
+  assert.equal(edit.text, "🔄 Reloading extensions… ✔️");
 
   // the message may be gone (e.g. /clear while reloading) — the edit must not throw
   const pi2 = new FakePi();

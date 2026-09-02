@@ -31,8 +31,11 @@ extension runtime is alive.
 3. pi replaces the runtime; the **new instance** (existing `session_start` wiring in
    `index.ts`, unchanged) sees the persisted `pendingAction`, restarts the poller,
    and posts the **session card** via `onSessionReplaced`. Card arrival = success.
-   The old instance stamps its own "🔄 Reloading extensions…" message with ✅
+   The old instance stamps its own "🔄 Reloading extensions…" message with ✔️
    (best-effort `editMessageText`; silently ignored if the message was deleted).
+
+   (Same pattern later applied to `/stop`: "⏹ Stopping…" is stamped with ✔️ once
+   `pi.waitForIdle()` confirms the aborted turn has ended.)
 4. Details:
    - `onSessionReplaced` skips the "🧹 Clear chat history?" question when
      `pendingAction.type === "reload"` (session unchanged → nothing to clear).
