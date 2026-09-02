@@ -186,16 +186,21 @@ export class SessionBridge {
     ].join("\n");
   }
 
-  /** Stamp a message once the (aborted) turn has actually ended — best effort: a
-   *  failed wait (context gone) or a deleted message is silently ignored. */
+  /** Best-effort in-place stamp: a deleted/uneditable message is silently
+   *  ignored; a failed edit must not become an unhandled rejection. */
+  private stamp(chatId: number, messageId: number, text: string): void {
+    void this.deps.out.edit(chatId, messageId, text).catch(() => { /* message gone */ });
+  }
+
+  /** Stamp a message once the (aborted) turn has actually ended; a failed wait
+   *  (context gone, e.g. a concurrent reload) is silently ignored. */
   private async stampAfterIdle(chatId: number, messageId: number, text: string): Promise<void> {
-    const { pi, out } = this.deps;
     try {
-      await pi.waitForIdle();
+      await this.deps.pi.waitForIdle();
     } catch {
       return;
     }
-    await out.edit(chatId, messageId, text).catch(() => { /* message gone */ });
+    this.stamp(chatId, messageId, text);
   }
 
   private async statusText(): Promise<string> {
@@ -256,7 +261,7 @@ export class SessionBridge {
         else {
           pi.abort();
           const stopMsg = await out.send(action.chatId, "⏹ Stopping…");
-          if (stopMsg !== undefined) void this.stampAfterIdle(action.chatId, stopMsg, "⏹ Stopping… ✔️");
+          if (stopMsg !== undefined) void this.stampAfterIdle(action.chatId, stopMsg, "⏹ Stopping… ✔️"); // waits for the aborted turn to end
         }
         return;
       }
@@ -296,12 +301,8 @@ export class SessionBridge {
         const reloadingMsg = await out.send(action.chatId, "🔄 Reloading extensions…");
         pi.reload((ok, detail) => {
           if (ok) {
-            // Confirmed: stamp the original message with ✔️ (best effort — it may
-            // have been deleted meanwhile; a failed edit must not become an
-            // unhandled rejection)
-            if (reloadingMsg !== undefined) {
-              void out.edit(action.chatId, reloadingMsg, "🔄 Reloading extensions… ✔️").catch(() => { /* gone */ });
-            }
+            // Confirmed: stamp the original message with ✔️ (best effort)
+            if (reloadingMsg !== undefined) this.stamp(action.chatId, reloadingMsg, "🔄 Reloading extensions… ✔️");
             return;
           }
           // Failure: the old instance is still alive — a failed send must not
