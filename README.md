@@ -57,7 +57,7 @@ phone (Telegram) ⇄ Bot API long polling ⇄ pi-telega (in-process) ⇄ pi TUI 
 | `/mute` | stop agent output (draft, tools, answers); commands still work |
 | `/unmute` | resume agent output |
 | `/compact` | compact context (result reported when done) |
-| `/reload` | hot-reload extensions, skills, prompts, themes, context files (idle only; card = success) |
+| `/reload` | hot-reload extensions, skills, prompts, themes, context files (idle only; ✅ stamp + card = success) |
 | `/name <text>` | rename the session |
 | `/kill` | confirm → graceful TUI shutdown |
 | `/help` | command list |

@@ -53,14 +53,38 @@ test("onSessionReplaced: reload pending → card posted, NO clear question (sess
   assert.ok(texts[0].startsWith("📌"));
 });
 
-test("reload onDone(false, detail) → ⚠️ message; onDone(true) → silence", async () => {
+test("reload onDone(true) → stamps the 'Reloading…' message with ✅ (best effort)", async () => {
   const pi = new FakePi();
   const out = new FakeOut();
   const bridge = new SessionBridge(makeDeps(pi.build(), out));
   await bridge.dispatch(RELOAD_ACTION);
-  const afterFire = out.calls.length;
-  pi.reloadDone!(true); // success: the replacement instance posts the card, old stays silent
-  assert.equal(out.calls.length, afterFire);
+  const reloadingId = out.calls.find((c) => c.text?.includes("Reloading extensions"))!.messageId;
+  pi.reloadDone!(true);
+  await new Promise((r) => setTimeout(r, 10)); // the stamp is fire-and-forget
+  const edit = out.calls.find((c) => c.kind === "edit");
+  assert.ok(edit, "the 'Reloading…' message is edited on success");
+  assert.equal(edit.messageId, reloadingId);
+  assert.equal(edit.text, "🔄 Reloading extensions… ✅");
+
+  // the message may be gone (e.g. /clear while reloading) — the edit must not throw
+  const pi2 = new FakePi();
+  const out2 = new FakeOut();
+  out2.edit = async () => { throw new Error("message to edit not found"); };
+  const b2 = new SessionBridge(makeDeps(pi2.build(), out2));
+  await b2.dispatch(RELOAD_ACTION);
+  pi2.reloadDone!(true);
+  await new Promise((r) => setTimeout(r, 10));
+});
+
+test("reload onDone(false, detail) → ⚠️ message; onDone(true) → no extra send", async () => {
+  const pi = new FakePi();
+  const out = new FakeOut();
+  const bridge = new SessionBridge(makeDeps(pi.build(), out));
+  await bridge.dispatch(RELOAD_ACTION);
+  pi.reloadDone!(true);
+  await new Promise((r) => setTimeout(r, 10));
+  const sendsAfterFire = out.calls.filter((c) => c.kind === "send").length;
+  assert.equal(sendsAfterFire, 1); // only the 'Reloading…' one — the card comes from the replacement
   pi.reloadDone!(false, "extension load failed: syntax error");
   assert.ok(lastSend(out).includes("Reload failed"));
   assert.ok(lastSend(out).includes("extension load failed: syntax error"));

@@ -102,8 +102,9 @@ export class FakeOut {
   send = async (chatId: number, text: string, opts?: FakeOutCall["opts"]): Promise<number | undefined> => {
     if (this.sendFailsWith) throw this.sendFailsWith;
     if (opts?.parseMode === "HTML" && this.sendHtmlFailsWith) throw this.sendHtmlFailsWith;
-    this.calls.push({ kind: "send", chatId, text, opts });
-    return this.nextMessageId++;
+    const id = this.nextMessageId++;
+    this.calls.push({ kind: "send", chatId, text, opts, messageId: id });
+    return id;
   };
   edit = async (chatId: number, messageId: number, text: string, opts?: FakeOutCall["opts"]): Promise<boolean> => {
     this.calls.push({ kind: "edit", chatId, messageId, text, opts });

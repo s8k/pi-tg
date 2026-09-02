@@ -272,9 +272,17 @@ export class SessionBridge {
         }
         cfg.pendingAction = { type: "reload", chatId: action.chatId };
         await this.deps.persist(); // the replacement instance reads it on session_start
-        await out.send(action.chatId, "🔄 Reloading extensions…");
+        const reloadingMsg = await out.send(action.chatId, "🔄 Reloading extensions…");
         pi.reload((ok, detail) => {
-          if (ok) return; // success: the replacement instance posts the card
+          if (ok) {
+            // Confirmed: stamp the original message with ✅ (best effort — it may
+            // have been deleted meanwhile; a failed edit must not become an
+            // unhandled rejection)
+            if (reloadingMsg !== undefined) {
+              void out.edit(action.chatId, reloadingMsg, "🔄 Reloading extensions… ✅").catch(() => { /* gone */ });
+            }
+            return;
+          }
           // Failure: the old instance is still alive — a failed send must not
           // become an unhandled rejection
           void out.send(
