@@ -26,6 +26,7 @@ test("round-trip: every dispatchable action", () => {
     { kind: "mute", chatId: 7 },
     { kind: "unmute", chatId: 7 },
     { kind: "clear", chatId: 7, doIt: true },
+    { kind: "reload", chatId: 7 },
     { kind: "prompt", chatId: 7, text: "hello\nworld \"quoted\"" },
   ];
   for (const a of actions) {

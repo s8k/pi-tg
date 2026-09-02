@@ -30,6 +30,7 @@ export type TgAction =
   | { kind: "mute"; chatId: number }
   | { kind: "unmute"; chatId: number }
   | { kind: "compact"; chatId: number }
+  | { kind: "reload"; chatId: number }
   | { kind: "nameSet"; chatId: number; name: string }
   | { kind: "killAsk"; chatId: number }
   | { kind: "kill"; chatId: number; yes: boolean }
@@ -97,6 +98,7 @@ export function route(update: TgUpdate, ownerId: number | undefined): TgAction {
       case "mute": return { kind: "mute", chatId };
       case "unmute": return { kind: "unmute", chatId };
       case "compact": return { kind: "compact", chatId };
+      case "reload": return { kind: "reload", chatId };
       case "name": return { kind: "nameSet", chatId, name: rest };
       case "kill": return { kind: "killAsk", chatId };
       default: return { kind: "unknown", chatId, text };

@@ -135,6 +135,33 @@ test("makeTelegaPi: compact callbacks map to onDone(ok, detail)", () => {
   assert.deepEqual(results[1], [false, "boom"]);
 });
 
+test("makeTelegaPi: reload → ctx.reload(), forwards ok/error to onDone (fire-and-forget)", async () => {
+  let reloadCalls = 0;
+  let rejectWith: Error | undefined;
+  const ctx = makeFakeCtx({
+    reload: async () => {
+      reloadCalls++;
+      if (rejectWith) throw rejectWith;
+    },
+  });
+  const t = makeTelegaPi({ pi: {} as PiLike, getCmdCtx: () => ctx, getSessionCtx: () => undefined, listSessions: async () => [] });
+  const results: [boolean, string?][] = [];
+  t.reload((ok, detail) => results.push([ok, detail]));
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(reloadCalls, 1);
+  assert.deepEqual(results, [[true, undefined]]);
+  rejectWith = new Error("boom");
+  t.reload((ok, detail) => results.push([ok, detail]));
+  await new Promise((r) => setTimeout(r, 10));
+  assert.deepEqual(results[1], [false, "boom"]);
+});
+
+test("makeTelegaPi: reload without a live command-capable ctx → throws", () => {
+  // sessionCtx is alive but lacks the command-only reload() → loud failure
+  const t = makeTelegaPi({ pi: {} as PiLike, getCmdCtx: () => undefined, getSessionCtx: () => makeFakeCtx(), listSessions: async () => [] });
+  assert.throws(() => t.reload(() => {}));
+});
+
 test("makeTelegaPi: no ctx at all → safe defaults, no throw", () => {
   const t = makeTelegaPi({ pi: {} as PiLike, getCmdCtx: () => undefined, getSessionCtx: () => undefined, listSessions: async () => [] });
   assert.equal(t.cwd, "");

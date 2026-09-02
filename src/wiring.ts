@@ -35,6 +35,8 @@ export interface CtxLike {
   waitForIdle?(): Promise<void>;
   newSession?(): Promise<{ cancelled: boolean }>;
   switchSession?(sessionPath: string): Promise<{ cancelled: boolean }>;
+  /** Runs pi's /reload flow; on resolve the old runtime is already replaced. */
+  reload?(): Promise<void>;
 }
 
 export interface ClientLike {
@@ -146,6 +148,16 @@ export function makeTelegaPi(deps: TelegaPiDeps): TelegaPi {
         },
         onError: (e) => onDone(false, e.message),
       });
+    },
+    reload(onDone) {
+      const c = requireCtx();
+      if (!c.reload) throw new Error("no active pi context");
+      // Terminal: after pi replaces the runtime, this closure still runs in the
+      // pre-reload version — report the outcome, never persist from here.
+      void c.reload().then(
+        () => onDone(true),
+        (e) => onDone(false, e instanceof Error ? e.message : String(e))
+      );
     },
     getSessionName: () => deps.pi.getSessionName(),
     setSessionName: (name) => deps.pi.setSessionName(name),

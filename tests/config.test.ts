@@ -89,6 +89,9 @@ test("sanitize: clamps and drops invalid fields", () => {
   assert.equal(cfg.pendingAction, undefined);
   const ok = sanitize({ pendingAction: { type: "activate", chatId: 7, path: "C:/x/s.jsonl" } });
   assert.deepEqual(ok.pendingAction, { type: "activate", chatId: 7, path: "C:/x/s.jsonl" });
+  const rl = sanitize({ pendingAction: { type: "reload", chatId: 7 } });
+  assert.deepEqual(rl.pendingAction, { type: "reload", chatId: 7 });
+  assert.equal(sanitize({ pendingAction: { type: "bogus", chatId: 7 } }).pendingAction, undefined);
 });
 
 test("sanitize: draftHeartbeatMs default 17000, valid 5000..25000 kept, out-of-range → default", () => {

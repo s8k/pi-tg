@@ -45,6 +45,8 @@ test("paired: non-owner rejected; owner commands map", () => {
   assert.deepEqual(route(msgUpdate(12, owner, "/kill"), owner), { kind: "killAsk", chatId: 7 });
   assert.deepEqual(route(msgUpdate(15, owner, "/mute"), owner), { kind: "mute", chatId: 7 });
   assert.deepEqual(route(msgUpdate(16, owner, "/unmute"), owner), { kind: "unmute", chatId: 7 });
+  assert.deepEqual(route(msgUpdate(17, owner, "/reload"), owner), { kind: "reload", chatId: 7 });
+  assert.deepEqual(route(msgUpdate(18, owner, "/reload@MyBot"), owner), { kind: "reload", chatId: 7 });
   assert.deepEqual(route(msgUpdate(13, owner, "/bogus"), owner), { kind: "unknown", chatId: 7, text: "/bogus" });
   assert.deepEqual(route(msgUpdate(14, owner, "just some prompt text"), owner), { kind: "prompt", chatId: 7, text: "just some prompt text" });
 });

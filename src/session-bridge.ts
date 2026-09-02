@@ -39,6 +39,14 @@ export interface TelegaPi {
   switchSession(path: string): void; // triggers instance replacement
   waitForIdle(): Promise<void>;
   compact(onDone: (ok: boolean, detail?: string) => void): void;
+  /**
+   * Hot-reload pi's extensions/skills/prompts/themes/context files (pi's
+   * ctx.reload()). Fire-and-forget: pi replaces the extension runtime, so this
+   * call is terminal — onDone(true) means "the replacement instance took over"
+   * (it posts the card); onDone(false, detail) means the old instance is still
+   * alive and must tell the user what failed.
+   */
+  reload(onDone: (ok: boolean, detail?: string) => void): void;
   getSessionName(): string | undefined;
   setSessionName(name: string): void;
   currentModel(): PiModel | undefined;
@@ -110,6 +118,7 @@ export function helpText(): string {
     "<b>/mute</b> — stop agent output (commands still work)",
     "<b>/unmute</b> — resume agent output",
     "<b>/compact</b> — compact the history",
+    "<b>/reload</b> — hot-reload extensions & resources (idle only)",
     "<b>/name &lt;text&gt;</b> — rename this session",
     "<b>/kill</b> — shut down pi",
     "<b>/help</b> — this text",
@@ -151,7 +160,8 @@ export class SessionBridge {
     await this.deps.persist();
     if (pa.chatId !== chatId) return;
     await out.send(chatId, this.sessionCardText());
-    if (cfg.askClearOnSwitch) {
+    // A /reload keeps the same session — nothing new posted, no clear question.
+    if (pa.type !== "reload" && cfg.askClearOnSwitch) {
       await out.send(chatId, "Clear chat history?", {
         replyMarkup: {
           inline_keyboard: [[{ text: "🧹 Clear", callback_data: CB.clear(true) }, { text: "Keep", callback_data: CB.clear(false) }]],
@@ -254,6 +264,25 @@ export class SessionBridge {
         await this.deps.persist();
         await out.send(action.chatId, "🔄 Creating new session…");
         pi.newSession();
+        return;
+      case "reload":
+        if (!pi.isIdle()) {
+          await out.send(action.chatId, "Agent is busy — send /stop first.");
+          return;
+        }
+        cfg.pendingAction = { type: "reload", chatId: action.chatId };
+        await this.deps.persist(); // the replacement instance reads it on session_start
+        await out.send(action.chatId, "🔄 Reloading extensions…");
+        pi.reload((ok, detail) => {
+          if (ok) return; // success: the replacement instance posts the card
+          // Failure: the old instance is still alive — a failed send must not
+          // become an unhandled rejection
+          void out.send(
+            action.chatId,
+            `⚠️ Reload failed${detail ? `: ${detail}` : ""} (bot keeps running — check the TUI)`,
+            { parseMode: null }
+          ).catch(() => { /* best effort */ });
+        });
         return;
       case "sessions":
         await this.handleSessions(action.chatId);

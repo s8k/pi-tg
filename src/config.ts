@@ -4,7 +4,8 @@ import { dirname, join } from "node:path";
 
 export type PendingAction =
   | { type: "new"; chatId: number }
-  | { type: "activate"; chatId: number; path: string };
+  | { type: "activate"; chatId: number; path: string }
+  | { type: "reload"; chatId: number };
 
 export interface TelegaConfig {
   botToken?: string;
@@ -81,6 +82,7 @@ function sanitizePending(value: unknown): PendingAction | undefined {
   if (p.type === "activate" && typeof p.path === "string" && p.path !== "") {
     return { type: "activate", chatId: p.chatId, path: p.path };
   }
+  if (p.type === "reload") return { type: "reload", chatId: p.chatId };
   return undefined;
 }
 

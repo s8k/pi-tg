@@ -29,6 +29,8 @@ export class FakePi {
   shutdownCalls = 0;
   compactCalls = 0;
   compactDone: ((ok: boolean, detail?: string) => void) | undefined;
+  reloadCalls = 0;
+  reloadDone: ((ok: boolean, detail?: string) => void) | undefined;
   uiNotices: { text: string; level?: "info" | "warning" | "error" }[] = [];
 
   constructor(opts: FakePiOptions = {}) {
@@ -37,7 +39,7 @@ export class FakePi {
 
   build(): TelegaPi {
     const self = this;
-    return {
+    const impl: TelegaPi = {
       cwd: self.opts.cwd ?? "/proj",
       isIdle: () => !self.opts.busy,
       abort: () => self.abortCalls++,
@@ -50,6 +52,10 @@ export class FakePi {
       compact: (onDone) => {
         self.compactCalls++;
         self.compactDone = onDone;
+      },
+      reload: (onDone) => {
+        self.reloadCalls++;
+        self.reloadDone = onDone;
       },
       getSessionName: () => self.opts.sessionName,
       setSessionName: (name) => self.setNames.push(name),
@@ -72,6 +78,7 @@ export class FakePi {
       notifyUi: (text, level) => self.uiNotices.push({ text, level }),
       shutdown: () => self.shutdownCalls++,
     };
+    return impl;
   }
 }
 
