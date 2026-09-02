@@ -6,6 +6,7 @@ import type { PiModel, PiThinkingLevel } from "./thinking.ts";
 import { supportedThinkingLevels } from "./thinking.ts";
 import { pairWelcome, notAuthorizedText } from "./onboarding.ts";
 import { escapeHtml } from "./markdown.ts";
+import { formatGpuLines, type GpuStats } from "./gpu.ts";
 
 export interface PiModelInfo {
   model: PiModel;
@@ -91,6 +92,8 @@ export interface BridgeDeps {
   botUsername: string | undefined;
   persist: () => Promise<void>; // save cfg (offset/sentIds/pendingAction/ownerId)
   sleep: (ms: number) => Promise<void>;
+  /** GPU probe for /status; bounded by its own short timeout; undefined = unavailable. */
+  probeGpu: () => Promise<GpuStats[] | undefined>;
 }
 
 export function timeAgo(ms: number, now = Date.now()): string {
@@ -183,18 +186,22 @@ export class SessionBridge {
     ].join("\n");
   }
 
-  private statusText(): string {
+  private async statusText(): Promise<string> {
     const { pi, cfg } = this.deps;
     const model = pi.currentModel();
     const usage = pi.contextUsage();
     const name = pi.getSessionName() ?? "Untitled session";
-    return [
-      `📊 <b>${escapeHtml(name)}</b> — ${pi.isIdle() ? "idle" : "busy"}${cfg.muted ? " · 🔇 muted" : ""}`, 
-      `<code>${escapeHtml(pi.cwd)}</code>`,
-      `model: ${model ? escapeHtml(model.name) : "n/a"} · thinking: ${pi.currentThinking() ?? "default"}`,
-      `context: ${usage?.percent != null ? `${usage.percent}%` : "n/a"}${usage?.tokens != null ? ` (${usage.tokens}/${usage.contextWindow})` : ""}`,
-      `messages: ${pi.messageCount()}`,
-    ].join("\n");
+    const lines = [
+      `🆔 ${escapeHtml(name)} — ${pi.isIdle() ? "idle" : "busy"}${cfg.muted ? " · 🔇 muted" : ""}`,
+      `📁 dir: <code>${escapeHtml(pi.cwd)}</code>`,
+      `🤖 model: ${model ? escapeHtml(model.name) : "n/a"} · 🧠 thinking: ${pi.currentThinking() ?? "default"}`,
+      `📖 context: ${usage?.percent != null ? `${Math.round(usage.percent)}%` : "n/a"}${usage?.tokens != null ? ` (${usage.tokens}/${usage.contextWindow})` : ""}`,
+      `📨 messages: ${pi.messageCount()}`,
+    ];
+    // Bounded by the probe's own short timeout; unavailable → line omitted.
+    const gpus = await this.deps.probeGpu();
+    if (gpus) lines.push(...formatGpuLines(gpus));
+    return lines.join("\n");
   }
 
   private async sendCardAndHelp(chatId: number): Promise<void> {
@@ -230,7 +237,7 @@ export class SessionBridge {
         return;
       }
       case "status":
-        await out.send(action.chatId, this.statusText());
+        await out.send(action.chatId, await this.statusText());
         return;
       case "stop":
         if (pi.isIdle()) await out.send(action.chatId, "Nothing to stop — session is idle.");

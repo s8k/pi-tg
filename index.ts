@@ -8,6 +8,7 @@ import { route } from "./src/router.ts";
 import { encodeInternal, parseInternal } from "./src/command-args.ts";
 import { TelegaState } from "./src/state.ts";
 import { SessionBridge } from "./src/session-bridge.ts";
+import { probeGpu } from "./src/gpu.ts";
 import type { Out, TelegaPi } from "./src/session-bridge.ts";
 import { Mirror } from "./src/mirror.ts";
 import type { MirrorMessage } from "./src/mirror.ts";
@@ -86,6 +87,7 @@ export default function piTelega(pi: ExtensionAPI): void {
       botUsername: undefined as string | undefined,
       persist,
       sleep,
+      probeGpu,
     };
     bridge = new SessionBridge(deps);
     if (!token) {

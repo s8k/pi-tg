@@ -24,6 +24,7 @@ export function makeDeps(pi: TelegaPi, out: FakeOut, cfg: Partial<TelegaConfig> 
     botUsername: "testbot",
     persist: async () => {},
     sleep: async () => {},
+    probeGpu: async () => undefined, // no GPU in tests unless a test overrides
   };
 }
 

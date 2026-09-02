@@ -36,23 +36,63 @@ test("stop: idle → note only; busy → abort + note", async () => {
   assert.ok(lastSend(out2).includes("idle"));
 });
 
-test("status: renders cwd/model/thinking/context/messages + busy state", async () => {
+test("status: card format 🆔/📁/🤖/📖/📨, plain session name, rounded context percent", async () => {
   const pi = new FakePi({
     cwd: "/proj",
     model: { id: "m1", name: "Model One", provider: "p", reasoning: false },
     thinking: "high",
-    contextUsage: { tokens: 1000, contextWindow: 2000, percent: 50 },
-    messageCount: 12,
+    contextUsage: { tokens: 90720, contextWindow: 120000, percent: 75.6 }, // → rounds to 76%
+    messageCount: 171,
   });
   const out = new FakeOut();
   await new SessionBridge(makeDeps(pi.build(), out)).dispatch({ kind: "status", chatId: 7 });
-  const t = lastSend(out);
-  assert.ok(t.includes("/proj"));
-  assert.ok(t.includes("Model One"));
-  assert.ok(t.includes("thinking: high"));
-  assert.ok(t.includes("50%"));
-  assert.ok(t.includes("12"));
-  assert.ok(t.includes("idle"));
+  const lines = lastSend(out).split("\n");
+  assert.deepEqual(lines, [
+    "🆔 Untitled session — idle", // plain name (no <b>), unmuted → no 🔇 suffix
+    "📁 dir: <code>/proj</code>",
+    "🤖 model: Model One · 🧠 thinking: high",
+    "📖 context: 76% (90720/120000)",
+    "📨 messages: 171",
+  ]);
+
+  // busy + muted + no model + no context usage
+  const pi2 = new FakePi({ cwd: "/p", busy: true, sessionName: "My <sess>" });
+  const out2 = new FakeOut();
+  await new SessionBridge(makeDeps(pi2.build(), out2, { muted: true })).dispatch({ kind: "status", chatId: 7 });
+  const lines2 = lastSend(out2).split("\n");
+  assert.equal(lines2[0], "🆔 My &lt;sess&gt; — busy · 🔇 muted");
+  assert.equal(lines2[2], "🤖 model: n/a · 🧠 thinking: default");
+  assert.equal(lines2[3], "📖 context: n/a");
+});
+
+test("status: 🔥 GPU line from probeGpu (single + multi); omitted when probe unavailable", async () => {
+  const base = {
+    cwd: "/proj",
+    model: { id: "m1", name: "Model One", provider: "p", reasoning: false },
+    thinking: "high" as const,
+    contextUsage: { tokens: 90720, contextWindow: 120000, percent: 75.6 },
+    messageCount: 171,
+  };
+  const gpu = { tempC: 67, utilPct: 96, memUsedGb: 14.19140625, memTotalGb: 24 };
+
+  // makeDeps default: probe unavailable → no GPU line
+  const out0 = new FakeOut();
+  await new SessionBridge(makeDeps(new FakePi(base).build(), out0)).dispatch({ kind: "status", chatId: 7 });
+  assert.equal(lastSend(out0).split("\n").length, 5);
+
+  const out1 = new FakeOut();
+  const deps1 = makeDeps(new FakePi(base).build(), out1);
+  deps1.probeGpu = async () => [gpu];
+  await new SessionBridge(deps1).dispatch({ kind: "status", chatId: 7 });
+  assert.equal(lastSend(out1).split("\n")[5], "🔥 GPU: 67°C · 96% · 14.2/24.0 GB");
+
+  const out2 = new FakeOut();
+  const deps2 = makeDeps(new FakePi(base).build(), out2);
+  deps2.probeGpu = async () => [gpu, { tempC: 72, utilPct: 50, memUsedGb: 8, memTotalGb: 24 }];
+  await new SessionBridge(deps2).dispatch({ kind: "status", chatId: 7 });
+  const lines = lastSend(out2).split("\n");
+  assert.ok(lines[5].startsWith("🔥 GPU 0: 67°C"));
+  assert.ok(lines[6].startsWith("🔥 GPU 1: 72°C"));
 });
 
 test("pair: sets ownerId, sends welcome + card + help", async () => {

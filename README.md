@@ -52,7 +52,7 @@ phone (Telegram) ⇄ Bot API long polling ⇄ pi-telega (in-process) ⇄ pi TUI 
 | tap a session | switch (confirm if `askClearOnSwitch`) |
 | `/models` | model list (current marked) with buttons |
 | `/thinking` | available thinking levels with buttons |
-| `/status` | model, thinking, context usage, message count, busy state |
+| `/status` | session, dir, model, thinking, context usage, message count, busy state, GPU temp/util/memory (NVIDIA, if available) |
 | `/stop` | abort the current turn |
 | `/mute` | stop agent output (draft, tools, answers); commands still work |
 | `/unmute` | resume agent output |
