@@ -60,9 +60,17 @@ export default function piTelega(pi: ExtensionAPI): void {
   };
 
   // mirror handlers are fire-and-forget: a transient Telegram error must not
-  // become an unhandled rejection (Node ≥15 default = crash the pi process)
+  // become an unhandled rejection (Node ≥15 default = crash the pi process);
+  // sync handlers must not throw into pi's emitter at all
   const safe = (p: Promise<unknown> | undefined): void => {
     void p?.catch((err) => ui(`pi-telega mirror error: ${String(err)}`, "error"));
+  };
+  const safeCall = (fn: () => void): void => {
+    try {
+      fn();
+    } catch (err) {
+      ui(`pi-telega mirror error: ${String(err)}`, "error");
+    }
   };
 
   async function startPolling(): Promise<void> {
@@ -326,27 +334,27 @@ export default function piTelega(pi: ExtensionAPI): void {
   // ── mirror events ──
 
   pi.on("agent_start", () => {
-    safe(currentMirror?.onAgentStart());
+    safeCall(() => currentMirror?.onAgentStart());
   });
   pi.on("agent_end", (event) => {
     safe(currentMirror?.onAgentEnd(event.messages as unknown as MirrorMessage[]));
   });
   pi.on("message_start", (event) => {
-    safe(currentMirror?.onAssistantStart(event.message as unknown as MirrorMessage));
+    safeCall(() => currentMirror?.onAssistantStart(event.message as unknown as MirrorMessage));
   });
   pi.on("message_update", (event) => {
-    safe(currentMirror?.onAssistantUpdate(event.message as unknown as MirrorMessage));
+    safeCall(() => currentMirror?.onAssistantUpdate(event.message as unknown as MirrorMessage));
   });
   pi.on("message_end", (event) => {
     safe(currentMirror?.onAssistantEnd(event.message as unknown as MirrorMessage));
   });
   pi.on("tool_execution_start", (event) => {
-    safe(currentMirror?.onToolStart(event.toolCallId, event.toolName, event.args));
+    safeCall(() => currentMirror?.onToolStart(event.toolCallId, event.toolName, event.args));
   });
   pi.on("tool_execution_end", (event) => {
-    safe(currentMirror?.onToolEnd(event.toolCallId, event.isError));
+    safeCall(() => currentMirror?.onToolEnd(event.toolCallId, event.isError, event.result));
   });
   pi.on("ui_prompt_start", (event) => {
-    safe(currentMirror?.onUiPromptStart(event.title));
+    safeCall(() => currentMirror?.onUiPromptStart(event.title));
   });
 }

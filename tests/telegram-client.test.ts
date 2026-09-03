@@ -259,6 +259,22 @@ test("sendRichMessageDraft: draft_id + can_stop only when true; omitted when fal
   assert.equal(body2.draft_id, 4);
 });
 
+test("sendRichMessageDraft: keep_on_stop only when true (drafts survive Stop so the bot can persist them)", async () => {
+  const ff = makeFakeFetch(() => ({ status: 200, body: { ok: true, result: true } }));
+  const c = new TelegramClient("T", { fetchImpl: ff.fetchImpl });
+  assert.equal(await c.sendRichMessageDraft(7, 5, { markdown: "x" }, true, true), true);
+  assert.deepEqual(JSON.parse(String(ff.calls[0].init?.body)), {
+    chat_id: 7,
+    draft_id: 5,
+    rich_message: { markdown: "x" },
+    can_stop: true,
+    keep_on_stop: true,
+  });
+  assert.equal(await c.sendRichMessageDraft(7, 6, { markdown: "y" }, true, false), true);
+  const body2 = JSON.parse(String(ff.calls[1].init?.body));
+  assert.equal("keep_on_stop" in body2, false, "falsy keepOnStop is omitted, not sent as false");
+});
+
 test("sendRichMessage: 400 surfaces as TgError (fallback trigger)", async () => {
   const ff = makeFakeFetch(() => ({ status: 400, body: { ok: false, error_code: 400, description: "Bad Request: rich message parse error" } }));
   const c = new TelegramClient("T", { fetchImpl: ff.fetchImpl });

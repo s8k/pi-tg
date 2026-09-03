@@ -1,98 +1,158 @@
-// Tool status lines live INSIDE the draft footer (sending separate bot
-// messages would kill the draft).
+// Message 1 (work log) content builder — pure: block layout, blank-line
+// separation, tool-block rendering, tag/marker bottom lines, escaping.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { Mirror, toolPreview } from "../src/mirror.ts";
-import { makeMirrorDeps } from "./mirror-helpers.ts";
+import { blocksToMd, toolResultText, type LogBlock, type BottomLine } from "../src/mirror.ts";
+import { renderToolBlock } from "../src/markdown.ts";
 
-const lastDraft = (out: { calls: { kind: string; text?: string }[] }): { text: string } => {
-  const d = out.calls.filter((c) => c.kind === "sendDraft").at(-1) as { text: string } | undefined;
-  assert.ok(d, "a draft update exists");
-  return d;
+const thinking = (word = "Pondering"): BottomLine => ({ kind: "thinking", word });
+const done: BottomLine = { kind: "done" };
+const error: BottomLine = { kind: "error" };
+const none: BottomLine = { kind: "none" };
+
+const toolBlock: LogBlock = {
+  type: "tool",
+  id: "c1",
+  name: "read",
+  keyArg: "src/app.ts",
+  argsJson: "{\n  \"path\": \"src/app.ts\"\n}",
+  why: "the test expects a 302.",
+  state: "✔",
 };
 
-test("tool start → footer line in the draft; NO separate tool message", async () => {
-  const { deps, out, advance, cfg } = makeMirrorDeps();
-  const m = new Mirror(deps);
-  await m.onAgentStart();
-  advance(cfg.streamEditMs); // past the success cooldown (all draft senders share it)
-  await m.onToolStart("c1", "bash", { command: "ls -la" });
-  assert.ok(lastDraft(out).text.includes("⚙ bash: ls -la …"));
-  assert.equal(out.calls.filter((c) => c.kind === "send").length, 0);
+test("blocksToMd: single narration + thinking bottom line", () => {
+  const out = blocksToMd([{ type: "narration", text: "Let me check the failing test." }], { bottom: thinking() });
+  assert.equal(out, 'Let me check the failing test.\n\n<tg-thinking>Pondering…</tg-thinking>');
 });
 
-test("tool end ✔ and error end ✖", async () => {
-  const { deps, out, advance, cfg } = makeMirrorDeps();
-  const m = new Mirror(deps);
-  await m.onAgentStart();
-  const gap = () => advance(cfg.streamEditMs); // keep each event past the success cooldown
-  gap();
-  await m.onToolStart("c1", "bash", { command: "long build" });
-  assert.ok(lastDraft(out).text.includes("⚙ bash: long build …"));
-  gap();
-  await m.onToolEnd("c1", true);
-  assert.ok(lastDraft(out).text.includes("⚙ bash: long build ✖"));
-  gap();
-  await m.onToolStart("c2", "read", { path: "src/a.ts" });
-  gap();
-  await m.onToolEnd("c2", false);
-  assert.ok(lastDraft(out).text.includes("⚙ read: src/a.ts ✔"));
-});
-
-test("footer keeps in-flight lines + only the LAST 3 completions", async () => {
-  const { deps, out, advance, cfg } = makeMirrorDeps();
-  const m = new Mirror(deps);
-  await m.onAgentStart();
-  const specs: [string, string, unknown][] = [
-    ["c1", "read", { path: "a.ts" }],
-    ["c2", "bash", { command: "b" }],
-    ["c3", "write", { path: "c.ts" }],
-    ["c4", "edit", { path: "d.ts" }],
-    ["c5", "bash", { command: "e" }],
+test("blocksToMd: blocks are separated by exactly one blank line, in order", () => {
+  const log: LogBlock[] = [
+    { type: "narration", text: "Let me check the failing test." },
+    toolBlock,
+    { type: "prompt", text: "⚠️ terminal prompt: pick a model — answer there" },
+    { type: "agentError", text: "⚠️ error: overloaded" },
   ];
-  for (const [id, tool, args] of specs) {
-    advance(cfg.streamEditMs);
-    await m.onToolStart(id, tool, args);
-    advance(cfg.streamEditMs);
-    await m.onToolEnd(id, false);
-  }
-  const t = lastDraft(out).text;
-  assert.ok(t.includes("write: c.ts ✔"));
-  assert.ok(t.includes("edit: d.ts ✔"));
-  assert.ok(t.includes("bash: e ✔"));
-  assert.ok(!t.includes("read: a.ts"), "older completion dropped");
-  assert.ok(!t.includes("bash: b ✔"), "older completion dropped");
+  const rendered = [
+    "Let me check the failing test.",
+    renderToolBlock(toolBlock),
+    "⚠️ terminal prompt: pick a model — answer there",
+    "⚠️ error: overloaded",
+  ];
+  assert.equal(blocksToMd(log, { bottom: none }), rendered.join("\n\n"));
 });
 
-test("in-flight tool line survives a later completion of another tool", async () => {
-  const { deps, out, advance, cfg } = makeMirrorDeps();
-  const m = new Mirror(deps);
-  await m.onAgentStart();
-  const gap = () => advance(cfg.streamEditMs);
-  gap();
-  await m.onToolStart("c1", "read", { path: "a.ts" });
-  gap();
-  await m.onToolEnd("c1", false);
-  gap();
-  await m.onToolStart("c2", "bash", { command: "npm test" });
-  const t = lastDraft(out).text;
-  assert.ok(t.includes("read: a.ts ✔"), "recent completion kept");
-  assert.ok(t.includes("⚙ bash: npm test …"), "in-flight line kept");
+test("blocksToMd: bottom lines — Completed ✔️ / ⚠ Error / stripped", () => {
+  const log: LogBlock[] = [{ type: "narration", text: "A" }];
+  assert.equal(blocksToMd(log, { bottom: done }), "A\n\nCompleted ✔️");
+  assert.equal(blocksToMd(log, { bottom: error }), "A\n\n⚠ Error");
+  assert.equal(blocksToMd(log, { bottom: none }), "A");
 });
 
-test("ui_prompt_start → footer line inside the draft (no separate message)", async () => {
-  const { deps, out, advance, cfg } = makeMirrorDeps();
-  const m = new Mirror(deps);
-  await m.onAgentStart();
-  advance(cfg.streamEditMs);
-  await m.onUiPromptStart("allow bash?");
-  assert.ok(lastDraft(out).text.includes("allow bash?"));
-  assert.equal(out.calls.filter((c) => c.kind === "send").length, 0);
+test("blocksToMd: empty log", () => {
+  assert.equal(blocksToMd([], { bottom: none }), "");
+  assert.equal(blocksToMd([], { bottom: thinking("Weaving") }), "<tg-thinking>Weaving…</tg-thinking>");
 });
 
-test("toolPreview: bash command / file path / truncated JSON", () => {
-  assert.equal(toolPreview("bash", { command: "ls -la" }, 30), "ls -la");
-  assert.equal(toolPreview("read", { path: "x/y.ts" }, 30), "x/y.ts");
-  assert.equal(toolPreview("weird", { a: "b" }, 30), '{"a":"b"}');
-  assert.ok(toolPreview("weird", { a: "x".repeat(50) }, 30).length <= 32);
+test("blocksToMd: the demoted tail goes between the log and the bottom line", () => {
+  const out = blocksToMd(
+    [{ type: "narration", text: "Earlier text." }],
+    { tail: "Let me check the failing test…", bottom: thinking() },
+  );
+  assert.equal(out, 'Earlier text.\n\nLet me check the failing test…\n\n<tg-thinking>Pondering…</tg-thinking>');
+});
+
+test("blocksToMd: whitespace-only tail is dropped", () => {
+  const out = blocksToMd([], { tail: "   ", bottom: thinking() });
+  assert.equal(out, "<tg-thinking>Pondering…</tg-thinking>");
+});
+
+// ── tool blocks ──
+
+test("renderToolBlock: done, with why — full layout", () => {
+  const out = renderToolBlock({
+    name: "read",
+    keyArg: "src/app.ts",
+    argsJson: "{\n  \"path\": \"src/app.ts\"\n}",
+    why: "the test expects a 302.",
+    state: "✔",
+  });
+  assert.equal(
+    out,
+    [
+      "⚙ read src/app.ts ✔",
+      '💭 *"the test expects a 302."*',
+      "<details><summary>params</summary>",
+      "",
+      "```json",
+      "{\n  \"path\": \"src/app.ts\"\n}",
+      "```",
+      "",
+      "</details>",
+    ].join("\n"),
+  );
+});
+
+test("renderToolBlock: pending state is the … stamp", () => {
+  const out = renderToolBlock({ name: "bash", keyArg: "ls -la", argsJson: "{}", state: "…" });
+  assert.equal(out.split("\n")[0], "⚙ bash ls -la …");
+});
+
+test("renderToolBlock: no why → no 💭 line; no keyArg → name only", () => {
+  const out = renderToolBlock({ name: "mytool", keyArg: "", argsJson: "{}", state: "✔" });
+  const lines = out.split("\n");
+  assert.equal(lines[0], "⚙ mytool ✔");
+  assert.ok(!out.includes("💭"));
+});
+
+test("renderToolBlock: ✖ shows the error in a visible <pre>, HTML-escaped", () => {
+  const out = renderToolBlock({
+    name: "edit",
+    keyArg: "src/app.ts",
+    argsJson: "{}",
+    state: "✖",
+    errorText: "RangeError: Invalid arg <bad> & more",
+  });
+  assert.equal(out.split("\n").pop(), "<pre>RangeError: Invalid arg &lt;bad&gt; &amp; more</pre>");
+});
+
+test("renderToolBlock: ✔ never carries the <pre>", () => {
+  const out = renderToolBlock({ name: "read", keyArg: "a", argsJson: "{}", state: "✔", errorText: "ignored" });
+  assert.ok(!out.includes("<pre>"));
+});
+
+test("renderToolBlock: argsJson is HTML-escaped inside the json fence", () => {
+  const argsJson = "{\n  \"command\": \"echo hi <b> & bye\"\n}";
+  const out = renderToolBlock({ name: "bash", keyArg: "echo", argsJson, state: "✔" });
+  const fence = ["```json", "{", '  "command": "echo hi &lt;b&gt; &amp; bye"', "}", "```"].join("\n");
+  assert.ok(out.includes(fence), out);
+});
+
+test("renderToolBlock: why is HTML-escaped", () => {
+  const out = renderToolBlock({ name: "read", keyArg: "a", argsJson: "{}", why: "a < b & c", state: "✔" });
+  assert.ok(out.includes('💭 *"a &lt; b &amp; c"*'), out);
+});
+
+// ── tool result text (feeds ✖ blocks) ──
+
+test("toolResultText: string passthrough", () => {
+  assert.equal(toolResultText("boom"), "boom");
+});
+
+test("toolResultText: joins the text parts of an AgentToolResult", () => {
+  const result = {
+    content: [
+      { type: "text", text: "line one" },
+      { type: "image", data: "AAA=", mimeType: "image/png" },
+      { type: "text", text: "line two" },
+    ],
+    details: undefined,
+  };
+  assert.equal(toolResultText(result), "line one\nline two");
+});
+
+test("toolResultText: absent/unknown shapes → empty string", () => {
+  assert.equal(toolResultText(undefined), "");
+  assert.equal(toolResultText(null), "");
+  assert.equal(toolResultText(42), "");
+  assert.equal(toolResultText({ details: { x: 1 } }), "");
 });

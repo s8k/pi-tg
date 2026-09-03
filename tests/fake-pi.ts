@@ -94,6 +94,7 @@ export interface FakeOutCall {
   opts?: { parseMode?: "HTML" | null; replyToId?: number; replyMarkup?: unknown };
   draftId?: number;
   canStop?: boolean;
+  keepOnStop?: boolean;
 }
 
 export class FakeOut {
@@ -102,6 +103,9 @@ export class FakeOut {
   sendFailsWith: Error | undefined;
   sendRichFailsWith: Error | undefined;
   sendHtmlFailsWith: Error | undefined; // only when opts.parseMode === "HTML"
+  sendRichAttempts = 0;
+  /** Per-attempt failures (wins over sendRichFailsWith). */
+  sendRichFailScript?: (attempt: number) => Error | undefined;
 
   send = async (chatId: number, text: string, opts?: FakeOutCall["opts"]): Promise<number | undefined> => {
     if (this.sendFailsWith) throw this.sendFailsWith;
@@ -118,12 +122,14 @@ export class FakeOut {
     this.calls.push({ kind: "delete", chatId, messageId });
   };
   sendRich = async (chatId: number, md: string): Promise<number | undefined> => {
-    if (this.sendRichFailsWith) throw this.sendRichFailsWith;
+    const attempt = this.sendRichAttempts++;
+    const err = this.sendRichFailScript ? this.sendRichFailScript(attempt) : this.sendRichFailsWith;
+    if (err) throw err;
     this.calls.push({ kind: "sendRich", chatId, text: md });
     return this.nextMessageId++;
   };
-  sendDraft = async (chatId: number, draftId: number, md: string, canStop?: boolean): Promise<boolean> => {
-    this.calls.push({ kind: "sendDraft", chatId, text: md, draftId, canStop });
+  sendDraft = async (chatId: number, draftId: number, md: string, canStop?: boolean, keepOnStop?: boolean): Promise<boolean> => {
+    this.calls.push({ kind: "sendDraft", chatId, text: md, draftId, canStop, keepOnStop });
     return true;
   };
 }

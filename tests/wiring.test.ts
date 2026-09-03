@@ -259,18 +259,18 @@ test("makeOut: sendRich → client.sendRichMessage + addSent + persist", async (
   assert.deepEqual(calls[0], ["rich", 7, { markdown: "a table" }]);
 });
 
-test("makeOut: sendDraft → passthrough (draftId + canStop), no addSent", async () => {
+test("makeOut: sendDraft → passthrough (draftId + canStop + keepOnStop), no addSent", async () => {
   const calls: unknown[][] = [];
   const client: ClientLike = {
     sendMessage: async () => { throw new Error("unexpected"); },
     editMessageText: async () => true,
     deleteMessage: async () => {},
     sendRichMessage: async () => { throw new Error("unexpected"); },
-    sendRichMessageDraft: async (chatId, draftId, rich, canStop) => { calls.push(["draft", chatId, draftId, rich, canStop]); return true; },
+    sendRichMessageDraft: async (chatId, draftId, rich, canStop, keepOnStop) => { calls.push(["draft", chatId, draftId, rich, canStop, keepOnStop]); return true; },
   };
   const state = new TelegaState();
   const out = makeOut(client, state, async () => {});
-  assert.equal(await out.sendDraft(7, 3, "working", true), true);
-  assert.deepEqual(calls[0], ["draft", 7, 3, { markdown: "working" }, true]);
+  assert.equal(await out.sendDraft(7, 3, "working", true, true), true);
+  assert.deepEqual(calls[0], ["draft", 7, 3, { markdown: "working" }, true, true]);
   assert.deepEqual(state.sentIds(), []);
 });

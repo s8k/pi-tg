@@ -507,6 +507,72 @@ function unfoldDetails(text: string): string {
   return s.replace(/^\n+/, "");
 }
 
+// ─────────────────────── Work-log tool blocks (two-message mirror) ───────────────────────
+
+/** State stamp for a tool block in the work log. */
+export type ToolState = "…" | "✔" | "✖";
+
+export interface ToolBlockSpec {
+  name: string;
+  keyArg: string;
+  argsJson: string;
+  why?: string;
+  state: ToolState;
+  errorText?: string;
+}
+
+/**
+ * One work-log tool block (its own lines; the caller separates blocks with a
+ * blank line):
+ *
+ *   ⚙ read src/app.ts ✔
+ *   💭 *"the test expects a 302."*
+ *   <details><summary>params</summary>
+ *
+ *   ```json
+ *   { … }
+ *   ```
+ *
+ *   </details>
+ *   <pre>RangeError: …</pre>        ← only on ✖, visible (not collapsed)
+ *
+ * All bot-generated text is HTML-escaped; the why line is italic markdown.
+ */
+export function renderToolBlock(t: ToolBlockSpec): string {
+  const lines = [`⚙ ${t.name}${t.keyArg ? ` ${t.keyArg}` : ""} ${t.state}`];
+  if (t.why) lines.push(`💭 *"${escapeHtml(t.why)}"*`);
+  lines.push("<details><summary>params</summary>", "", "```json", escapeHtml(t.argsJson), "```", "", "</details>");
+  if (t.state === "✖" && t.errorText) lines.push(`<pre>${escapeHtml(t.errorText)}</pre>`);
+  return lines.join("\n");
+}
+
+/** Tool arguments → pretty JSON, capped so the collapsed params block stays small. */
+export function toolArgsJson(args: unknown, cap = 2048): string {
+  let s: string;
+  try {
+    s = JSON.stringify(args ?? {}, null, 2) ?? "{}";
+  } catch {
+    s = String(args ?? "");
+  }
+  return s.length > cap ? s.slice(0, cap) + "\n…" : s;
+}
+
+/**
+ * The "why" motivating a tool call: the LAST sentence of the thinking stream
+ * seen before the call (sentences split on `.!?` boundaries), capped.
+ * Redacted/absent thinking yields no input → undefined (no 💭 line).
+ */
+export function extractWhy(thinking: string[], cap = 200): string | undefined {
+  const joined = thinking.join("").trim();
+  if (!joined) return undefined;
+  const chunks = joined.split(/(?<=[.!?])\s+/);
+  for (let i = chunks.length - 1; i >= 0; i--) {
+    const c = chunks[i].trim();
+    if (c) return c.length > cap ? c.slice(0, cap) + "…" : c;
+  }
+  return undefined;
+}
+
 /**
  * Draft overflow view: if the text is over cap, keep the TAIL (what the user
  * cares about most), back the cut off to the nearest block boundary, and

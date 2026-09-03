@@ -80,8 +80,8 @@ export interface Out {
   delete(chatId: number, messageId: number): Promise<void>; // idempotent
   /** Rich message (markdown pass-through); records the sent id; returns it. */
   sendRich(chatId: number, md: string): Promise<number | undefined>;
-  /** Ephemeral draft; the same draftId refreshes in place. */
-  sendDraft(chatId: number, draftId: number, md: string, canStop?: boolean): Promise<boolean>;
+  /** Ephemeral draft; the same draftId refreshes in place. keepOnStop keeps the draft when Stop is pressed. */
+  sendDraft(chatId: number, draftId: number, md: string, canStop?: boolean, keepOnStop?: boolean): Promise<boolean>;
 }
 
 export interface BridgeDeps {

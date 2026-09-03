@@ -44,7 +44,7 @@ export interface ClientLike {
   editMessageText(chatId: number, messageId: number, text: string, opts?: { parseMode?: "HTML" | null; replyMarkup?: unknown }): Promise<boolean>;
   deleteMessage(chatId: number, messageId: number): Promise<void>;
   sendRichMessage(chatId: number, rich: { markdown?: string }): Promise<{ message_id: number }>;
-  sendRichMessageDraft(chatId: number, draftId: number, rich: { markdown?: string }, canStop?: boolean): Promise<boolean>;
+  sendRichMessageDraft(chatId: number, draftId: number, rich: { markdown?: string }, canStop?: boolean, keepOnStop?: boolean): Promise<boolean>;
 }
 
 // ── Out adapter: client + state tracking + persist ──
@@ -64,8 +64,8 @@ export function makeOut(client: ClientLike, state: TelegaState, persist: () => P
       await persist();
       return sent.message_id;
     },
-    sendDraft: (chatId, draftId, md, canStop) =>
-      client.sendRichMessageDraft(chatId, draftId, { markdown: md }, canStop),
+    sendDraft: (chatId, draftId, md, canStop, keepOnStop) =>
+      client.sendRichMessageDraft(chatId, draftId, { markdown: md }, canStop, keepOnStop),
     edit: (chatId, messageId, text, opts) => {
       const parseMode: "HTML" | null = opts && opts.parseMode !== undefined ? opts.parseMode : "HTML";
       return client.editMessageText(chatId, messageId, text, { parseMode, replyMarkup: opts?.replyMarkup });

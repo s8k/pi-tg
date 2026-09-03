@@ -265,17 +265,21 @@ export class TelegramClient {
 
   /**
    * Creates or updates an ephemeral draft (~30 s window). `canStop` adds the
-   * native Stop button, which produces a `stopped_message_generation` update.
-   * Returns true on success, false if the draft no longer exists.
+   * native Stop button, which produces a `stopped_message_generation` update;
+   * `keepOnStop` keeps the draft when Stop is pressed (so the bot can
+   * persist it as a real message). Returns true on success, false if the
+   * draft no longer exists.
    */
   sendRichMessageDraft(
     chatId: number,
     draftId: number,
     richMessage: InputRichMessage,
     canStop?: boolean,
+    keepOnStop?: boolean,
   ): Promise<boolean> {
     const p: Record<string, unknown> = { chat_id: chatId, draft_id: draftId, rich_message: richMessage };
     if (canStop) p.can_stop = true;
+    if (keepOnStop) p.keep_on_stop = true;
     return this.call("sendRichMessageDraft", p) as Promise<boolean>;
   }
 

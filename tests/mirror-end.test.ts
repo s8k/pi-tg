@@ -1,109 +1,156 @@
-// Finalization: rich → legacy HTML → plain; error/abort/no-text paths.
+// End states (plan §5 table): clean/empty-log, manual stop (partial candidate
+// as-is, spinner-only skip), error (⚠ Error + ⚠ incomplete), muted (nothing).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { Mirror } from "../src/mirror.ts";
-import { RICH_CAP } from "../src/markdown.ts";
-import { TgError } from "../src/telegram-client.ts";
-import { makeMirrorDeps } from "./mirror-helpers.ts";
+import { Mirror, type MirrorMessage } from "../src/mirror.ts";
+import type { FakeOutCall } from "./fake-pi.ts";
+import { makeMirrorDeps, tick } from "./mirror-helpers.ts";
 
-test("normal end → single rich message; no status line", async () => {
-  const { deps, out } = makeMirrorDeps();
-  const m = new Mirror(deps);
-  await m.onAgentStart();
-  await m.onAgentEnd([{ role: "assistant", content: [{ type: "text", text: "**bold** answer" }] }]);
-  const rich = out.calls.filter((c) => c.kind === "sendRich");
-  assert.equal(rich.length, 1);
-  assert.equal(rich[0].text, "**bold** answer");
-  assert.equal(out.calls.filter((c) => c.kind === "send").length, 0, "no ✅ Done / Working… line on the normal path");
+type H = ReturnType<typeof makeMirrorDeps>;
+type Call = FakeOutCall;
+
+const textMsg = (text: string, extra: Partial<MirrorMessage> = {}): MirrorMessage => ({
+  role: "assistant",
+  content: [{ type: "text", text }],
+  ...extra,
 });
 
-test("answer over RICH_CAP → chunkRich rich chunks, marker from 2nd", async () => {
-  const md = "x".repeat(40_000);
-  const { deps, out } = makeMirrorDeps();
-  const m = new Mirror(deps);
-  await m.onAgentStart();
-  await m.onAgentEnd([{ role: "assistant", content: md }]);
-  const rich = out.calls.filter((c) => c.kind === "sendRich");
-  assert.equal(rich.length, 2);
-  const t0 = rich[0]?.text;
-  const t1 = rich[1]?.text;
-  assert.ok(t0 !== undefined && !t0.startsWith("(continued)"));
-  assert.ok(t1 !== undefined && t1.startsWith("(continued)\n"));
-  for (const c of rich) assert.ok((c.text ?? "").length <= RICH_CAP);
+const richCalls = (h: H): Call[] => h.out.calls.filter((c) => c.kind === "sendRich");
+const draftCalls = (h: H): Call[] => h.out.calls.filter((c) => c.kind === "sendDraft");
+
+/**
+ * A run with one stamped tool block (non-empty log) whose answer message has
+ * started streaming `text` into the slot. The final message_end is up to the
+ * test (confirm / abort / error).
+ */
+async function runWithStreamedCandidate(h: H, text: string): Promise<Mirror> {
+  const m = new Mirror(h.deps);
+  m.onAgentStart();
+  await tick();
+  m.onAssistantStart(textMsg(""));
+  m.onAssistantUpdate({
+    role: "assistant",
+    content: [
+      { type: "thinking", thinking: "check it" },
+      { type: "text", text: "Let me check." },
+      { type: "toolCall", id: "c1", name: "read", arguments: { path: "a.ts" } },
+    ],
+  });
+  m.onAssistantEnd({
+    role: "assistant",
+    content: [
+      { type: "thinking", thinking: "check it" },
+      { type: "text", text: "Let me check." },
+      { type: "toolCall", id: "c1", name: "read", arguments: { path: "a.ts" } },
+    ],
+    stopReason: "toolUse",
+  });
+  await tick();
+  m.onToolEnd("c1", false, { content: [{ type: "text", text: "ok" }] });
+  await tick();
+  m.onAssistantStart(textMsg(""));
+  m.onAssistantUpdate(textMsg(text));
+  await tick();
+  return m;
+}
+
+test("clean end, empty log: m1 skipped (no flip), the answer is message 2", async () => {
+  const h = makeMirrorDeps({ streamEditMs: 0 });
+  const m = new Mirror(h.deps);
+  m.onAgentStart();
+  await tick();
+  m.onAssistantStart(textMsg(""));
+  m.onAssistantUpdate(textMsg("Just an answer."));
+  await tick();
+  await m.onAssistantEnd(textMsg("Just an answer.", { stopReason: "stop" }));
+  await tick();
+
+  const flips = draftCalls(h).filter((c) => c.text?.includes("Completed ✔️"));
+  assert.equal(flips.length, 0, "no flip for an empty log");
+  const rich = richCalls(h);
+  assert.equal(rich.length, 1, "m1 is skipped; m2 only");
+  assert.equal(rich[0]?.text, "Just an answer.");
 });
 
-test("rich 400 → legacy HTML chunks (parse_mode HTML)", async () => {
-  const { deps, out } = makeMirrorDeps();
-  out.sendRichFailsWith = new TgError("sendRichMessage", 400, "rich parse error");
-  const m = new Mirror(deps);
-  await m.onAgentStart();
-  await m.onAgentEnd([{ role: "assistant", content: "hello" }]);
-  const html = out.calls.filter((c) => c.kind === "send" && c.opts?.parseMode === "HTML");
-  assert.equal(html.length, 1);
-  assert.equal(html[0].text, "hello");
-  assert.equal(out.calls.filter((c) => c.kind === "sendRich").length, 0);
-});
-
-test("rich 400 → HTML 400 → plain text (full fallback chain)", async () => {
-  const { deps, out } = makeMirrorDeps();
-  out.sendRichFailsWith = new TgError("sendRichMessage", 400, "rich");
-  out.sendHtmlFailsWith = new TgError("sendMessage", 400, "html");
-  const m = new Mirror(deps);
-  await m.onAgentStart();
-  await m.onAgentEnd([{ role: "assistant", content: "text <broken" }]);
-  const plain = out.calls.filter((c) => c.kind === "send" && c.opts?.parseMode === null);
-  assert.equal(plain.length, 1);
-  assert.equal(plain[0].text, "text <broken");
-});
-
-test("non-400 error propagates (no silent fallback)", async () => {
-  const { deps, out } = makeMirrorDeps();
-  out.sendRichFailsWith = new TgError("sendRichMessage", 429, "rate limited");
-  const m = new Mirror(deps);
-  await m.onAgentStart();
-  await assert.rejects(m.onAgentEnd([{ role: "assistant", content: "hi" }]));
-});
-
-test("error end → plain ⚠️ line, no rich answer", async () => {
-  const { deps, out } = makeMirrorDeps();
-  const m = new Mirror(deps);
-  await m.onAgentStart();
-  await m.onAgentEnd([{ role: "assistant", content: "partial", stopReason: "error", errorMessage: "boom" }]);
-  const plain = out.calls.filter((c) => c.kind === "send");
-  assert.equal(plain.length, 1);
-  assert.equal(plain[0].text, "⚠️ error: boom");
-  assert.equal(out.calls.filter((c) => c.kind === "sendRich").length, 0);
-});
-
-test("aborted → '⏹  interrupted' (space after emoji) + rich partial answer", async () => {
-  const { deps, out } = makeMirrorDeps();
-  const m = new Mirror(deps);
-  await m.onAgentStart();
-  await m.onAgentEnd([{ role: "assistant", content: [{ type: "text", text: "partial" }], stopReason: "aborted" }]);
-  const plain = out.calls.filter((c) => c.kind === "send");
-  assert.equal(plain.length, 1);
-  assert.equal(plain[0].text, "⏹  interrupted");
-  const rich = out.calls.filter((c) => c.kind === "sendRich");
-  assert.equal(rich.length, 1);
-  assert.equal(rich[0].text, "partial");
-});
-
-test("aborted with no text → label only", async () => {
-  const { deps, out } = makeMirrorDeps();
-  const m = new Mirror(deps);
-  await m.onAgentStart();
-  await m.onAgentEnd([{ role: "assistant", content: "", stopReason: "aborted" }]);
-  assert.equal(out.calls.filter((c) => c.kind === "send").length, 1);
-  assert.equal(out.calls.filter((c) => c.kind === "sendRich").length, 0);
-});
-
-test("normal end with no reply text → '✅ Done (no reply text)'", async () => {
-  const { deps, out } = makeMirrorDeps();
-  const m = new Mirror(deps);
-  await m.onAgentStart();
+test("manual stop: m1 = log with no bottom marker; m2 = partial candidate as-is", async () => {
+  const h = makeMirrorDeps({ streamEditMs: 0 });
+  const m = await runWithStreamedCandidate(h, "The answer is 42.");
+  await m.onAssistantEnd(textMsg("The answer is 42.", { stopReason: "aborted" }));
+  await tick();
   await m.onAgentEnd([]);
-  const plain = out.calls.filter((c) => c.kind === "send");
-  assert.equal(plain.length, 1);
-  assert.equal(plain[0].text, "✅ Done (no reply text)");
-  assert.equal(out.calls.filter((c) => c.kind === "sendRich").length, 0);
+  await tick();
+
+  const rich = richCalls(h);
+  assert.equal(rich.length, 2, `m1 + m2, got ${rich.length}`);
+  const m1 = rich[0]?.text ?? "";
+  assert.ok(m1.includes("⚙ read a.ts ✔"), "m1 carries the stamped tool block");
+  assert.ok(!m1.includes("Completed ✔️"), "no Completed marker on stop");
+  assert.ok(!m1.includes("⚠ Error"), "no error marker on stop");
+  assert.ok(!m1.includes("<tg-thinking>"), "bottom tag removed (no spinner either)");
+  assert.equal(rich[1]?.text, "The answer is 42.", "m2 is the partial candidate as-is, no trailer");
+});
+
+test("manual stop, spinner-only slot: m2 is skipped", async () => {
+  const h = makeMirrorDeps({ streamEditMs: 0 });
+  const m = await runWithStreamedCandidate(h, "");
+  // the answer message produced no text — the slot is at the spinner
+  m.onAssistantUpdate(textMsg(""));
+  await tick();
+  await m.onAssistantEnd(textMsg("", { stopReason: "aborted" }));
+  await tick();
+  await m.onAgentEnd([]);
+  await tick();
+
+  const rich = richCalls(h);
+  assert.equal(rich.length, 1, "m1 only — a spinner-only slot persists nothing");
+  assert.ok(rich[0]?.text?.includes("⚙ read a.ts ✔"), "m1 is the log");
+});
+
+test("error end: m1 = log + error block + ⚠ Error; m2 = partial candidate + ⚠ incomplete", async () => {
+  const h = makeMirrorDeps({ streamEditMs: 0 });
+  const m = await runWithStreamedCandidate(h, "The answer is 42.");
+  await m.onAssistantEnd(textMsg("The answer is 42.", { stopReason: "error", errorMessage: "Provider timeout" }));
+  await tick();
+  await m.onAgentEnd([]);
+  await tick();
+
+  const rich = richCalls(h);
+  assert.equal(rich.length, 2, `m1 + m2, got ${rich.length}`);
+  const m1 = rich[0]?.text ?? "";
+  assert.ok(m1.includes("⚠ Error"), "m1 ends with the ⚠ Error marker");
+  assert.ok(m1.includes("⚠️ error: Provider timeout"), "the errorMessage became an error block in the log");
+  assert.equal(rich[1]?.text, "The answer is 42.\n\n⚠ incomplete", "m2 = partial candidate + trailing ⚠ incomplete");
+});
+
+test("error end, spinner-only slot: m2 is skipped, m1 still gets the error block + ⚠ Error", async () => {
+  const h = makeMirrorDeps({ streamEditMs: 0 });
+  const m = new Mirror(h.deps);
+  m.onAgentStart();
+  await tick();
+  m.onAssistantStart(textMsg(""));
+  await m.onAssistantEnd({ role: "assistant", content: [], stopReason: "error", errorMessage: "boom" });
+  await tick();
+  await m.onAgentEnd([]);
+  await tick();
+
+  const rich = richCalls(h);
+  assert.equal(rich.length, 1, "m1 only");
+  const m1 = rich[0]?.text ?? "";
+  assert.ok(m1.includes("⚠️ error: boom"), "error block");
+  assert.ok(m1.includes("⚠ Error"), "⚠ Error marker");
+});
+
+test("muted run: nothing at all — no drafts, no persistent sends", async () => {
+  const h = makeMirrorDeps({ streamEditMs: 0, muted: true });
+  const m = new Mirror(h.deps);
+  m.onAgentStart();
+  await tick();
+  m.onAssistantStart(textMsg(""));
+  m.onAssistantUpdate(textMsg("Hi."));
+  await tick();
+  await m.onAssistantEnd(textMsg("Hi.", { stopReason: "stop" }));
+  await tick();
+  await m.onAgentEnd([]);
+  await tick();
+  assert.equal(h.out.calls.length, 0, `no out calls at all, got: ${JSON.stringify(h.out.calls.map((c) => c.kind))}`);
 });

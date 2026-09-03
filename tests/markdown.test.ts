@@ -1,6 +1,6 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { chunkMarkdown, chunkRich, chunkText, escapeAttr, escapeHtml, foldLongFences, inlineToHtml, markdownToHtml, RICH_CAP, richUnits, tailView, toPlainText } from "../src/markdown.ts";
+import { chunkMarkdown, chunkRich, chunkText, escapeAttr, escapeHtml, extractWhy, foldLongFences, inlineToHtml, markdownToHtml, RICH_CAP, renderToolBlock, richUnits, tailView, toPlainText, toolArgsJson } from "../src/markdown.ts";
 
 describe("escape", () => {
   test("escapeHtml: & < >", () => {
@@ -367,4 +367,59 @@ test("tailView: default cap is RICH_CAP", () => {
   const out = tailView(md);
   assert.ok(out.length <= RICH_CAP);
   assert.ok(out.startsWith("⋯\n"));
+});
+
+// ─────────────────────────── Work-log tool blocks (two-message mirror) ───────────────────────────
+
+describe("toolArgsJson", () => {
+  test("pretty-prints the args", () => {
+    assert.equal(toolArgsJson({ path: "a.ts" }), '{\n  "path": "a.ts"\n}');
+  });
+
+  test("caps around 2 KB with a trailing ellipsis", () => {
+    const out = toolArgsJson({ s: "x".repeat(3000) });
+    assert.ok(out.length <= 2048 + "\n…".length);
+    assert.ok(out.endsWith("\n…"));
+  });
+
+  test("undefined/null → {}", () => {
+    assert.equal(toolArgsJson(undefined), "{}");
+    assert.equal(toolArgsJson(null), "{}");
+  });
+
+  test("non-serializable → String fallback, no throw", () => {
+    const circ: Record<string, unknown> = {};
+    circ.self = circ;
+    assert.equal(toolArgsJson(circ), "[object Object]");
+  });
+});
+
+describe("extractWhy (last thinking sentence before a tool call)", () => {
+  test("last sentence of the stream", () => {
+    assert.equal(extractWhy(["Let me check the handler. Then I will read it."]), "Then I will read it.");
+  });
+
+  test("joins multiple thinking parts in content order", () => {
+    assert.equal(extractWhy(["First. Second.", "Third. Fourth."]), "Fourth.");
+  });
+
+  test("no sentence punctuation → the whole text", () => {
+    assert.equal(extractWhy(["just some thoughts"]), "just some thoughts");
+  });
+
+  test("empty / whitespace-only → undefined (absent or redacted thinking)", () => {
+    assert.equal(extractWhy([]), undefined);
+    assert.equal(extractWhy(["", "   "]), undefined);
+  });
+
+  test("truncated to 200 chars (+ ellipsis)", () => {
+    const long = "word ".repeat(60).trim(); // 299 chars, no punctuation
+    const out = extractWhy([long + "."]) as string;
+    assert.equal(out.length, 201);
+    assert.ok(out.endsWith("…"));
+  });
+
+  test("honors a custom cap", () => {
+    assert.equal(extractWhy(["abcdef"], 3), "abc…");
+  });
 });
