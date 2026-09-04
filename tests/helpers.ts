@@ -12,7 +12,6 @@ export function makeDeps(pi: TelegaPi, out: FakeOut, cfg: Partial<TelegaConfig> 
       botToken: "t",
       ownerId: 7,
       streamEditMs: 1500,
-      toolPreviewChars: 300,
       askClearOnSwitch: true,
       maxSessionList: 20,
       draftHeartbeatMs: 17_000,

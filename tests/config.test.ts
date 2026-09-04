@@ -22,7 +22,6 @@ test("loadConfig: missing file → defaults", () => {
   assert.equal(cfg.botToken, undefined);
   assert.equal(cfg.ownerId, undefined);
   assert.equal(cfg.streamEditMs, DEFAULTS.streamEditMs);
-  assert.equal(cfg.toolPreviewChars, DEFAULTS.toolPreviewChars);
   assert.equal(cfg.askClearOnSwitch, true);
   assert.equal(cfg.maxSessionList, 20);
   assert.deepEqual(cfg.sentMessageIds, []);
@@ -73,7 +72,6 @@ test("sanitize: muted is a strict boolean, default false", () => {
 test("sanitize: clamps and drops invalid fields", () => {
   const cfg = sanitize({
     streamEditMs: 10,        // below min → default
-    toolPreviewChars: "x",   // not a number → default
     maxSessionList: 999,     // above max → default
     askClearOnSwitch: "yes", // not a boolean → default
     ownerId: "42",           // not a number → undefined
@@ -81,7 +79,6 @@ test("sanitize: clamps and drops invalid fields", () => {
     pendingAction: { type: "activate", chatId: 7 }, // missing path → undefined
   });
   assert.equal(cfg.streamEditMs, DEFAULTS.streamEditMs);
-  assert.equal(cfg.toolPreviewChars, DEFAULTS.toolPreviewChars);
   assert.equal(cfg.maxSessionList, DEFAULTS.maxSessionList);
   assert.equal(cfg.askClearOnSwitch, DEFAULTS.askClearOnSwitch);
   assert.equal(cfg.ownerId, undefined);

@@ -1,6 +1,7 @@
-# LLM mirroring — two-message design (work log + answer)
+# LLM mirroring — single-draft design (work log + answer split)
 
-Status: **design, validated with the user on 2026-09-02** — implementation not started.
+Status: **implemented** — two-draft design validated 2026-09-02, revised on
+2026-09-03 into the single-draft flow described here (the flow that shipped).
 
 Supersedes the streaming/drafting sections of `2026-08-31-rich-messages-design.md`.
 That doc's delivery mechanics (rich → HTML → plain fallback chain, `tailView`,
@@ -8,19 +9,30 @@ That doc's delivery mechanics (rich → HTML → plain fallback chain, `tailView
 
 ## Contract
 
-One agent run produces **at most 2 live rich drafts**, which become **at most 2
-persistent rich messages**:
+One agent run produces **exactly 1 live rich draft** for the whole run, and
+**at most 2 persistent rich messages**:
 
-1. **Message 1 — work log**: chronological record of the run (model narration,
-   tool calls with their "why" and params, errors). Its bottom line is a
-   `<tg-thinking>` tag while work is in flight, replaced by `Completed ✔️` on a
-   clean end, `⚠ Error` on error, or removed (no marker) on manual stop.
-2. **Message 2 — answer**: a live "candidate slot". Every assistant message's
-   text streams into it as a *final-answer candidate*. The moment a tool call
-   appears in that message, the candidate is **demoted**: its text moves to the
-   tail of message 1 like any other narration, and the slot returns to the
-   spinner. The process repeats per message; the candidate that survives to
-   `message_end` without a tool call **is** the answer and is persisted as-is.
+1. **The draft** carries everything while the run is in flight: a
+   chronological **work log** (model narration, tool calls with their "why"
+   and params, errors), the **in-flight message text** (the tail — the
+   current message's text, streaming live), and a bottom line — a
+   `<tg-thinking>` spinner while working, replaced by `Completed ✔️` on a
+   clean end, or removed (no marker) on error / manual stop — on an error
+   the `⚠️ error: …` log block is the only signal (no second `⚠ Error`
+   line).
+2. **The clean end splits into two messages**: the draft first shows the
+   COMPLETED STATE (log + `Completed ✔️` + the answer, NO divider —
+   the final composed message is visible in the draft), then **message 1**
+   persists as the work log + `Completed ✔️` (the answer is CUT from it — and
+   this send also finalizes the draft: per the Bot API, any message sent to
+   the chat instantly clears the ephemeral drafts), and **message 2** is the
+   final answer, sent as its own regular `sendRichMessage`. End state: the
+   tool log is the previous message, the answer is the new one. Stop/error
+   ends persist a single message instead — and an ERROR end only persists
+   at `agent_settled` (the real end of the stream): pi auto-retries
+   retryable provider errors, so an `agent_end` after an error must NOT
+   finalize (the draft stays alive until the retried run starts or the
+   stream settles).
 
 ## Progress
 
@@ -38,43 +50,50 @@ persistent rich messages**:
 What the user sees in the chat for a typical run:
 
 ```
-[while working]
-  msg 1 (live draft):                          msg 2 (live draft):
-  ┌ Let me check the failing test.             ┌ <tg-thinking>…</tg-thinking>
-  │                                            └ (spinner — "composing")
-  │                                            ┌ "Let me check the failing test…" ← candidate streaming
-  │   toolcall_start → demoted:                │   (1–2 s)
-  │   msg 2 back to spinner, msg 1 gains       └ spinner again
-  │   the narration + tool block
-  … (repeats per message: flicker, demote, flicker) …
-  msg 1 (live draft):                          msg 2 (live draft):
-  ┌ Let me check the failing test.             ┌ The fix works. Here is what I
-  │ ⚙ read tests/app.test.ts ✔                 │ changed: …                        ← final candidate
-  │   💭 "the test expects a 302 …"             │    streaming live, token by token
-  │ ⚙ edit src/app.ts ✖                        │
-  │   <pre>RangeError: …</pre>                 │
-  │ <tg-thinking>…</tg-thinking>               └
+[while working — ONE live draft]
+  ┌ <tg-thinking>…</tg-thinking>
+  │
+  │ Let me check the failing test.
+  │ ⚙ read tests/app.test.ts …
+  │   💭 "the test expects a 302 …"
+  │ ⚙ edit src/app.ts ✖
+  │   <pre>RangeError: …</pre>
+  │ The fix works. Here is what I      ← the answer streams in,
+  │ changed: …                            token by token, ABOVE the spinner
+  │ ---                                   ← a line separates any text above
+  │ <tg-thinking>…</tg-thinking>           the spinner (spinner only → no line)
   └
 
-[after a clean end — both drafts replaced by persistent messages]
-  msg 1:  Let me check the failing test.
-          ⚙ read tests/app.test.ts ✔
-            💭 "the test expects a 302 …"
-          ⚙ edit src/app.ts ✖
-            <pre>RangeError: …</pre>
-          Completed ✔️
+[after a clean end — the draft completes, then splits into two messages]
+  draft (momentarily):          msg 1 (persistent — the tool log):
+  … same content, but          Let me check the failing test.
+  <tg-thinking> becomes        💭 "the test expects a 302 …"
+  "Completed ✔️" before        <details><summary>⚙ read tests/app.test.ts …</summary>
+  the answer —                 …(args)…
+  NO divider:                  💭 "the edit failed, check the error first"
+  Completed ✔️                 <details><summary>⚙ edit src/app.ts ✖</summary>
+  The fix works. …             <pre>RangeError: …</pre>
+                                Completed ✔️
 
-  msg 2:  The fix works. Here is what I changed: …
+                                msg 2 (persistent — the answer):
+                                The fix works. Here is what I changed: …
 ```
 
 Properties:
 
-- Never more than 2 drafts going back; never more than 2 resulting messages per run.
-- Message 2 streams the real answer live (no replay, no fast-forward artifact).
-- Message 1 is the complete record (full text, not the 32 k tail view) and is
-  persisted on every end state that produced anything.
-- The "flicker" (candidate appears in msg 2, then settles into msg 1) is the
-  accepted cost of live streaming; each demotion is a sub-second visual move.
+- Exactly ONE draft for the whole run (one `draft_id`, spawned at
+  `agent_start`); it is finalized by the first persistent send (any message
+  sent to the chat instantly clears every ephemeral draft — Bot API,
+  verified 2026-09-03).
+- Never more than 2 persistent messages per run (a clean end splits into
+  log + answer; stop/error ends produce one).
+- The answer streams live in the draft (no replay, no fast-forward
+  artifact); what the user watched stream is exactly what message 2 becomes.
+- No flicker: a tool call mid-stream does NOT wipe the in-flight text (the
+  old slot design wiped it — revised 2026-09-03 after live feedback); the
+  text commits to the log at `message_end` and the tail clears.
+- Message 1 is the complete record (full text, chunked if > 32768); the
+  draft is capped by `tailView`.
 
 ## 2. Architecture: state machine
 
@@ -84,40 +103,44 @@ One `Mirror` instance per run (recreated on `agent_start`, as today).
 
 ```ts
 log: LogBlock[]            // committed, chronological (see §3)
-tail: { mode: "candidate" | "demoted" | "none", text: string }
-     // in-flight text of the current assistant message (display state)
-thinking: string[]         // per-message thinking parts, in content order
-slot: { draftId?: string; created: boolean; hasContent: boolean }
-     // message 2 — one fixed draft_id for the whole run
-finalText?: string         // set at confirmation
-phase: "work" | "finalized"
-thinkingWord: string       // rotating heartbeat word (existing)
+draftId: number            // the run's single draft id (0 = not spawned yet)
+tail: string               // in-flight text of the current assistant message;
+                           // the confirmed answer once the run confirms
+endKind: "clean" | "stop" | "error" | undefined
+phase: "work" | "finalized" // one-way switch
+// + pacing (shared by all draft senders): nextDraftAt, forceNext, pending,
+//   inflight, drainTimer, hbTimer, thinkingWord (rotating heartbeat word),
+//   draftFailStreak
 ```
 
-Content is always **derived from state, never stored**: draft 1 renders as
-`blocksToMd(log) + tail(demoted text) + tag-or-marker`; draft 2 renders as
-`tail(candidate text)` or the bare spinner. The same builder renders live
-drafts and the persistent sends, so demotion, the ✔ flip, and finalization
-cannot drift apart.
+Content is always **derived from state, never stored**: the draft renders as
+`blocksToMd(log, { tail, bottom })` — `[blocks] [tail] --- [spinner]` while
+working (the horizontal line appears whenever there is text above the
+spinner; spinner alone → no line), `[blocks] [Completed ✔️] [tail]` in the
+completed state (no divider — the answer is its own message anyway). The
+SAME builder renders the live draft, the completed-state preview, and the
+persistent sends, so the split cannot drift from what the draft showed.
 
 ### Events (all already wired in `index.ts`)
 
 | Event | Action |
 |---|---|
 | `agent_start` | create draft 1 (spinner, `can_stop`, `keep_on_stop`); phase = work. Muted → no drafts at all. |
-| `message_start` (assistant) | open the candidate window: tail = {candidate, ""} |
-| `message_update` | inspect `event.message.content` in order: `text` parts → tail (routed by mode); `thinking` parts → `thinking[]`; a `toolCall` part present → **demote** (once): tail = {demoted, ""}, wipe slot to spinner. The slot draft is created lazily on the first candidate text. |
-| `message_end` | **commit** the finished message: scan content in order → narration blocks, tool blocks (`why` = last thinking sentence seen so far), error block if `errorMessage`. If `stopReason ∈ {"stop","length"}` → **confirm**: `finalText` = its text parts concatenated. (`"toolUse"`, `"deferred"` → run continues; `"aborted"`/`"error"` → end states, §5.) |
+| `message_start` (assistant) | tail = "" (the message's text accumulates from its parts); the first send of a new message breaks through the throttle window (one-shot `forceNext`) |
+| `message_update` | accumulate the `text` parts into the tail and request an update if the tail is non-empty. A `toolCall` part mid-stream is IGNORED — it must not wipe the in-flight text (that was the old flicker). Textless candidates never update. |
+| `message_end` | **commit** the finished message: scan content in order → narration blocks (text before each tool call), tool blocks (`why` = last thinking sentence seen so far), error block if `errorMessage`. If `stopReason ∈ {"stop","length"}` **and the message has no tool calls** → **confirm**: tail = its text (the answer), endKind = clean, finalize (§5). A `"length"` stop WITH tool calls does NOT confirm (pi fails those truncated calls and the loop continues). Tool-carrying / mid-run messages: their text commits to the log, tail = "". `"aborted"`/`"error"` with no tools: the text stays as the partial-answer tail (not a log block — no duplication). |
 | `tool_execution_start` | mark the committed tool block (by `toolCallId`) `running` (it was committed with `…` at message_end; the start just guards ordering) |
 | `tool_execution_end` | stamp the block `✔` / `✖` + capture `result` text for `✖` blocks |
 | `ui_prompt_start` | append a prompt block to the log |
-| `agent_end` | if not finalized → run the end-state finalization (§5) |
+| `agent_end` | if not finalized **and the end is not an error** → run the end-state finalization (§5). An ERROR end waits for `agent_settled` — pi auto-retries retryable provider errors (429/5xx/…; up to `retry.maxRetries` runs, backoff 2·2ⁿˢ), so the run ending is not the stream ending. |
+| `agent_settled` | pi's “no automatic retry, compaction, or queued continuation will run” — the end of the STREAM. If not finalized → run the end-state finalization (§5). This is where error ends persist. |
 
 ### Invariants
 
-- **Max 2 drafts** at all times: draft 1 + the slot (the slot may not exist yet).
-- **One slot for the run**: never a second draft_id per run; demotion wipes
-  content, never the draft. Animated changes (same id) only — no 30 s ghosts.
+- **Exactly 1 draft** at all times: one `draft_id` per run, spawned at
+  `agent_start`; animated updates (same id) only — no 30 s ghosts.
+- The in-flight tail is never wiped by a mid-stream tool call (the
+  2026-09-03 flicker fix): it commits to the log at `message_end`.
 - **Switch is one-way**: once confirmed/finalized, no more draft updates;
   the heartbeat stops.
 - **Text-less candidates never flicker**: the slot wakes only on real text.
@@ -142,9 +165,9 @@ narration { text }     // a message's visible text, verbatim markdown
 ### Tool block rendering
 
 ````
-⚙ read src/app.ts            ← line 1: ⚙ + name + key-arg preview + state stamp
-💭 "the test expects a 302, so I need to see the handler"   ← line 2 (only if why)
-<details><summary>params</summary>
+💭 "the test expects a 302, so I need to see the handler"   ← the why first (only if why)
+<details><summary>⚙ read src/app.ts ✔</summary>   ← ⚙ + name + state stamp IS the
+                                             summary (no separate "params" label)
 
 ```json
 {"path": "src/app.ts"}
@@ -174,8 +197,15 @@ narration { text }     // a message's visible text, verbatim markdown
 |---|---|
 | working | `<tg-thinking>thinkingWord…</tg-thinking>` (word rotates on heartbeat) |
 | clean end | `Completed ✔️` (the tag is *replaced*, never deleted while live) |
-| error end | `⚠ Error` |
+| error end | **no marker** (the `⚠️ error: …` log block in the work log is the signal) |
 | manual stop | **removed, no marker** (the bridge's `⏹ Stopping… ✔️` message carries the signal) |
+
+There is NO horizontal divider between the work log and the answer
+ANYWHERE (revised 2026-09-04): the answer is split into its own message
+anyway, so the `---` line had no purpose. The ONE place a `---` line IS
+used (revised 2026-09-05): in the working draft, between any text (blocks
+and/or the streaming tail) and the `<tg-thinking>` spinner below it —
+spinner alone (fresh run) → no line.
 
 ### Sizing & escaping
 
@@ -186,95 +216,114 @@ narration { text }     // a message's visible text, verbatim markdown
   (`inlineToHtml`); all bot-generated text (tool names, JSON, errors, markers)
   is HTML-escaped.
 
-## 4. Message 2 — candidate slot spec
+## 4. The tail — in-flight text (replaces the candidate slot)
 
-The slot is **one draft for the whole run** — a fixed `draft_id` (created
-lazily), never replaced by a new one.
-
-### States
-
-```
-absent      — run started, no candidate text yet (draft not created)
-composing   — spinner only: <tg-thinking>thinkingWord…</tg-thinking>
-              (initial state after creation; also the demotion state)
-candidate   — streaming the current message's text (clean answer markdown,
-              no tag inside the candidate content)
-```
+The 2026-09-03 revision collapsed the second draft (the "candidate slot")
+into the single draft: the current message's text is the **tail**, rendered
+inside the draft between the work log and the spinner.
 
 ### Lifecycle per assistant message
 
-1. `message_start` → candidate window opens (tail = candidate).
-2. First `text` part arrives → slot created (if absent) / wakes from
-   composing → content streams the candidate, paced like draft 1 updates.
-3. A `toolCall` part appears → **demote**: tail.mode = demoted, slot content
-   wiped back to the composing spinner, `hasContent` = false. (Two paced
-   updates — the wipe and the draft-1 tail — may briefly show the line in
-   both places; accepted, sub-second.)
-4. `message_end` commits the message to the log; the tail resets to none.
+1. `message_start` → tail = "".
+2. `message_update` → tail = the accumulated `text` parts; the draft shows
+   [log] [tail] [spinner], paced like every other draft update.
+3. A `toolCall` part appears mid-stream → **nothing visible changes**: the
+   tail keeps streaming (a tool call carries no text; wiping the tail here
+   was the old flicker bug).
+4. `message_end` commits the message: if it carried a tool call, the text
+   becomes a narration block in the log and the tail clears — the text keeps
+   its place, now at the end of the log. If it is the answer (no tools,
+   stop/length), the tail becomes the confirmed answer and finalization runs
+   (§5).
 
 ### Confirmation
 
-When `message_end` arrives with `stopReason ∈ {"stop","length"}`, the slot is
-already holding the complete answer — finalization simply persists it
-(§5). There is **no replay, no fast-forward**: whatever the user watched
+Confirm = `message_end` with `stopReason ∈ {"stop","length"}` **and zero tool
+calls in the message**. A `"length"` stop WITH tool calls is a pi
+continuation (the truncated calls fail and the loop goes on), so it does not
+confirm. There is **no replay, no fast-forward**: whatever the user watched
 stream is exactly what message 2 becomes.
 
 ### Rules
 
-- The slot never contains the `<tg-thinking>` tag inside candidate content
-  (the persisted answer must be a clean final message; `tg-thinking` is
-  draft-only per the Bot API).
-- Between candidates the slot sits at the composing spinner; the 17 s
-  heartbeat keeps it alive (and draft 1's). It reads as "composing the
-  answer", which is literally true while the run is in flight.
-- `hasContent` = the slot currently (or last) held real candidate text —
-  drives whether message 2 gets persisted on stop/error end states (§5).
-- `keep_on_stop: true` on the slot draft, same as draft 1.
+- The tail never contains the `<tg-thinking>` tag (the tag is the separate
+  bottom line; `tg-thinking` is draft-only per the Bot API and must not
+  reach a persistent message).
+- Textless candidates (only tool calls / thinking) never trigger a draft
+  update — no flicker.
+- `keep_on_stop: true` on the draft; the completed-state preview goes out
+  with `can_stop: false` (the run is over).
 
 ## 5. End states & finalization mechanics
 
 ### Finalization sequence (clean end)
 
 Triggered at the confirming `message_end` (not `agent_end` — the answer is
-complete and waiting in the slot the moment the message finishes):
+complete the moment the message finishes). THREE steps, in order:
 
-1. `finalLog` = log + `Completed ✔️` bottom line.
-2. Best-effort draft-1 update with `finalLog` (throttle-bypassed) so the
-   spinner visibly flips to `Completed ✔️` before the message freezes.
-3. **Persist message 1** — `sendRichMessage(finalLog)`, full log, chunked via
-   `chunkRich` if > 32768. This persistent send kills the live drafts.
-4. **Persist message 2** — `sendRichMessage(finalText)` (the slot content),
-   chunked the same way.
-5. Stop the heartbeat; phase = finalized.
+1. **Completed-state draft** — one final `sendRichMessageDraft` on the run's
+   draft: [log] `Completed ✔️` [answer] (`can_stop: false`, no divider).
+   The user sees the final composed message: the spinner is replaced by
+   the marker, the answer stays where it was streaming. Best effort — a
+   429/400
+   here does not block the persistent sends (the draft dies with m1 anyway).
+2. **Message 1 — work log + `Completed ✔️`** — `sendRichMessage`, full log,
+   chunked via `chunkRich` if > 32768. The answer is **CUT** from it
+   (there is no divider to begin with). This send also
+   **finalizes the draft**: per the Bot API, ANY message sent to the chat
+   instantly clears every ephemeral draft, and `sendRichMessage` has no
+   `draft_id` (no in-place promotion) — so m1 replaces the completed-state
+   preview in one client-side transition.
+3. **Message 2 — the answer** — `sendRichMessage(answer)`, chunked the same
+   way. End state: the tool log is the previous message, the answer is the
+   new one.
 
-Steps 3–4 use the existing delivery fallback chain (markdown → HTML → plain)
-and **retry up to 3 times with 1 s / 2 s / 4 s backoff** (honoring `retry_after`
-on 429) — these are the only retried sends in the mirror; draft updates stay
-best-effort. Order matters: message 1 before message 2 (chronology).
+The one-way switch flips and the heartbeat stops FIRST; no draft updates
+ever follow a persistent send (verified on the wire 2026-09-03).
+
+Steps 2–3 use the existing delivery fallback chain (markdown → HTML → plain)
+and **retry up to 3 times with 1 s / 2 s / 4 s backoff** (honoring
+`retry_after` on 429) — these are the only retried sends in the mirror; the
+completed-state draft update stays best-effort. If m1 fails all 3 attempts,
+m2 is never attempted and `finalize` rejects. Order matters: preview → m1 →
+m2 (chronology).
+
+### Stop / error ends — single message
+
+No split: ONE persistent send with the final layout —
+- **stop** (finalized at `agent_end`): [log] [partial tail] (no marker, no
+  spinner);
+- **error** (finalized at `agent_settled`, never at `agent_end` — pi may
+  auto-retry): [log + `⚠️ error:` block] [partial tail + trailing
+  `⚠ incomplete` line] — no `⚠ Error` marker (the log block says it), no
+  divider anywhere.
+
+While waiting for the retry/settle, the draft stays alive (heartbeat)
+showing the error state: [log + `⚠️ error:` block] [partial tail]
+`<tg-thinking>` spinner.
 
 ### End-state table
 
-| End | Message 1 persisted | Message 2 persisted | Extra |
+| End | Draft's last state | Message 1 | Message 2 |
 |---|---|---|---|
-| **Clean, log non-empty** | full log + `Completed ✔️` | the answer | — |
-| **Clean, log empty** (zero tool calls, straight answer) | **skipped** (would be just `Completed ✔️`; draft 1 expires) | the answer | — |
-| **Manual stop** | log with bottom tag **removed, no marker** (skipped if log empty) | partial candidate **as-is** (skipped if spinner-only) | bridge sends `⏹ Stopping…` then stamps `⏹ Stopping… ✔️` (unchanged) |
-| **Error** (provider/API, or message `errorMessage`) | log + error block + `⚠ Error` | partial candidate + trailing `⚠ incomplete` line (skipped if spinner-only) | — |
-| **Muted** | nothing | nothing | nothing (no drafts are ever created) |
+| **Clean** (answer confirmed) | completed state: log + `Completed ✔️` + answer (no divider) | log + `Completed ✔️` (answer cut) — **always sent**, even with an empty log (then just the marker) | the answer |
+| **Manual stop** | (killed by m1) | log + partial tail (skipped when both are empty) | — |
+| **Error** (provider/API, or message `errorMessage`; finalized at `agent_settled`) | (killed by the persistent send) | log + error block (+ partial + `⚠ incomplete` when there is a partial tail) — no `⚠ Error` marker | — |
+| **Muted** | never spawned | nothing | nothing |
 
 Notes:
 
-- "Log empty" = no committed blocks (no narration, no tools, no errors, no
-  prompts).
-- On error/stop the partial candidate is whatever the slot last held — it may
+- The bridge's `⏹ Stopping…` / `⏹ Stopping… ✔️` stamp flow is unchanged.
+- On error/stop the partial tail is whatever the draft last showed — it may
   be mid-sentence; that's the point of persisting it (the 30 s ephemeral
   window must not eat it).
-- If a persistent send fails all 3 retries, the TUI gets an error notification
-  (existing `safe()` path); the drafts may then expire — same known limitation
-  as today, no new failure mode.
-- `agent_end` after a confirmed end is a no-op (phase = finalized guard).
-- Steer (new user prompt mid-run) = a new run → a fresh pair of messages;
-  nothing is merged across runs.
+- If a persistent send fails all 3 retries, `finalize` rejects — the
+  wiring's `safe()` path notifies the TUI; the drafts may then expire — same
+  known limitation, no new failure mode.
+- `agent_end` / `agent_settled` after a confirmed end are no-ops (phase =
+  finalized guard).
+- Steer (new user prompt mid-run) = a new run → a fresh draft + fresh
+  messages; nothing is merged across runs.
 
 ## 6. Code plan & TDD order
 
@@ -299,8 +348,9 @@ Notes:
 2. **Slot state machine** (fake `Out`): candidate → demote → re-candidate →
    confirm; text-less candidates create no slot; spinner-only slot; demotion
    wipes content but keeps the draft_id; one-way switch after finalize.
-3. **Finalization**: send order (flip → m1 → m2), chunking > 32768, fallback
-   chain, 3-attempt retry with backoff and `retry_after`.
+3. **Finalization**: send order (m1 → m2, no flip — any persistent send
+   clears all drafts), chunking > 32768, fallback chain, 3-attempt retry with
+   backoff and `retry_after`.
 4. **End states** (all five table rows), incl. empty-log skip and
    partial-candidate persistence on stop/error.
 5. **Client**: `keep_on_stop` forwarded (fake fetch).
@@ -311,7 +361,14 @@ Test files: `tests/mirror-stream.test.ts`, `mirror-tools.test.ts`,
 `mirror-end.test.ts`, `mirror-failures.test.ts`, `mirror-mute.test.ts` get
 rewritten against the new model; `mirror-helpers.ts` / `fake-pi.ts` extended
 for multi-message runs and `tool_execution_end` results. Run with
-`node --test tests/` (no timeouts issues — suite is fast and local).
+`node --test tests/*.test.ts` (the directory form fails on Windows).
+
+Final test layout (single-draft revision): `mirror-tools.test.ts` (builder +
+tool rendering), `mirror-stream.test.ts` (single-draft streaming: one id,
+tail never wiped by tool calls, re-candidate, one-way switch),
+`mirror-finalize.test.ts` (three-step clean split, chunking, fallback chain,
+429/backoff, m1-failure aborts m2), `mirror-end.test.ts` (end-state table),
+`mirror-mute.test.ts`, `index-smoke.test.ts` (full wiring on the wire).
 
 ## 7. Out of scope & validation notes
 

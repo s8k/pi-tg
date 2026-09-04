@@ -11,7 +11,6 @@ export interface TelegaConfig {
   botToken?: string;
   ownerId?: number;
   streamEditMs: number;
-  toolPreviewChars: number;
   askClearOnSwitch: boolean;
   maxSessionList: number;
   /** Re-send cadence of the rich draft (keeps the ~30 s ephemeral window alive). */
@@ -37,10 +36,9 @@ export interface ConfigOptions {
 
 export const DEFAULTS: Pick<
   TelegaConfig,
-  "streamEditMs" | "toolPreviewChars" | "askClearOnSwitch" | "maxSessionList" | "draftHeartbeatMs" | "codeFoldLines" | "muted" | "sentMessageIds"
+  "streamEditMs" | "askClearOnSwitch" | "maxSessionList" | "draftHeartbeatMs" | "codeFoldLines" | "muted" | "sentMessageIds"
 > = {
   streamEditMs: 1500,
-  toolPreviewChars: 300,
   askClearOnSwitch: true,
   maxSessionList: 20,
   draftHeartbeatMs: 17_000,
@@ -93,7 +91,6 @@ export function sanitize(raw: unknown): TelegaConfig {
     botToken: typeof obj.botToken === "string" && obj.botToken.trim() !== "" ? obj.botToken : undefined,
     ownerId: typeof obj.ownerId === "number" && Number.isFinite(obj.ownerId) ? obj.ownerId : undefined,
     streamEditMs: clampInt(obj.streamEditMs, DEFAULTS.streamEditMs, 500, 10_000),
-    toolPreviewChars: clampInt(obj.toolPreviewChars, DEFAULTS.toolPreviewChars, 50, 1_000),
     askClearOnSwitch: typeof obj.askClearOnSwitch === "boolean" ? obj.askClearOnSwitch : DEFAULTS.askClearOnSwitch,
     maxSessionList: clampInt(obj.maxSessionList, DEFAULTS.maxSessionList, 5, 50),
     draftHeartbeatMs: clampInt(obj.draftHeartbeatMs, DEFAULTS.draftHeartbeatMs, 5_000, 25_000),

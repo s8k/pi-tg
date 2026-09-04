@@ -1,6 +1,17 @@
-// Finalization (clean end): flip → persist m1 → persist m2, in that order;
-// chunking past the rich cap; the rich → HTML → plain fallback chain; 3
-// attempts with 1s/2s/4s backoff honoring the 429 retry_after.
+// Finalization (2026-09-03 flow, revised): the clean end is a THREE-STEP
+// split —
+//  1) the draft gets the COMPLETED STATE: [log] Completed ✔️ [answer]
+//     (the final composed message is visible in the draft, spinner gone,
+//     NO divider between the log and the answer);
+//  2) message 1 — the work log + Completed ✔️ as a regular richMessage (the
+//     answer is CUT; this send also finalizes the draft: per the Bot API any
+//     message sent to the chat instantly clears the ephemeral draft, and
+//     sendRichMessage has no draft_id — no in-place promotion);
+//  3) message 2 — the final answer as its own regular richMessage.
+// End state: the tool log is the previous message, the answer is the new one.
+// Stop/error ends stay single messages. Chunking past the rich cap; the rich →
+// HTML → plain fallback chain; 3 attempts with 1s/2s/4s backoff honoring the
+// 429 retry_after.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Mirror, type MirrorMessage } from "../src/mirror.ts";
@@ -53,30 +64,43 @@ const richCalls = (h: H): Call[] => h.out.calls.filter((c) => c.kind === "sendRi
 const draftCalls = (h: H): Call[] => h.out.calls.filter((c) => c.kind === "sendDraft");
 const idx = (h: H, c: Call): number => h.out.calls.indexOf(c);
 
-test("confirm: flip (Completed ✔️) → persist m1 → persist m2, in that order; no drafts after m1", async () => {
+test("confirm: draft completed state → m1 (log + Completed, answer cut) → m2 (answer)", async () => {
   const h = makeMirrorDeps({ streamEditMs: 0 });
   const m = await runToConfirm(h);
+  const draftsBefore = draftCalls(h).length;
   await m.onAssistantEnd(textMsg("The answer is 42.", { stopReason: "stop" }));
   await tick();
 
-  const flip = draftCalls(h).find((c) => c.text?.includes("Completed ✔️"));
-  assert.ok(flip, `flip draft update, got: ${JSON.stringify(draftCalls(h).map((c) => c.text))}`);
-  assert.equal(flip?.draftId, 1, "the flip updates the work-log draft");
-  assert.equal(flip?.keepOnStop, true);
+  // step 1: exactly ONE draft update — the completed state (log + marker +
+  // divider + answer), no Stop button (the run is over)
+  const newDrafts = draftCalls(h).slice(draftsBefore);
+  assert.equal(newDrafts.length, 1, `exactly the completed-state draft update, got: ${JSON.stringify(newDrafts.map((c) => c.text))}`);
+  const preview = newDrafts[0]!.text ?? "";
+  assert.ok(preview.includes("⚙ read ✔"), "the preview carries the stamped tool block");
+  assert.ok(preview.includes("Completed ✔️"), "the marker is in the preview");
+  assert.ok(!preview.includes("---"), "no divider between the log and the answer");
+  assert.ok(preview.includes("The answer is 42."), "the answer is in the preview");
+  assert.ok(!preview.includes("<tg-thinking>"), "the spinner is gone from the preview");
+  assert.equal(newDrafts[0]?.canStop, false, "no Stop button on the completed preview");
+  assert.equal(newDrafts[0]?.keepOnStop, true);
 
+  // steps 2+3: m1 (log + Completed — the answer is CUT) then m2 (the answer)
   const rich = richCalls(h);
-  assert.equal(rich.length, 2, `m1 + m2 rich sends, got ${rich.length}`);
-  assert.ok(rich[0]?.text?.includes("Completed ✔️"), "m1 is the full log with the marker");
-  assert.ok(rich[0]?.text?.includes("⚙ read a.ts ✔"), "m1 carries the stamped tool block");
-  assert.equal(rich[1]?.text, "The answer is 42.", "m2 is the answer");
+  assert.equal(rich.length, 2, `m1 + m2, got ${rich.length}`);
+  const m1 = rich[0]!.text ?? "";
+  const m2 = rich[1]!.text ?? "";
+  assert.ok(m1.includes("⚙ read ✔"), "m1 carries the stamped tool block");
+  assert.ok(m1.includes("Completed ✔️"), "m1 ends with the marker");
+  assert.ok(!m1.includes("The answer is 42."), "the answer is cut from m1");
+  assert.ok(!m1.includes("---"), "no divider in m1 (there is no answer after it)");
+  assert.equal(m2, "The answer is 42.", "m2 is the answer, verbatim");
 
-  assert.ok(idx(h, flip!) < idx(h, rich[0]!), "flip before m1");
+  // chronology: completed-state draft → m1 → m2
+  assert.ok(idx(h, newDrafts[0]!) < idx(h, rich[0]!), "the completed-state preview precedes m1");
   assert.ok(idx(h, rich[0]!) < idx(h, rich[1]!), "m1 before m2");
-  const draftsAfterM1 = h.out.calls.slice(idx(h, rich[0]!) + 1).filter((c) => c.kind === "sendDraft");
-  assert.equal(draftsAfterM1.length, 0, "no draft updates after the run is finalized");
 });
 
-test("long log: m1 is chunked at the rich cap; the answer follows as one send", async () => {
+test("long log: m1 is chunked at the rich cap; the answer is the final send", async () => {
   const h = makeMirrorDeps({ streamEditMs: 0 });
   const m = new Mirror(h.deps);
   m.onAgentStart();
@@ -95,15 +119,16 @@ test("long log: m1 is chunked at the rich cap; the answer follows as one send", 
   await tick();
 
   const rich = richCalls(h);
-  assert.ok(rich.length > 2, `expected a chunked m1, got ${rich.length}`);
+  assert.ok(rich.length > 2, `expected a chunked m1 + m2, got ${rich.length}`);
   for (const c of rich) assert.ok((c.text?.length ?? 0) <= RICH_CAP + 8, `chunk within cap, got ${c.text?.length}`);
   const markerIdx = rich.findIndex((c) => c.text?.includes("Completed ✔️"));
   assert.ok(markerIdx >= 0, "the marker chunk exists");
-  assert.equal(rich[markerIdx + 1]?.text, "The answer is 42.", "m2 follows the last m1 chunk");
-  assert.equal(rich.length, markerIdx + 2, "no sends after m2");
+  assert.ok(markerIdx < rich.length - 1, "m2 follows the last m1 chunk");
+  assert.equal(rich[rich.length - 1]?.text, "The answer is 42.", "m2 is the final send");
+  assert.ok(!rich[rich.length - 2]?.text?.includes("The answer is 42."), "the answer is not in the last m1 chunk");
 });
 
-test("rich 400 → the whole message falls back to HTML chunks", async () => {
+test("rich 400 → both messages fall back to HTML chunks", async () => {
   const h = makeMirrorDeps({ streamEditMs: 0 });
   h.out.sendRichFailsWith = new TgError("sendRichMessage", 400, "rich parse error");
   const m = await runToConfirm(h);
@@ -111,12 +136,11 @@ test("rich 400 → the whole message falls back to HTML chunks", async () => {
   await tick();
 
   const html = h.out.calls.filter((c) => c.kind === "send" && c.opts?.parseMode === "HTML");
-  assert.equal(html.length, 2, `m1 + m2 via the HTML path, got ${JSON.stringify(html.map((c) => c.text))}`);
-  assert.ok(html[0]?.text?.includes("Completed ✔️"), "m1 content");
-  assert.equal(html[1]?.text, "The answer is 42.", "m2 content");
+  assert.ok(html.some((c) => c.text?.includes("Completed ✔️")), "m1 via the HTML path");
+  assert.ok(html.some((c) => c.text === "The answer is 42."), "m2 via the HTML path");
 });
 
-test("rich 400 AND html 400 → plain text (no parse mode)", async () => {
+test("rich 400 AND html 400 → both messages plain text (no parse mode)", async () => {
   const h = makeMirrorDeps({ streamEditMs: 0 });
   h.out.sendRichFailsWith = new TgError("sendRichMessage", 400, "rich parse error");
   h.out.sendHtmlFailsWith = new TgError("sendMessage", 400, "html parse error");
@@ -125,12 +149,11 @@ test("rich 400 AND html 400 → plain text (no parse mode)", async () => {
   await tick();
 
   const plain = h.out.calls.filter((c) => c.kind === "send" && c.opts?.parseMode === null);
-  assert.equal(plain.length, 2, `m1 + m2 plain, got ${JSON.stringify(plain.map((c) => c.text))}`);
-  assert.ok(plain[0]?.text?.includes("Completed ✔️"), "m1 content");
-  assert.equal(plain[1]?.text, "The answer is 42.", "m2 content");
+  assert.ok(plain.some((c) => c.text?.includes("Completed ✔️")), "m1 plain");
+  assert.ok(plain.some((c) => c.text === "The answer is 42."), "m2 plain");
 });
 
-test("429 with retry_after: retried with backoff (max of backoff and retry_after) until success", async () => {
+test("429 with retry_after: m1 retried with backoff (max of backoff and retry_after) until success", async () => {
   const h = makeMirrorDeps({ streamEditMs: 0 });
   h.out.sendRichFailScript = (attempt) => (attempt < 2 ? new TgError("sendRichMessage", 429, "slow down", 3) : undefined);
   const m = await runToConfirm(h);
@@ -147,7 +170,7 @@ test("429 with retry_after: retried with backoff (max of backoff and retry_after
   assert.ok(richCalls(h).some((c) => c.text === "The answer is 42."), "m2 eventually sent");
 });
 
-test("all 3 attempts fail → finalize rejects (TUI surfaces it via the existing safe() path); m2 not attempted", async () => {
+test("all 3 attempts on m1 fail → finalize rejects; m2 not attempted", async () => {
   const h = makeMirrorDeps({ streamEditMs: 0 });
   h.out.sendRichFailScript = () => new TgError("sendRichMessage", 429, "down", 1);
   const m = await runToConfirm(h);
@@ -161,16 +184,18 @@ test("all 3 attempts fail → finalize rejects (TUI surfaces it via the existing
   await tick();
   const err = (await settled) as TgError | undefined;
   assert.ok(err instanceof TgError && err.code === 429, `finalize rejects with the last error, got: ${String(err)}`);
-  assert.equal(h.out.sendRichAttempts, 3, "exactly 3 attempts");
+  assert.equal(h.out.sendRichAttempts, 3, "exactly 3 attempts on m1");
   assert.ok(!richCalls(h).some((c) => c.text === "The answer is 42."), "m2 is never attempted after m1 fails");
 });
 
-test("the flip bypasses a closed throttle window", async () => {
+test("finalize is not gated by a closed stream window", async () => {
   const h = makeMirrorDeps({ streamEditMs: 5000 });
   const m = await runToConfirm(h);
-  // the window is closed here (the last candidate send set it)
-  m.onAssistantEnd(textMsg("The answer is 42.", { stopReason: "stop" }));
+  // the window is closed here (the last candidate send set it); the
+  // persistent sends must go out immediately — the run is over
+  const p = m.onAssistantEnd(textMsg("The answer is 42.", { stopReason: "stop" }));
   await tick();
-  const flip = draftCalls(h).find((c) => c.text?.includes("Completed ✔️"));
-  assert.ok(flip, "the flip goes out immediately, not gated by streamEditMs");
+  assert.ok(richCalls(h)[0]?.text?.includes("Completed ✔️"), "m1 persists immediately despite the closed window");
+  await p;
+  assert.equal(richCalls(h).length, 2, "m2 follows");
 });

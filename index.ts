@@ -339,6 +339,11 @@ export default function piTelega(pi: ExtensionAPI): void {
   pi.on("agent_end", (event) => {
     safe(currentMirror?.onAgentEnd(event.messages as unknown as MirrorMessage[]));
   });
+  pi.on("agent_settled", () => {
+    // The stream is really over (no auto-retry/compaction/continuation will
+    // run) — error ends finalize here, not at agent_end.
+    safe(currentMirror?.onAgentSettled());
+  });
   pi.on("message_start", (event) => {
     safeCall(() => currentMirror?.onAssistantStart(event.message as unknown as MirrorMessage));
   });

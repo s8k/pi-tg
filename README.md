@@ -88,7 +88,6 @@ Env `PI_TELEGA_BOT_TOKEN` overrides the stored token.
 | `botToken` | — | Bot API token |
 | `ownerId` | — | Telegram user ID allowed to drive the bot |
 | `streamEditMs` | `1500` | throttle for rich-draft updates |
-| `toolPreviewChars` | `300` | tool argument preview length cap |
 | `askClearOnSwitch` | `true` | ask “clear?” when switching sessions |
 | `muted` | `false` | agent output suppressed (`/mute`/`/unmute` from the phone) |
 | `maxSessionList` | `20` | `/sessions` list cap |

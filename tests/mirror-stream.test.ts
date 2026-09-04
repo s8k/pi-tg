@@ -1,7 +1,8 @@
-// Slot state machine (message 2 — the answer candidate slot): candidate →
-// demote → re-candidate → confirm; one slot per run; textless candidates
-// never create the slot; demotion clears content but keeps the draft id;
-// one-way switch once finalized.
+// Single-draft stream (2026-09-03 flow revision): ONE richMessageDraft carries
+// everything — the work log, the in-flight message text (tail), and the
+// <tg-thinking> spinner. No slot draft, no second id, ever. A tool-carrying
+// message's text commits to the log at message_end (the tail clears); the
+// confirmed text stays as the answer under the final marker.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Mirror, type MirrorMessage } from "../src/mirror.ts";
@@ -24,7 +25,7 @@ const textMsg = (text: string, extra: Partial<MirrorMessage> = {}): MirrorMessag
   ...extra,
 });
 
-test("agent_start creates the work-log draft (id 1) with can_stop + keep_on_stop and a thinking bottom line", async () => {
+test("agent_start creates the single draft (id 1) with can_stop + keep_on_stop and a thinking bottom line", async () => {
   const h = makeMirrorDeps({ streamEditMs: 0 });
   const m = new Mirror(h.deps);
   m.onAgentStart();
@@ -37,7 +38,7 @@ test("agent_start creates the work-log draft (id 1) with can_stop + keep_on_stop
   assert.match(calls[0]?.text ?? "", /^<tg-thinking>\w+…<\/tg-thinking>$/);
 });
 
-test("candidate text streams into the slot (second draft id); the work-log draft never shows it", async () => {
+test("the answer text streams into the SAME draft — no second draft is ever created", async () => {
   const h = makeMirrorDeps({ streamEditMs: 0 });
   const m = new Mirror(h.deps);
   m.onAgentStart();
@@ -45,14 +46,13 @@ test("candidate text streams into the slot (second draft id); the work-log draft
   m.onAssistantUpdate(textMsg("He"));
   m.onAssistantUpdate(textMsg("Hello"));
   await tick();
-  const ids = draftIds(h);
-  assert.equal(ids.length, 2, `draft ids: ${ids.join(",")}`);
-  const slotId = ids.find((id) => id !== 1)!;
-  assert.equal(latest(h, slotId), "Hello");
-  for (const c of draftCalls(h).filter((c) => c.draftId === 1)) assert.ok(!c.text?.includes("Hello"), c.text ?? "");
+  assert.deepEqual(draftIds(h), [1], "one draft for the whole run");
+  const content = latest(h, 1);
+  assert.ok(content.startsWith("Hello\n\n"), `text on top, got: ${JSON.stringify(content)}`);
+  assert.match(content, /<tg-thinking>\w+…<\/tg-thinking>$/, "the spinner stays below the streaming text");
 });
 
-test("textless candidates never create the slot draft", async () => {
+test("textless candidates never trigger a draft update", async () => {
   const h = makeMirrorDeps({ streamEditMs: 0 });
   const m = new Mirror(h.deps);
   m.onAgentStart();
@@ -60,10 +60,11 @@ test("textless candidates never create the slot draft", async () => {
   m.onAssistantUpdate({ role: "assistant", content: [{ type: "thinking", thinking: "hmm" }] });
   m.onAssistantUpdate({ role: "assistant", content: [{ type: "thinking", thinking: "hmm, let me think" }] });
   await tick();
+  assert.equal(draftCalls(h).length, 1, "the spawn send only — no update for textless parts");
   assert.deepEqual(draftIds(h), [1]);
 });
 
-test("demotion: a toolCall clears the slot (same draft id) and moves its text into the work log", async () => {
+test("a toolCall mid-stream does not wipe the tail — the text keeps showing until the commit", async () => {
   const h = makeMirrorDeps({ streamEditMs: 0 });
   const m = new Mirror(h.deps);
   m.onAgentStart();
@@ -76,7 +77,8 @@ test("demotion: a toolCall clears the slot (same draft id) and moves its text in
     ],
   });
   await tick();
-  const slotId = draftIds(h).find((id) => id !== 1)!;
+  assert.ok(latest(h, 1).includes("Let me check the file."), "the text streams into the draft");
+  // the tool call arrives in the next chunk — the visible text must stay
   m.onAssistantUpdate({
     role: "assistant",
     content: [
@@ -86,10 +88,8 @@ test("demotion: a toolCall clears the slot (same draft id) and moves its text in
     ],
   });
   await tick();
-  // the slot is cleared back to the spinner — no new draft id appears
-  assert.deepEqual(draftIds(h), [1, slotId]);
-  assert.match(latest(h, slotId), /<tg-thinking>\w+…<\/tg-thinking>/);
-  // the work log carries the demoted text + pending tool block after commit
+  assert.ok(latest(h, 1).includes("Let me check the file."), "no spinner flash when the toolCall chunk arrives");
+  // message_end commits: the text becomes a log block (same place), the tail clears
   m.onAssistantEnd({
     role: "assistant",
     content: [
@@ -101,12 +101,56 @@ test("demotion: a toolCall clears the slot (same draft id) and moves its text in
   });
   await tick();
   const log = latest(h, 1);
-  assert.equal((log.match(/Let me check the file\./g) ?? []).length, 1, log);
-  assert.ok(log.includes("⚙ read src/app.ts …"), log);
+  assert.equal((log.match(/Let me check the file\./g) ?? []).length, 1, "exactly once — committed, not duplicated");
+  assert.ok(log.includes("⚙ read …"), log);
   assert.ok(log.includes("💭"), "why line from the thinking stream");
 });
 
-test("re-candidate: the next message streams into the SAME slot draft; tool stamps update the log", async () => {
+test("no flicker across a tool loop: committed text and streamed text are never wiped from the draft", async () => {
+  const h = makeMirrorDeps({ streamEditMs: 0 });
+  const m = new Mirror(h.deps);
+  m.onAgentStart();
+  m.onAssistantStart(textMsg(""));
+  m.onAssistantUpdate(textMsg("Let me check the file."));
+  await tick();
+  m.onAssistantUpdate({
+    role: "assistant",
+    content: [
+      { type: "text", text: "Let me check the file." },
+      { type: "toolCall", id: "c1", name: "read", arguments: { path: "a.ts" } },
+    ],
+  });
+  m.onAssistantEnd({
+    role: "assistant",
+    content: [
+      { type: "text", text: "Let me check the file." },
+      { type: "toolCall", id: "c1", name: "read", arguments: { path: "a.ts" } },
+    ],
+    stopReason: "toolUse",
+  });
+  await tick();
+  m.onToolEnd("c1", false, { content: [{ type: "text", text: "file body" }] });
+  m.onAssistantStart(textMsg(""));
+  m.onAssistantUpdate(textMsg("Fixed it."));
+  await tick();
+
+  const calls = draftCalls(h);
+  assert.deepEqual(draftIds(h), [1], "one draft id for the whole loop");
+  const all = calls.map((c) => c.text ?? "");
+  const firstCommitted = all.findIndex((t) => t.includes("Let me check the file."));
+  assert.ok(firstCommitted >= 0, "the text is visible from the first stream chunk");
+  for (let i = firstCommitted; i < all.length; i++) {
+    assert.ok(all[i]!.includes("Let me check the file."), `committed text stays visible (send ${i}): ${JSON.stringify(all[i])}`);
+    assert.ok(all[i]!.includes("<tg-thinking>"), `spinner present while working (send ${i})`);
+  }
+  const firstFixed = all.findIndex((t) => t.includes("Fixed it."));
+  assert.ok(firstFixed > firstCommitted, "the next message's text streams in");
+  for (let i = firstFixed; i < all.length; i++) {
+    assert.ok(all[i]!.includes("Fixed it."), `new tail stays visible (send ${i})`);
+  }
+});
+
+test("re-candidate: the next message streams into the SAME draft; tool stamps update the log", async () => {
   const h = makeMirrorDeps({ streamEditMs: 0 });
   const m = new Mirror(h.deps);
   m.onAgentStart();
@@ -118,17 +162,15 @@ test("re-candidate: the next message streams into the SAME slot draft; tool stam
     stopReason: "toolUse",
   });
   await tick();
-  assert.deepEqual(draftIds(h), [1], "a textless tool message never creates the slot");
+  assert.deepEqual(draftIds(h), [1], "a textless tool message adds nothing");
   m.onToolEnd("c1", false, { content: [{ type: "text", text: "file body" }] });
   await tick();
-  assert.ok(latest(h, 1).includes("⚙ read a.ts ✔"), latest(h, 1));
+  assert.ok(latest(h, 1).includes("⚙ read ✔"), latest(h, 1));
   m.onAssistantStart(textMsg(""));
   m.onAssistantUpdate(textMsg("Fixed it."));
   await tick();
-  const ids = draftIds(h);
-  assert.equal(ids.length, 2, "the slot is created once, for the run");
-  const slot = ids.find((id) => id !== 1)!;
-  assert.equal(latest(h, slot), "Fixed it.");
+  assert.deepEqual(draftIds(h), [1], "still one draft — the next message reuses it");
+  assert.ok(latest(h, 1).includes("Fixed it."), "the new message's text streams into the same draft");
 });
 
 test("confirm (stop, no tools): no further draft updates after (one-way switch)", async () => {
@@ -140,7 +182,7 @@ test("confirm (stop, no tools): no further draft updates after (one-way switch)"
   m.onAssistantEnd(textMsg("The answer is 42.", { stopReason: "stop" }));
   await tick();
   const before = draftCalls(h).length;
-  // a late event must not touch either draft
+  // a late event must not touch the draft
   m.onAssistantStart(textMsg(""));
   m.onAssistantUpdate(textMsg("late"));
   m.onToolEnd("cX", false, {});
@@ -149,7 +191,7 @@ test("confirm (stop, no tools): no further draft updates after (one-way switch)"
   assert.equal(draftCalls(h).length, before);
 });
 
-test("a 'length' stop WITH a tool call does NOT confirm — the run continues", async () => {
+test("a 'length' stop WITH a tool call does NOT confirm — the run continues in the same draft", async () => {
   const h = makeMirrorDeps({ streamEditMs: 0 });
   const m = new Mirror(h.deps);
   m.onAgentStart();
@@ -164,21 +206,20 @@ test("a 'length' stop WITH a tool call does NOT confirm — the run continues", 
     stopReason: "length",
   });
   await tick();
-  // not finalized: the failed tool stamps in and a new candidate still streams
+  // not finalized: the failed tool stamps in and the next candidate streams on
   m.onToolEnd("c2", true, { content: [{ type: "text", text: "not executed: output token limit" }] });
   await tick();
   const log = latest(h, 1);
-  assert.ok(log.includes("⚙ bash ls ✖"), log);
+  assert.ok(log.includes("⚙ bash ✖"), log);
   assert.ok(log.includes("<pre>not executed: output token limit</pre>"), log);
   m.onAssistantStart(textMsg(""));
   m.onAssistantUpdate(textMsg("Retry."));
   await tick();
-  const slot = draftIds(h).find((id) => id !== 1);
-  assert.ok(slot !== undefined, "the slot exists for the new candidate");
-  assert.equal(latest(h, slot), "Retry.");
+  assert.deepEqual(draftIds(h), [1], "still the single draft");
+  assert.ok(latest(h, 1).includes("Retry."), "the new candidate streams into it");
 });
 
-test("spinner-only slot: a thinking-only run never creates the slot draft", async () => {
+test("spinner-only run: the single draft never gains text", async () => {
   const h = makeMirrorDeps({ streamEditMs: 0 });
   const m = new Mirror(h.deps);
   m.onAgentStart();
@@ -206,31 +247,30 @@ test("shared throttle: a fast second update is coalesced and drained at streamEd
   m.onAgentStart();
   await tick(); // let the spawn pump settle (it owns the throttle window)
   h.out.calls.length = 0;
-  m.onAssistantStart(textMsg("")); // resets the throttle window
-  m.onAssistantUpdate(textMsg("A")); // slot created, "A" out now
-  m.onAssistantUpdate(textMsg("AB")); // gated by the shared streamEditMs window
+  m.onAssistantStart(textMsg("")); // forceNext: the first send of a message breaks the window
+  m.onAssistantUpdate(textMsg("A")); // out now
+  m.onAssistantUpdate(textMsg("AB")); // gated by the streamEditMs window
   await tick();
-  const slot = draftIds(h).find((id) => id !== 1)!;
-  assert.equal(latest(h, slot), "A");
+  assert.ok(latest(h, 1).includes("A"), `latest shows "A", got: ${JSON.stringify(latest(h, 1))}`);
+  assert.ok(!latest(h, 1).includes("AB"), "the fast second update is still queued");
   h.advance(1000);
   await tick();
-  assert.equal(latest(h, slot), "AB");
+  assert.ok(latest(h, 1).includes("AB"), "the coalesced update drains at the window edge");
 });
 
-test("heartbeat re-sends both live drafts (log + slot)", async () => {
+test("heartbeat re-sends the live draft", async () => {
   const h = makeMirrorDeps({ streamEditMs: 0, draftHeartbeatMs: 17000 });
   const m = new Mirror(h.deps);
   m.onAgentStart();
   m.onAssistantStart(textMsg(""));
   m.onAssistantUpdate(textMsg("Hi"));
   await tick();
-  const slot = draftIds(h).find((id) => id !== 1)!;
   h.out.calls.length = 0;
   h.advance(17000);
   await tick();
-  assert.ok(draftCalls(h).some((c) => c.draftId === 1), "log draft refreshed");
-  assert.ok(draftCalls(h).some((c) => c.draftId === slot), "slot draft refreshed");
-  assert.equal(latest(h, 1).length > 0, true);
+  assert.equal(draftCalls(h).length, 1, "exactly one refresh");
+  assert.equal(draftCalls(h)[0]?.draftId, 1);
+  assert.ok(draftCalls(h)[0]?.text?.includes("Hi"), "the refresh carries the current content");
 });
 
 test("tool end ✖: error text visible in a <pre>, HTML-escaped and capped at 400 chars", async () => {
@@ -252,7 +292,7 @@ test("tool end ✖: error text visible in a <pre>, HTML-escaped and capped at 40
   m.onToolEnd("c1", true, errText);
   await tick();
   const log = latest(h, 1);
-  assert.ok(log.includes("⚙ bash boom ✖"), log);
+  assert.ok(log.includes("⚙ bash ✖"), log);
   const pre = /<pre>([\s\S]*?)<\/pre>/.exec(log);
   assert.ok(pre, log);
   const inner = pre[1];
@@ -260,7 +300,6 @@ test("tool end ✖: error text visible in a <pre>, HTML-escaped and capped at 40
   assert.ok(inner.length <= 401, `errorText capped, got ${inner.length}`);
   assert.ok(inner.endsWith("…"), "cap marked with an ellipsis");
 });
-
 
 test("a drain firing early (window extended after arming) does not kill the pipeline", async (t) => {
   // Real-clock scenario the fake clock usually masks: the spawn pump arms the
@@ -280,7 +319,7 @@ test("a drain firing early (window extended after arming) does not kill the pipe
   h.advance(40);
   m.onAssistantStart({ role: "assistant", content: [] }); // forceNext
   m.onAssistantUpdate({ role: "assistant", content: [{ type: "text", text: "mid" }] });
-  await tick(); // forced demote send @40: window → 1040 (old drain now "early")
+  await tick(); // forced send @40: window → 1040 (old drain now "early")
   const p = m.onAssistantEnd({
     role: "assistant",
     content: [{ type: "toolCall", id: "c1", name: "read", arguments: {} }],

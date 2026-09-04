@@ -514,7 +514,6 @@ export type ToolState = "…" | "✔" | "✖";
 
 export interface ToolBlockSpec {
   name: string;
-  keyArg: string;
   argsJson: string;
   why?: string;
   state: ToolState;
@@ -525,25 +524,29 @@ export interface ToolBlockSpec {
  * One work-log tool block (its own lines; the caller separates blocks with a
  * blank line):
  *
- *   ⚙ read src/app.ts ✔
- *   💭 *"the test expects a 302."*
- *   <details><summary>params</summary>
+ *   💭 *"the test expects a 302."*   ← the WHY first (motivation), then the call
+ *
+ *   <details><summary>⚙ read ✔</summary>   ← the tool name + state stamp is
+ *                                              the summary (no "params" label)
  *
  *   ```json
- *   { … }
+ *   { … }                            ← the full arguments live here
  *   ```
  *
  *   </details>
+ *
  *   <pre>RangeError: …</pre>        ← only on ✖, visible (not collapsed)
  *
+ * Segments are joined with BLANK lines — a bare newline is a soft wrap in
+ * Markdown, so each segment must be its own paragraph to sit on its own line.
  * All bot-generated text is HTML-escaped; the why line is italic markdown.
  */
 export function renderToolBlock(t: ToolBlockSpec): string {
-  const lines = [`⚙ ${t.name}${t.keyArg ? ` ${t.keyArg}` : ""} ${t.state}`];
-  if (t.why) lines.push(`💭 *"${escapeHtml(t.why)}"*`);
-  lines.push("<details><summary>params</summary>", "", "```json", escapeHtml(t.argsJson), "```", "", "</details>");
-  if (t.state === "✖" && t.errorText) lines.push(`<pre>${escapeHtml(t.errorText)}</pre>`);
-  return lines.join("\n");
+  const segments: string[] = [];
+  if (t.why) segments.push(`💭 *"${escapeHtml(t.why)}"*`);
+  segments.push([`<details><summary>⚙ ${t.name} ${t.state}</summary>`, "", "```json", escapeHtml(t.argsJson), "```", "", "</details>"].join("\n"));
+  if (t.state === "✖" && t.errorText) segments.push(`<pre>${escapeHtml(t.errorText)}</pre>`);
+  return segments.join("\n\n");
 }
 
 /** Tool arguments → pretty JSON, capped so the collapsed params block stays small. */

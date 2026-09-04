@@ -1,9 +1,11 @@
 // Wiring smoke: boot the real extension entry (index.ts) with a fake pi +
 // fake fetch, and drive it with pi events — proving the glue end to end:
-//   - drafts go out with can_stop + keep_on_stop,
+//   - the single draft goes out with can_stop + keep_on_stop,
 //   - tool_execution_end's `result` reaches the wire (✖ block + error text),
-//   - the clean-end finalization persists m1 (Completed ✔️) then m2 (answer)
-//     as real sendRichMessage calls.
+//   - the clean-end finalization: the draft gets the completed state
+//     ([log] Completed ✔️ [answer] — no divider), then the split —
+//     m1 = log + Completed ✔️ (answer cut) and m2 = the answer, as
+//     regular richMessages.
 // Config is isolated via PI_CODING_AGENT_DIR (a fresh temp agent dir — the
 // module snapshots getAgentDir() at load time, so the env must be set before
 // importing index.ts).
@@ -124,17 +126,39 @@ test("index.ts wiring: events → mirror → client wire (full clean run)", asyn
   handlers.get("message_update")!({ message: { role: "assistant", content: [{ type: "text", text: "The answer is 42." }] } });
   handlers.get("message_end")!({ message: { role: "assistant", content: [{ type: "text", text: "The answer is 42." }], stopReason: "stop" } });
 
-  // clean-end finalization: the flip, then the two persistent rich sends (m1, m2)
-  await waitFor(() => calls.some((c) => c.method === "sendRichMessage" && c.markdown.includes("Completed ✔️")), "m1 persist");
-  await waitFor(() => calls.some((c) => c.method === "sendRichMessage" && c.markdown.includes("The answer is 42.")), "m2 persist");
-  const richSends = calls.filter((c) => c.method === "sendRichMessage");
-  const m1 = richSends.find((c) => c.markdown.includes("Completed ✔️"))!;
-  const m2 = richSends.find((c) => c.markdown.includes("The answer is 42."))!;
-  assert.equal(richSends.length, 2, "exactly m1 + m2");
-  assert.ok(m1.markdown.includes("⚙ read a.ts ✖"), "m1 carries the failed tool block");
-  assert.equal(m2.markdown, "The answer is 42.");
-  assert.ok(
-    calls.indexOf(m1) < calls.indexOf(m2),
-    "chronology: m1 before m2",
+  // the draft's completed state: the full composed message is visible in the
+  // draft (log → marker → divider → answer, spinner gone)
+  await waitFor(
+    () =>
+      calls.some(
+        (c) =>
+          c.method === "sendRichMessageDraft" &&
+          c.markdown.includes("Completed ✔️") &&
+          c.markdown.includes("The answer is 42."),
+      ),
+    "completed-state draft",
   );
+  const preview = calls
+    .filter((c) => c.method === "sendRichMessageDraft" && c.markdown.includes("Completed ✔️"))
+    .pop()!;
+  assert.ok(!preview.markdown.includes("---"), "no divider between the log and the answer");
+  const pOrder = [preview.markdown.indexOf("⚙ read ✖"), preview.markdown.indexOf("Completed ✔️"), preview.markdown.indexOf("The answer is 42.")];
+  assert.ok(pOrder.every((i) => i >= 0), `all parts in the preview, got: ${JSON.stringify(preview.markdown)}`);
+  assert.ok(pOrder[0]! < pOrder[1]! && pOrder[1]! < pOrder[2]!, `wrong preview order: ${pOrder}`);
+  assert.ok(!preview.body.can_stop, "no Stop button on the completed preview (can_stop omitted when false)");
+  assert.ok(!preview.markdown.includes("<tg-thinking>"), "the spinner is gone from the preview");
+
+  // the split: m1 = log + Completed ✔️ (the answer is CUT) → m2 = the answer
+  await waitFor(() => calls.filter((c) => c.method === "sendRichMessage").length >= 2, "the two persistent sends");
+  const richSends = calls.filter((c) => c.method === "sendRichMessage");
+  assert.equal(richSends.length, 2, `m1 + m2, got ${richSends.length}`);
+  const m1 = richSends[0]!;
+  const m2 = richSends[1]!;
+  assert.ok(m1.markdown.includes("⚙ read ✖"), "the failed tool block is in m1");
+  assert.ok(m1.markdown.includes("Completed ✔️"), "m1 ends with the marker");
+  assert.ok(!m1.markdown.includes("The answer is 42."), "the answer is cut from m1");
+  assert.ok(!m1.markdown.includes("---"), "no divider in m1");
+  assert.equal(m2.markdown, "The answer is 42.", "m2 is the answer, verbatim");
+  const draftIdx = calls.indexOf(calls.filter((c) => c.method === "sendRichMessageDraft" && c.markdown.includes("Completed ✔️")).pop()!);
+  assert.ok(draftIdx < calls.indexOf(m1) && calls.indexOf(m1) < calls.indexOf(m2), "chronology: completed-state draft → m1 → m2");
 });

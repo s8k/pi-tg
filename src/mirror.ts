@@ -1,17 +1,34 @@
 /**
- * Two-message LLM mirroring on top of the rich draft (Bot API 10.2).
+ * Single-draft LLM mirroring on top of the rich draft (Bot API 10.2).
  *
- * Message 1 — the work log: a chronological log of narration, tool calls
- * (params collapsed, errors visible), user prompts, provider errors, and a
- * bottom line (working spinner / Completed ✔️ / ⚠ Error / none on manual
- * stop). Message 2 — the answer: a candidate slot that streams the assistant
- * text live; a tool call demotes the candidate into message 1 (the slot
- * clears, the draft id is kept), and the surviving candidate is persisted as
- * the final answer when the run confirms.
+ * One richMessageDraft carries the whole run: a chronological work log
+ * (narration, tool calls with params collapsed and errors visible, user
+ * prompts, provider errors), the in-flight message text (the tail), and a
+ * bottom line. While working the <tg-thinking> spinner sits below the tail.
+ * The clean end is a three-step split: the draft gets the COMPLETED STATE
+ * (spinner out, `Completed ✔️` at the end of the work, NO divider, then the
+ * answer — the final composed message is visible in the draft), then
+ * message 1 persists as the work log + `Completed ✔️` (the answer is CUT —
+ * this send also finalizes the draft: per the Bot API any message sent to the
+ * chat instantly clears the ephemeral draft, and sendRichMessage has no
+ * draft_id), and the answer is sent as message 2 — its own regular
+ * richMessage. End state: the tool log is the previous message, the answer
+ * the new one. Error ends stay single messages (the `⚠️ error: …` block at
+ * the end of the work, the partial answer + `⚠ incomplete` — no `⚠ Error`
+ * marker, no divider) and finalize only at agent_settled (the end of the
+ * stream): pi auto-retries retryable provider errors, so an agent_end after
+ * an error does NOT finalize — the draft stays alive until the retried run
+ * starts or the stream settles.
+ *
+ * A tool-carrying message commits its text to the log at message_end (the
+ * tail clears — the text keeps its place); a stop/length message with no tool
+ * calls confirms the run (the tail becomes the answer under the marker).
+ * (2026-09-03 flow revision: the old two-draft log/slot design collapsed
+ * into one message.)
  *
  * Draft sending is paced and self-limiting (Bot API allows ~1 msg/s per chat
  * and a 429 must never cascade into a request flood):
- *  - at most ONE draft call in flight across BOTH drafts; later updates
+ *  - at most ONE draft call in flight; later updates
  *    coalesce into a single follow-up with the latest content;
  *  - the success cooldown (streamEditMs) is shared by all senders (stream
  *    updates, tool events, heartbeat) — no bursts in the same second;
@@ -35,22 +52,8 @@ export interface MirrorMessage {
   errorMessage?: string;
 }
 
-/** Preview text for a tool call (the key argument shown on the block's first line). */
-export function toolPreview(tool: string, args: unknown, maxChars: number): string {
-  const a = args as Record<string, unknown> | undefined;
-  if (tool === "bash" && typeof a?.command === "string") return a.command;
-  if (tool === "read" && typeof a?.path === "string") return a.path;
-  if (tool === "write" && typeof a?.path === "string") return a.path;
-  if (tool === "edit" && typeof a?.path === "string") return a.path;
-  if (typeof a?.file_path === "string") return a.file_path;
-  if (typeof a?.path === "string") return a.path;
-  if (typeof a?.url === "string") return a.url;
-  if (typeof a?.query === "string") return a.query;
-  const s = JSON.stringify(args ?? {});
-  return s.length > maxChars ? s.slice(0, maxChars) + "…" : s;
-}
 
-// ─────────────────────────── Work log model (two-message mirror) ───────────────────────────
+// ─────────────────────────── Work log model (single draft) ───────────────────────────
 
 /**
  * One committed, chronological block of the work log (message 1). Each block
@@ -62,7 +65,6 @@ export type LogBlock =
       type: "tool";
       id: string; // toolCallId — tool_execution_* events stamp these by id
       name: string;
-      keyArg: string;
       argsJson: string;
       why?: string;
       state: ToolState;
@@ -75,14 +77,25 @@ export type LogBlock =
 export type BottomLine =
   | { kind: "thinking"; word: string } // working: <tg-thinking>word…</tg-thinking>
   | { kind: "done" } // clean end: Completed ✔️
-  | { kind: "error" } // error end: ⚠ Error
+  | { kind: "error" } // error end: no marker (the ⚠️ error: log block says it)
   | { kind: "none" }; // manual stop: removed, no marker
 
 /**
- * Render the work log: committed blocks + the in-flight demoted tail (if any)
- * + the bottom line, each separated by one blank line. The SAME builder
- * renders live drafts and persistent sends, so demotion, the ✔ flip and
- * finalization cannot drift apart.
+ * Render the single mirror message: committed blocks + the in-flight tail
+ * (the current message's text) + the bottom line, each separated by one
+ * blank line. Layout by bottom kind:
+ *  - thinking (while working): [blocks] [tail] --- <tg-thinking>…</tg-thinking>
+ *    — the spinner stays LAST, below the streaming text; whenever there is
+ *    any text above it (blocks and/or the tail), a horizontal line
+ *    separates the two (nothing above the spinner → no line).
+ *  - done / error (finalized): [blocks] [Completed ✔️] [tail]
+ *    — the marker sits at the end of the work (after the tool blocks), then
+ *    the answer. NO divider: the answer is split into its own message anyway,
+ *    so the log part needs no horizontal line. Error ends have no marker at
+ *    all — the `⚠️ error: …` log block already carries the signal.
+ *  - none (stopped):           [blocks] [tail]
+ * The SAME builder renders live drafts and the final persistent send, so
+ * the finalize transition cannot drift from what the draft showed.
  */
 export function blocksToMd(log: LogBlock[], opts: { tail?: string; bottom: BottomLine }): string {
   const parts = log.map((b) => {
@@ -93,9 +106,19 @@ export function blocksToMd(log: LogBlock[], opts: { tail?: string; bottom: Botto
         return b.text;
     }
   });
-  if (opts.tail && opts.tail.trim()) parts.push(opts.tail);
+  const tail = opts.tail && opts.tail.trim() ? opts.tail : undefined;
+  if (opts.bottom.kind === "done" || opts.bottom.kind === "error") {
+    const marker = bottomLineText(opts.bottom); // done: "Completed ✔️", error: ""
+    if (marker) parts.push(marker);
+    if (tail) parts.push(tail); // no divider — the answer is its own message
+    return parts.join("\n\n");
+  }
+  if (tail) parts.push(tail);
   const bottom = bottomLineText(opts.bottom);
-  if (bottom) parts.push(bottom);
+  if (bottom) {
+    if (parts.length > 0) parts.push("---"); // text above the spinner → a line between
+    parts.push(bottom);
+  }
   return parts.join("\n\n");
 }
 
@@ -106,7 +129,7 @@ export function bottomLineText(bottom: BottomLine): string {
     case "done":
       return "Completed ✔️";
     case "error":
-      return "⚠ Error";
+      return ""; // no second error line — the `⚠️ error: …` block in the log is the signal
     case "none":
       return "";
   }
@@ -233,24 +256,18 @@ function partsOf(msg: MirrorMessage): ContentPart[] {
   return [];
 }
 
-/** Where the in-flight message's text currently renders. */
-type TailMode = "none" | "candidate" | "demoted";
-
 export class Mirror {
   private deps: MirrorDeps;
   // run identity & lifecycle
   private runSeq = 0;
   private phase: "work" | "finalized" = "finalized"; // one-way switch
-  // work log (message 1)
+  // the single draft's content: work log + in-flight tail + bottom line
   private log: LogBlock[] = [];
-  private logId = 0; // draft id of the work log
-  // answer slot (message 2) — one slot per run
-  private slot: { draftId: number; created: boolean } = { draftId: 0, created: false };
-  private tail: { mode: TailMode; text: string } = { mode: "none", text: "" };
-  private finalText: string | undefined; // set when the answer is confirmed
+  private draftId = 0; // the run's single draft id
+  /** The in-flight message's text — rendered between the log and the spinner. */
+  private tail = "";
   private endKind: "clean" | "stop" | "error" | undefined;
-  private thinking: string[] = []; // current message's thinking stream (why extraction)
-  // pacing — shared by BOTH drafts
+  // pacing
   private nextDraftAt = 0; // earliest time a new draft attempt is allowed (throttle + failure cooldown)
   private forceNext = false; // one-shot: the first send of a new message breaks through the window
   private draftSeq = 0;
@@ -275,11 +292,8 @@ export class Mirror {
   onAgentStart(): void {
     this.runSeq++;
     this.log = [];
-    this.tail = { mode: "none", text: "" };
-    this.slot = { draftId: 0, created: false };
-    this.finalText = undefined;
+    this.tail = "";
     this.endKind = undefined;
-    this.thinking = [];
     this.nextDraftAt = 0;
     this.forceNext = false;
     this.pending.clear(); // a stale in-flight update from a prior run may settle later; it is gen-guarded
@@ -287,8 +301,8 @@ export class Mirror {
     this.draftLastFailNotifyAt = 0;
     this.phase = "work";
     if (this.deps.cfg.muted || this.deps.getChatId() === undefined) return;
-    this.logId = ++this.draftSeq;
-    this.requestLogUpdate();
+    this.draftId = ++this.draftSeq;
+    this.requestUpdate();
     this.armHeartbeat();
   }
 
@@ -296,8 +310,7 @@ export class Mirror {
 
   onAssistantStart(msg: MirrorMessage): void {
     if (msg.role !== "assistant" || this.phase !== "work") return;
-    this.thinking = [];
-    this.tail = { mode: "candidate", text: "" };
+    this.tail = ""; // a new message's text accumulates from its parts
     // The first send of a new message is not throttled (the throttled-at-t=0
     // case only applies to the very first message right after the draft spawn).
     // A flag, not a nextDraftAt reset: a reset would be stomped by an
@@ -308,24 +321,15 @@ export class Mirror {
   onAssistantUpdate(msg: MirrorMessage): void {
     if (msg.role !== "assistant" || this.phase !== "work") return;
     const parts = partsOf(msg);
-    this.thinking = parts.filter((p) => p.type === "thinking" && !p.redacted).map((p) => p.thinking ?? "");
-    let demote = false;
     let text = "";
     for (const p of parts) {
-      if (p.type === "toolCall") demote = true;
-      else if (p.type === "text") text += p.text ?? "";
+      if (p.type === "text") text += p.text ?? "";
     }
-    if (demote) {
-      // Demotion: the candidate text becomes part of the work log (as the
-      // tail, until message_end commits it to a block); the slot clears to
-      // the spinner — content only, the draft id is kept.
-      this.tail = { mode: "demoted", text };
-      if (this.slot.created) this.requestSlotUpdate();
-      this.requestLogUpdate();
-    } else {
-      this.tail = { mode: "candidate", text };
-      if (text.trim()) this.wakeSlot(); // textless candidates never create the slot
-    }
+    // toolCall parts are ignored here: they carry no visible text, and the
+    // commit at message_end is what moves the text into the log — a toolCall
+    // chunk mid-stream must NOT wipe the tail (that was the old flicker).
+    this.tail = text;
+    if (text.trim()) this.requestUpdate(); // textless candidates never trigger an update
   }
 
   /**
@@ -357,7 +361,6 @@ export class Mirror {
           type: "tool",
           id: p.id ?? `t${toolCount}`,
           name: p.name ?? "tool",
-          keyArg: toolPreview(p.name ?? "", p.arguments, this.deps.cfg.toolPreviewChars),
           argsJson: toolArgsJson(p.arguments),
           why: extractWhy(thinkingSoFar),
           state: "…",
@@ -370,35 +373,34 @@ export class Mirror {
     // fails those calls ("arguments may be truncated") and the loop
     // continues, so the answer is whatever confirms later.
     if ((msg.stopReason === "stop" || msg.stopReason === "length") && toolCount === 0) {
-      this.finalText = textAll;
+      this.tail = textAll; // the confirmed answer — under the marker at finalization
       this.endKind = "clean";
-      this.tail = { mode: "none", text: "" };
-      this.thinking = [];
       await this.finalize();
       return;
     }
-    flush();
-    if (msg.errorMessage) this.log.push({ type: "agentError", text: `⚠️ error: ${escapeHtml(msg.errorMessage)}` });
-    // Stop/error end states persist the PARTIAL CANDIDATE — whatever the slot
-    // was showing when this message ended (empty = the slot sat at the
-    // spinner, message 2 is skipped). The finalizing agent_end does the sends.
-    const slotText = this.tail.mode === "candidate" ? this.tail.text : "";
-    if (msg.stopReason === "aborted") {
-      this.endKind = "stop";
-      this.finalText = slotText; // the partial candidate as-is
-    } else if (msg.stopReason === "error" || msg.errorMessage) {
-      this.endKind = "error";
-      if (msg.stopReason === "error") this.finalText = slotText; // the ⚠ incomplete trailer is added at finalization
+    const endKind =
+      msg.stopReason === "aborted"
+        ? ("stop" as const)
+        : msg.stopReason === "error" || msg.errorMessage
+          ? ("error" as const)
+          : undefined;
+    if (endKind && toolCount === 0) {
+      // The run ends with a toolless message: its text is the PARTIAL ANSWER
+      // — it stays as the tail (rendered under the end marker at
+      // finalization), not a log block, so it is not duplicated.
+      if (msg.errorMessage) this.log.push({ type: "agentError", text: `⚠️ error: ${escapeHtml(msg.errorMessage)}` });
+      this.endKind = endKind;
+      this.tail = textAll;
+    } else {
+      // Tool-carrying (any stop reason) or mid-run (toolUse, deferred, …):
+      // the text becomes a log block — the tail clears, the text keeps its
+      // place at the end of the log.
+      flush();
+      if (msg.errorMessage) this.log.push({ type: "agentError", text: `⚠️ error: ${escapeHtml(msg.errorMessage)}` });
+      if (endKind) this.endKind = endKind;
+      this.tail = "";
     }
-    // Fast messages demote only at end: if a tool-carrying message never
-    // demoted mid-stream, a slot still showing its text must clear now.
-    if (toolCount > 0 && this.slot.created && this.tail.mode === "candidate" && textAll.trim()) {
-      this.tail = { mode: "demoted", text: textAll };
-      this.requestSlotUpdate();
-    }
-    this.tail = { mode: "none", text: "" };
-    this.thinking = [];
-    this.requestLogUpdate();
+    this.requestUpdate();
   }
 
   // ───────────────────────────── tool events ─────────────────────────────
@@ -421,28 +423,56 @@ export class Mirror {
       changed = true;
       break;
     }
-    if (changed) this.requestLogUpdate();
+    if (changed) this.requestUpdate();
   }
 
   onUiPromptStart(title?: string): void {
     if (this.phase !== "work") return;
     this.log.push({ type: "prompt", text: `⚠️ terminal prompt${title ? `: ${escapeHtml(title)}` : ""} — answer there` });
-    this.requestLogUpdate();
+    this.requestUpdate();
   }
 
   // ───────────────────────────── end of run ─────────────────────────────
 
   async onAgentEnd(_messages: MirrorMessage[]): Promise<void> {
     if (this.phase !== "work") return; // already finalized — one-way switch
+    // A run that ended in an error is NOT the end of the stream: pi
+    // auto-retries retryable provider errors (429/5xx/…) — a new agent_start
+    // comes after the backoff. Do NOT finalize here: no persistent error
+    // message, the draft stays alive (heartbeat) showing the error state.
+    // Finalization for error ends waits for onAgentSettled (the stream is
+    // really over: not retryable, or retries exhausted).
+    if (this.endKind === "error") return;
     if (this.endKind === undefined) this.endKind = "stop"; // e.g. the run produced no assistant message
     await this.finalize();
   }
 
   /**
-   * Finalize the run (one-way): flip the live log draft to the end marker,
-   * then persist the pair — the full work log (m1), then the answer (m2) —
-   * each with chunking, the rich → HTML → plain fallback, and 3 attempts
-   * with backoff. The persistent m1 send kills the ephemeral drafts.
+   * The end of the STREAM (pi's `agent_settled`): the run has fully settled
+   * and no automatic retry, compaction, or queued continuation will run.
+   * This is where error ends finalize; everything else is already done
+   * (clean ends finalize at the confirming message_end, stops at agent_end).
+   */
+  async onAgentSettled(): Promise<void> {
+    if (this.phase !== "work") return; // already finalized — one-way switch
+    if (this.endKind === undefined) this.endKind = "stop";
+    await this.finalize();
+  }
+
+  /**
+   * Finalize the run (one-way). The clean end is a three-step split:
+   *  1) the draft gets the COMPLETED STATE — [log] Completed ✔️ --- [answer]:
+   *     the final composed message is visible in the draft (the spinner is
+   *     replaced by the marker + divider, the answer stays where it was
+   *     streaming);
+   *  2) message 1 — the work log + Completed ✔️ as a regular richMessage; the
+   *     answer is CUT from it. This send also finalizes the draft: per the
+   *     Bot API any message sent to the chat instantly clears the ephemeral
+   *     draft (sendRichMessage has no draft_id — no in-place promotion);
+   *  3) message 2 — the final answer, as its own regular richMessage.
+   * End state: the tool log is the previous message, the answer is the new
+   * one. Stop/error ends stay a single message. Every persistent send gets
+   * chunking, the rich → HTML → plain fallback, and 3 attempts with backoff.
    * Mute = fully silent: nothing at all.
    */
   private async finalize(): Promise<void> {
@@ -455,21 +485,27 @@ export class Mirror {
     if (chatId === undefined) return;
     const bottom: BottomLine =
       this.endKind === "clean" ? { kind: "done" } : this.endKind === "error" ? { kind: "error" } : { kind: "none" };
-    if (this.log.length > 0) {
-      // The flip: the live log draft visibly becomes the end marker before
-      // the persistent send freezes it. Best-effort (its failure must not
-      // block persistence) and throttle-bypassed — the run is over.
-      await this.deps.out.sendDraft(chatId, this.logId, this.logContent(bottom), false, true).catch(() => {});
-      await this.sendPersistent(chatId, this.logMd(bottom)); // full log — chunked, never tailView-capped
+    if (this.endKind === "clean" && this.tail.trim()) {
+      // step 1 — the completed state in the draft. Awaited so the client sees
+      // it before step 2 replaces the draft. Best effort: runDraftOnce
+      // swallows failures (429/400) — the persistent messages still go out.
+      if (this.draftId)
+        await this.runDraftOnce(this.draftId, this.draftContent(bottom), false /* no Stop button — the run is over */);
+      // step 2 — m1: the work log + the Completed marker (the answer is cut).
+      await this.sendPersistent(chatId, blocksToMd(this.log, { bottom }));
+      // step 3 — m2: the final answer, its own message.
+      await this.sendPersistent(chatId, this.tail);
+      return;
     }
-    if (this.finalText && this.finalText.trim()) {
-      const m2 = this.endKind === "error" ? `${this.finalText.trimEnd()}\n\n⚠ incomplete` : this.finalText;
-      await this.sendPersistent(chatId, m2);
-    }
+    const tail = this.endKind === "error" && this.tail.trim() ? `${this.tail.trimEnd()}\n\n⚠ incomplete` : this.tail;
+    const md = blocksToMd(this.log, { tail, bottom }); // full content — chunked, never tailView-capped
+    if (md.trim()) await this.sendPersistent(chatId, md);
   }
 
   /**
-   * One persistent send: fold long fences, chunk at the rich cap (block
+   * One persistent send: fold long fences, chunk at the rich cap (block — the
+   * single finalized message can exceed the cap; the draft is capped, the
+   * final message is not.
    * boundaries), send as rich messages. On a 400 (parse failure — the same
    * content cannot heal) the WHOLE message is re-sent through the legacy
    * HTML path; on a 400 there, plain text. A 400 that survives all three
@@ -520,37 +556,23 @@ export class Mirror {
 
   // ─────────────────────────── content builders ───────────────────────────
 
-  /** The full work log (committed blocks + in-flight demoted tail + bottom line) — for persistent sends. */
-  private logMd(bottom?: BottomLine): string {
+  /** The single draft's full content: [log] [tail] [bottom line]. */
+  private content(bottom?: BottomLine): string {
     return blocksToMd(this.log, {
-      tail: this.tail.mode === "demoted" ? this.tail.text : undefined,
+      tail: this.tail,
       bottom: bottom ?? { kind: "thinking", word: this.thinkingWordNow() },
     });
   }
 
-  /** The work log capped for the ephemeral draft (the draft has a hard size limit). */
-  private logContent(bottom?: BottomLine): string {
-    return tailView(this.logMd(bottom), RICH_CAP);
+  /** The draft's content capped for the ephemeral window (the draft has a hard size limit). */
+  private draftContent(bottom?: BottomLine): string {
+    return tailView(this.content(bottom), RICH_CAP);
   }
 
-  private slotContent(): string {
-    if (this.tail.mode === "candidate" && this.tail.text.trim()) return this.tail.text;
-    return bottomLineText({ kind: "thinking", word: this.thinkingWordNow() });
-  }
-
-  private requestLogUpdate(): void {
-    if (!this.logId) return;
-    this.requestDraftUpdate(this.logId, this.logContent(), true);
-  }
-
-  private requestSlotUpdate(): void {
-    if (!this.slot.created) return;
-    this.requestDraftUpdate(this.slot.draftId, this.slotContent(), true);
-  }
-
-  private wakeSlot(): void {
-    if (!this.slot.created) this.slot = { draftId: ++this.draftSeq, created: true };
-    this.requestSlotUpdate();
+  /** Request a single-draft update (latest wins; paced by the shared window). */
+  private requestUpdate(): void {
+    if (!this.draftId) return;
+    this.requestDraftUpdate(this.draftId, this.draftContent(), true);
   }
 
   // ─────────────────── pacing (shared by both drafts) ───────────────────
@@ -621,9 +643,13 @@ export class Mirror {
     return run;
   }
 
+  /**
+   * One draft send attempt (no phase guard — the pump path is gated by
+   * requestDraftUpdate + the pending map, and finalization calls this
+   * directly for the completed-state preview, after the one-way switch).
+   */
   private async runDraftOnce(draftId: number, content: string, canStop: boolean): Promise<void> {
     const { cfg, out } = this.deps;
-    if (this.phase !== "work") return;
     const chatId = this.deps.getChatId();
     if (chatId === undefined) return;
     try {
@@ -665,8 +691,7 @@ export class Mirror {
     this.hbTimer = this.deps.setTimer(() => {
       this.hbTimer = undefined;
       if (this.phase !== "work") return;
-      this.requestLogUpdate(); // keeps the ~30 s draft window alive (word may have rotated)
-      this.requestSlotUpdate();
+      this.requestUpdate(); // keeps the ~30 s draft window alive (word may have rotated)
       this.armHeartbeat();
     }, this.deps.cfg.draftHeartbeatMs);
   }
