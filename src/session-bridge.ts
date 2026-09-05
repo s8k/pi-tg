@@ -429,6 +429,23 @@ export class SessionBridge {
         await out.send(action.chatId, `Unknown command ${escapeHtml(action.text)} — see /help`);
         return;
       case "prompt": {
+        // B6: reject a text prompt while a MANUAL compaction is in flight.
+        // pi's prompt() throws in that window ("Cannot submit a prompt while
+        // compaction is in progress") and isIdle() is still true there —
+        // without this gate the prompt would be silently lost (the rejection
+        // is invisible to extensions: the ExtensionAPI sendUserMessage
+        // discards the promise) and the early draft would orphan forever
+        // (its heartbeat keeps re-sending it past the ~30 s draft expiry).
+        // NOTE: in-run AUTO-compaction must NOT be gated — pi's guard is
+        // manual-only, and a prompt there is steer-queued and delivered
+        // after the compact (see spec C-section note).
+        if (this.compactState) {
+          await out.send(
+            action.chatId,
+            "🗜 Compaction already in progress — resend your prompt after it finishes"
+          );
+          return;
+        }
         // T6 early draft: the spinner goes out as soon as the prompt is
         // accepted — BEFORE the busy check (a broken ctx must not keep the
         // draft from going out) and before agent_start.

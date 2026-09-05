@@ -244,6 +244,7 @@ file in the same change (and note it under "Change log" at the bottom).
 | B3 | `/compact` (already running) | `🗜 Compaction already in progress — use the Stop button to abort` | 🔔 |
 | B4 | compact cancelled (Stop) | `⚠️ Compaction cancelled` | 🔔 |
 | B5 | compact failed | `⚠️ Compaction Failed: <msg>` | 🔔 |
+| B6 | text prompt while manual compact in flight | `🗜 Compaction already in progress — resend your prompt after it finishes` | 🔔 |
 
 ### C — Lane 2 (auto-commands)
 
@@ -252,6 +253,18 @@ file in the same change (and note it under "Change log" at the bottom).
 | C1 | auto-compact, live draft (pre-run) | spinner → `🗜 Auto-compacting…` → spinner back + log line `🗜 Context auto-compacted ✔️ — <detail>`; draft keeps going | silence until `m2` 🔔 |
 | C2 | auto-compact, no live draft (between runs) | → B with auto strings: draft `🗜 Auto-compacting…` → `🗜 Context auto-compacted ✔️ — <detail>` → persist | 🔔 |
 | C3 | auto-compact fails (any window) | standalone `⚠️ <pi errorMessage>` (already formatted by pi, e.g. `⚠️ Auto-compaction failed: …`); live draft continues | 🔔 |
+
+- A prompt sent during **in-run** auto-compact is deliberately **NOT
+  rejected** (2026-09-05, verified in the 0.84.4 dist): pi's compaction
+  guard in `prompt()` is manual-only (`_compactionAbortController !==
+  undefined`), and an in-run compact keeps `_isAgentRunActive` true →
+  `isIdle() === false` → A15's "⚡ queued" ack goes out and pi steer-queues
+  the prompt; `_handlePostAgentRun` delivers it after the compact
+  (`agent.continue()`). A B6-style gate on the auto path would break a flow
+  that works. The one remaining loss window is a **TUI-initiated** `/compact`
+  (pi throws there too, and the rejection is invisible to extensions — the
+  ExtensionAPI `sendUserMessage` discards the promise and the runner routes
+  it to TUI-only error listeners); out of scope for Phase 1.
 
 `<detail>` = `<before> → <after> tokens` (e.g. `128,432 → 21,904 tokens`)
 for MANUAL compaction; for AUTO it is `<before> tokens` (e.g. `128,432
@@ -550,3 +563,25 @@ Order matters: T1 before T6 (lane 2 renders into the same bottom line).
     `mirror-settle` / `mirror-autocompact` updated; the two-message-mirror
     spec §5.4 header, state table and `agent_end`/`agent_settled` rows
     updated to match.
+- 2026-09-05 — B6: text prompt during manual compact (T9; field report:
+  user ran `/compact`, then text-prompted mid-compact — the prompt
+  vanished, a `tg-thinking`-only draft reappeared after the compact result
+  and never went away, and the next run's answer streamed into that stale
+  draft, above the user's newer prompt). Root cause, verified in the
+  0.84.4 dist: a manual compaction sets `_compactionAbortController` but
+  **not** `_isAgentRunActive`, so `isIdle()` stays true (no "⚡ queued" ack,
+  the prompt goes out as "now") while `prompt()` throws "Cannot submit a
+  prompt while compaction is in progress"; the ExtensionAPI
+  `sendUserMessage` is a sync stub that discards the promise (the runner's
+  `.catch` routes the rejection to TUI-only `errorListeners`), so the
+  rejection is invisible to extensions. The T6 early draft was left
+  orphaned (phase `work`, no run ever starting): its heartbeat
+  (`draftHeartbeatMs`, 17 s default) re-sent the spinner-only draft past
+  the ~30 s ephemeral expiry forever; the compact's persistent send killed
+  it briefly, the heartbeat brought it back; the next run's `onAgentStart`
+  reused the stale draft id (alive, positioned above the user's newer
+  prompt). Fix: the bridge rejects a text prompt while its own
+  `compactState` is active — before `onPromptAccepted`, so no early draft —
+  with the B6 message. Deliberately NOT gated: in-run auto-compact (see the
+  C-section note — the prompt is steer-queued and delivered after the
+  compact). Tests: 3 new (`bridge-compact`).

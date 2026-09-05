@@ -6,7 +6,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { SessionBridge, COMPACT_DRAFT_MD } from "../src/session-bridge.ts";
 import { FakeOut, FakePi } from "./fake-pi.ts";
-import { makeDeps } from "./helpers.ts";
+import { makeDeps, lastSend } from "./helpers.ts";
 
 const tick = (): Promise<void> => new Promise((r) => setImmediate(r));
 
@@ -243,4 +243,54 @@ test("manualCompact(): undefined when no compaction is pending, set during one (
   pi.compactDone?.(true);
   await tick();
   assert.equal(bridge.manualCompact(), undefined, "cleared once finished");
+});
+
+// B6 — a text prompt arriving while a MANUAL compaction is in flight.
+// pi's prompt() throws in that window ("Cannot submit a prompt while
+// compaction is in progress") and isIdle() is still true there, so without
+// the gate the prompt would be silently lost and the early draft would
+// orphan forever. The bridge must reject it with the B6 message before
+// accepting (no early draft, nothing sent to pi).
+test("prompt while manual compact in progress → rejected (B6); nothing sent to pi", async () => {
+  const pi = new FakePi();
+  const out = new FakeOut();
+  const deps = makeDeps(pi.build(), out);
+  let accepted = 0;
+  deps.onPromptAccepted = () => {
+    accepted++;
+  };
+  const bridge = new SessionBridge(deps);
+  await bridge.dispatch({ kind: "compact", chatId: 7 }); // in flight: compactDone never called
+  assert.equal(pi.compactCalls, 1);
+  await bridge.dispatch({ kind: "prompt", chatId: 7, text: "hello" });
+  assert.equal(accepted, 0, "no early draft: onPromptAccepted not called");
+  assert.equal(pi.sentPrompts.length, 0, "prompt NOT sent to pi");
+  const last = out.calls[out.calls.length - 1]!;
+  assert.equal(last.kind, "send", "plain persistent send (notifies), not a draft");
+  assert.equal(last.text, "🗜 Compaction already in progress — resend your prompt after it finishes");
+});
+
+test("prompt while busy-compact (post-abort) in progress → rejected (B6) too", async () => {
+  const pi = new FakePi({ busy: true });
+  const out = new FakeOut();
+  const bridge = new SessionBridge(makeDeps(pi.build(), out));
+  await bridge.dispatch({ kind: "compact", chatId: 7 }); // B2: aborts the run, then compacts
+  assert.equal(pi.compactCalls, 1);
+  await bridge.dispatch({ kind: "prompt", chatId: 7, text: "next" });
+  assert.equal(pi.sentPrompts.length, 0, "prompt NOT sent to pi");
+  assert.equal(
+    lastSend(out),
+    "🗜 Compaction already in progress — resend your prompt after it finishes"
+  );
+});
+
+test("prompt after the compact finished → normal path (B6 gate lifted)", async () => {
+  const pi = new FakePi();
+  const out = new FakeOut();
+  const bridge = new SessionBridge(makeDeps(pi.build(), out));
+  await bridge.dispatch({ kind: "compact", chatId: 7 });
+  pi.compactDone?.(true, "10,000 → 1,000 tokens");
+  await tick();
+  await bridge.dispatch({ kind: "prompt", chatId: 7, text: "hi" });
+  assert.deepEqual(pi.sentPrompts, [{ text: "hi", deliverAs: "now" }]);
 });
