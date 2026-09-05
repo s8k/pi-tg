@@ -122,14 +122,14 @@ test("whenSettled: no chat id (unpaired) → resolves without any send", async (
   assert.equal(h.out.calls.length, 0);
 });
 
-test("whenSettled: error end persists after the grace window (not at agent_end, not at agent_settled) and settles there", async () => {
+test("whenSettled: error end persists AT agent_settled (not at agent_end) and settles there", async () => {
   const h = makeMirrorDeps({ streamEditMs: 0, errorSettleMs: 1000 });
   const m = new Mirror(h.deps);
   m.onAgentStart();
   m.onAssistantStart(textMsg(""));
   m.onAssistantUpdate(textMsg("partial"));
   await m.onAssistantEnd(textMsg("partial", { stopReason: "error", errorMessage: "boom" })); // error endKind
-  await m.onAgentEnd([]); // the run ended — but pi may auto-retry: no finalize yet
+  await m.onAgentEnd([]); // the run ended — but the stream may continue (pi retry): no finalize yet
   await tick();
   let settled = false;
   void m.whenSettled().then(() => {
@@ -137,13 +137,25 @@ test("whenSettled: error end persists after the grace window (not at agent_end, 
   });
   await tick();
   assert.equal(settled, false, "agent_end alone does not settle (pi may retry)");
-  await m.onAgentSettled(); // a retry may still be in its backoff — still no finalize
+  await m.onAgentSettled(); // the stream is over (all retries done) — finalize NOW
   await tick();
-  assert.equal(settled, false, "agent_settled alone does not settle (the retry window is open)");
-  assert.equal(h.out.calls.filter((c) => c.kind === "sendRich").length, 0, "no persistent send at settle");
-  h.advance(1000); // the grace window (errorSettleMs) passes with no continuation
+  assert.equal(settled, true, "settled once agent_settled persisted the error log");
+  const t = h.out.calls.find((c) => c.kind === "sendRich")?.text ?? "";
+  assert.ok(t.includes("⚠️ error: boom"), "the error is in the persistent message");
+  assert.ok(!t.includes("<tg-thinking>"), "no spinner in the persistent message");
+});
+
+test("whenSettled: backstop — when agent_settled never arrives, the grace timer persists the error log", async () => {
+  const h = makeMirrorDeps({ streamEditMs: 0, errorSettleMs: 1000 });
+  const m = new Mirror(h.deps);
+  m.onAgentStart();
+  m.onAssistantStart(textMsg(""));
+  m.onAssistantUpdate(textMsg("partial"));
+  await m.onAssistantEnd(textMsg("partial", { stopReason: "error", errorMessage: "boom" }));
+  await m.onAgentEnd([]);
+  await tick();
+  h.advance(1000); // no agent_settled ever arrives — the timer is the backstop
   await tick();
   await m.whenSettled();
-  assert.equal(settled, true, "settled once the grace timer persisted the error log");
-  assert.ok(h.out.calls.some((c) => c.kind === "sendRich"), "the error end's persistent send went out after the grace window");
+  assert.ok(h.out.calls.some((c) => c.kind === "sendRich"), "the error log was persisted by the grace timer");
 });

@@ -29,12 +29,14 @@ One agent run produces **exactly 1 live rich draft** for the whole run, and
    final answer, sent as its own regular `sendRichMessage`. End state: the
    tool log is the previous message, the answer is the new one. Stop/error
    ends persist a single message instead — and an ERROR end persists only
-   after the settle grace window (`errorSettleMs`, 5 s default): never at
-   `agent_end` and never at `agent_settled` (pi auto-retries retryable
-   provider errors and emits `agent_settled` right before the retry's
-   `agent_start`, same stream) — a retry that arrives carries over the live
-   work log instead (§5.4), and only a grace expiry persists the error log
-   on its own.
+   at `agent_settled` (the end of the WHOLE stream — verified in pi
+   0.84.4/0.85.0: the auto-retry and its backoff run inside the prompt's
+   continuation loop, BEFORE settled): never at `agent_end` (pi auto-retries
+   retryable provider errors) — a retry that arrives carries over the live
+   work log instead (§5.4); the grace timer (`errorSettleMs`, 5 s default)
+   is the backstop only, persisting the error log if `agent_settled` is
+   lost. While the stream is open the draft keeps the ⚠️ line, a `---`
+   divider and the spinner (§5.4).
 
 ## Progress
 
@@ -46,7 +48,14 @@ One agent run produces **exactly 1 live rich draft** for the whole run, and
 - [x] 5. End states & finalization mechanics
 - [x] 6. Code plan & TDD order
 - [x] 7. Out of scope & validation notes
-- [x] Addendum: retry carryover & settle grace (§5.4) — a 502 mid-run no longer wipes the live draft; the auto-retry's run continues the un-persisted work log, and the error log is grace-persisted only when no continuation arrives
+- [x] Addendum: retry carryover & settle grace (§5.4) — a 502 mid-run no longer wipes the live draft; the auto-retry's run continues the un-persisted work log, and the error log is persisted at `agent_settled` (grace timer = backstop for a lost settled)
+- [x] Revision 2026-09-05: the 0.84.4/0.85.0 dist check proved the original
+  premise wrong — `agent_settled` fires only AFTER the whole continuation
+  loop (retries + their backoffs + compactions), never between `agent_end`
+  and the retry's `agent_start`. So the error end now finalizes AT
+  `agent_settled` (the grace timer demoted to backstop), and while the
+  stream is open the draft shows ⚠️ line → `---` divider → spinner (the
+  spinner no longer disappears for the retry's backoff). See §5.4.
 
 ## 1. Goal & final look
 
@@ -136,8 +145,8 @@ persistent sends, so the split cannot drift from what the draft showed.
 | `tool_execution_start` | mark the committed tool block (by `toolCallId`) `running` (it was committed with `…` at message_end; the start just guards ordering) |
 | `tool_execution_end` | stamp the block `✔` / `✖` + capture `result` text for `✖` blocks |
 | `ui_prompt_start` | append a prompt block to the log |
-| `agent_end` | if not finalized **and the end is not an error** → run the end-state finalization (§5). An ERROR end does NOT finalize — it arms the settle grace timer (`errorSettleMs`): pi auto-retries retryable provider errors (429/5xx/…; up to `retry.maxRetries` runs, backoff 2·2ⁿˢ), so the run ending is not the stream ending. |
-| `agent_settled` | pi's “no automatic retry, compaction, or queued continuation will run” — the end of the STREAM. A run that ended with no message at all → finalize as stop. An ERROR end is NOT persisted here (the retry's `agent_start` arrives right after this, same stream, and carries the log over — persisting now would double-post): the grace timer armed at the error end persists the log if no continuation arrives within `errorSettleMs`. |
+| `agent_end` | if not finalized **and the end is not an error** → run the end-state finalization (§5). An ERROR end does NOT finalize — the draft stays alive (⚠️ line + `---` divider + spinner; pi is still working — it auto-retries retryable provider errors, 429/5xx/…, up to `retry.maxRetries` runs, backoff 2·2ⁿˢ, all BEFORE `agent_settled`) and it arms the settle grace timer (`errorSettleMs`) as the backstop for a LOST `agent_settled` (the primary finalize trigger; §5.4). |
+| `agent_settled` | pi's “no automatic retry, compaction, or queued continuation will run” — the end of the STREAM (fires in the `finally` of `_runAgentPrompt`, AFTER the whole continuation loop — retries and their backoffs included — verified in 0.84.4/0.85.0). A run that ended with no message at all → finalize as stop. A live ERROR end is persisted HERE (the stream cannot continue anymore; a retry that came first already carried the log over — no double-post). |
 
 ### Invariants
 
@@ -314,21 +323,26 @@ m2 (chronology).
 No split: ONE persistent send with the final layout —
 - **stop** (finalized at `agent_end`): [log] [partial tail] (no marker, no
   spinner);
-- **error** (persisted by the settle grace timer after `errorSettleMs` —
-  never at `agent_end`, never at `agent_settled`: pi may auto-retry, and the
-  retry's continuation CARRIES THE LOG OVER instead, §5.4): [log +
-  `⚠️ error:` block] [partial tail + trailing `⚠ incomplete` line] — no
-  `⚠ Error` marker (the log block says it), no divider anywhere.
+- **error** (persisted at `agent_settled` — never at `agent_end`: pi may
+  auto-retry, and the retry's continuation CARRIES THE LOG OVER instead,
+  §5.4; the grace timer after `errorSettleMs` is the backstop for a lost
+  settled): [log + `⚠️ error:` block] [partial tail + trailing
+  `⚠ incomplete` line] — no `⚠ Error` marker (the log block says it), no
+  divider, no spinner.
 
-While the grace window is open (a retry may still be in its backoff), the
-draft stays alive (heartbeat) showing the error state: [log + `⚠️ error:`
-block] [partial tail] `<tg-thinking>` spinner.
+While the stream is open (a retry may still be in its backoff), the draft
+stays alive (heartbeat) showing the error state: [log] [partial tail]
+`⚠️ error: …` line, a full-width `---` divider, then the `<tg-thinking>`
+spinner (pi is still working).
 
 ### Retry carryover & settle grace (§5.4)
 
-pi emits `agent_end` → `agent_settled` → (backoff) → `agent_start` for an
-auto-retry — the settled event precedes the continuation's start, within the
-same prompt stream. The mirror therefore:
+For an auto-retry, pi emits `agent_end` → (backoff) → `agent_start` — and
+`agent_settled` only at the end of the WHOLE stream (after the last retry's
+attempt): the retry and its backoff delay run inside the prompt's
+continuation loop (`_handlePostAgentRun` → `_prepareRetry` →
+`agent.continue()`), all BEFORE the `finally` that emits `agent_settled`
+(verified in pi 0.84.4/0.85.0 dist). The mirror therefore:
 
 - **carries over**: `agent_start` while the previous run is a live error end
   (never persisted) keeps the work log — the continued run appends to it, the
@@ -336,23 +350,30 @@ same prompt stream. The mirror therefore:
   the continued run's final m1 carries the whole story in order: [old blocks]
   [`⚠️ error: …`] [retried blocks] [`Completed ✔️`]. The grace timer is
   cancelled — no separate error message is posted.
-- **grace-persists**: if no continuation arrives (not retryable, retries
-  exhausted, user silent), the timer fires after `errorSettleMs` (5 s default
-  — must exceed pi's retry backoff, 2 s) and persists the error log exactly
-  as the stop/error single message above. Each error end re-arms the timer,
-  so chained retries (backoffs 2 s / 4 s) keep carrying over.
-- **fast new prompt inside the grace** (rare: the error was not retryable and
-  the user sends the next prompt before the timer fires) continues the live
-  log — the same session context continues, so the combined m1 is truthful
-  and nothing is lost.
-- **run after the grace fired** starts clean (the old log was already
+- **settles**: `agent_settled` while the run is a live error end (no
+  continuation came) persists the error log immediately — exactly the
+  stop/error single message above. The stream cannot continue anymore, so
+  persisting here cannot double-post (a retry that came first already carried
+  the log over).
+- **grace-backstops**: if `agent_settled` never arrives (lost — a pi flush
+  threw before the finally emitted it), the timer fires after `errorSettleMs`
+  (5 s default) and persists the error log. Each error end re-arms the timer,
+  so chained retries (backoffs 2 s / 4 s / 8 s) keep carrying over — and even
+  a final backoff longer than the window can no longer split the run across
+  two messages, because the stream's own `agent_settled` finalizes the
+  combined log in one message.
+- **fast new prompt inside the retry window** (the user sends the next prompt
+  before the error was persisted, e.g. during a retry's backoff) continues
+  the live log — the same session context continues, so the combined m1 is
+  truthful and nothing is lost.
+- **run after the settle-finalization** starts clean (the old log was already
   persisted).
 
-Invariants: an error log is persisted **at most once** (grace expiry or the
-continued run's own end — never both); the live draft never loses already
-rendered blocks across a continuation; `whenSettled` resolves when the
-persistence actually happened (timer → finalize → settled) or when a new run
-started (as before).
+Invariants: an error log is persisted **at most once** (`agent_settled`, the
+lost-settled backstop, or the continued run's own end — never more); the
+live draft never loses already rendered blocks across a continuation;
+`whenSettled` resolves when the persistence actually happened (settle →
+finalize) or when a new run started (as before).
 
 ### End-state table
 
@@ -360,7 +381,7 @@ started (as before).
 |---|---|---|---|
 | **Clean** (answer confirmed) | completed state: log + `Completed ✔️` + answer (no divider) | log + `Completed ✔️` (answer cut) — **always sent**, even with an empty log (then just the marker) | the answer |
 | **Manual stop** | (killed by m1) | log + partial tail (skipped when both are empty) | — |
-| **Error** (provider/API, or message `errorMessage`; persisted by the grace timer after `errorSettleMs` — or carried into the continued run's m1) | (killed by the persistent send) | log + error block (+ partial + `⚠ incomplete` when there is a partial tail) — no `⚠ Error` marker | — |
+| **Error** (provider/API, or message `errorMessage`; persisted at `agent_settled` — or carried into the continued run's m1) | ⚠️ line + `---` + spinner while the stream is open; then (killed by the persistent send) | log + error block (+ partial + `⚠ incomplete` when there is a partial tail) — no `⚠ Error` marker, no spinner, no divider | — |
 | **Muted** | never spawned | nothing | nothing |
 
 Notes:

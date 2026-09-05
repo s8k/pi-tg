@@ -119,14 +119,20 @@ auto-compaction is the first (and only current) instance.
 ### D — Run finalization (the mirror)
 
 The run's own end; the live draft becomes the persistent message(s).
-(Retry-carryover and settle-grace mechanics unchanged — see
-`2026-09-02-two-message-mirror-design.md` §5.4.)
+(Retry-carryover mechanics — see
+`2026-09-02-two-message-mirror-design.md` §5.4; the settle trigger was
+revised on 2026-09-05: the error end finalizes AT `agent_settled`, the
+grace timer is the backstop for a lost settled.)
 
 - **D1/D2 — clean end:** m1 = log + `Completed ✔️` (silent) → m2 = the answer
   (notifies).
-- **D3 — error end** (provider error, retry grace expired): single message =
-  log + bottom line `⚠️ error: <msg>` (+ `⚠ incomplete` trailer if the answer
-  is partial) — notifies.
+- **D3 — error end** (provider error; the stream is over —
+  `agent_settled`): single message = log + bottom line
+  `⚠️ error: <msg>` (+ `⚠ incomplete` trailer if the answer is partial) —
+  notifies, no spinner, no divider. While the stream is still open (the
+  retry's backoff, a recovery compaction) the live draft shows the ⚠️ line,
+  a full-width `---` divider, and the `<tg-thinking>` spinner (pi is still
+  working — the spinner is no longer frozen off during the backoff).
 - **D4 — aborted end** (killed by `/stop`, `/compact`-mid-run, `/new`-mid-run):
   single message = log + bottom line `⚠️ Request was aborted` — silent.
 - **Bottom-line rule (unified):** the draft's bottom line (the live-spinner
@@ -375,8 +381,10 @@ Per-command changes. "Today" = working tree at 2026-09-04.
 
 - `/mute`/`/unmute`/`/help`/`/status`/unknown/model/thinking/name/shutdown/
   sessions/queued — strings and flows stay exactly as today (pattern A).
-- Retry-carryover + settle grace (§5.4 of the two-message-mirror spec) —
-  untouched.
+- Retry carryover (§5.4 of the two-message-mirror spec) — untouched by
+  THIS spec; the settle trigger was revised on 2026-09-05 (the error end
+  finalizes at `agent_settled`; the grace timer is the backstop) — see the
+  Change log below and the two-message-mirror spec §5.4.
 - System events (E) — untouched.
 
 ---
@@ -509,3 +517,36 @@ Order matters: T1 before T6 (lane 2 renders into the same bottom line).
   - T7: last bare `⏹` (a router comment) → `⏹️`; historical plan docs are
     not retro-edited.
   `sessionOk` deletion scope confirmed.
+- 2026-09-05 — settle-trigger revision (T8, after a real 502 in the field:
+  the draft's spinner disappeared for the whole 2 s / 4 s / 8 s retry
+  backoff, frozen on the bare ⚠️ line). The 0.84.4/0.85.0 dist check proved
+  the earlier premise wrong — pi's auto-retry (including its backoff delay)
+  runs INSIDE the prompt's continuation loop (`_handlePostAgentRun` →
+  `_prepareRetry` → `agent.continue()`), and `agent_settled` fires in the
+  `finally` of `_runAgentPrompt`, AFTER the whole loop: never between
+  `agent_end` and the retry's `agent_start`. Changes:
+  - The error end now finalizes **at `agent_settled`** (the stream cannot
+    continue anymore — persisting there cannot double-post: a retry that
+    came first already carried the log over). The grace timer
+    (`errorSettleMs`, 5 s default) is the **backstop only** (fires if
+    `agent_settled` is lost — a pi flush threw before the finally emitted
+    it).
+  - While the stream is open after an error end, the live draft renders
+    [log] [tail] `⚠️ error: …` line, a full-width `---` divider (rich
+    markdown horizontal line; safe here because the ⚠️ line sits between
+    the tool blocks and the line — the old rejection was a bare `---`
+    directly above the spinner, colliding with the `<details>` handle),
+    then the `<tg-thinking>` spinner. The divider + spinner are live-draft
+    only: the persistent message is unchanged (⚠️ line last, no divider).
+  - `currentBottom`: the C1 status (`autoCompacting`) now also takes
+    precedence over a live error end (the overflow-recovery compact runs
+    while the error end is open; the draft shows the compact, not the error
+    line).
+  - The 8 s backoff race (a 3rd retry's backoff longer than the 5 s grace →
+    the timer would have finalized mid-backoff, splitting the run across
+    two messages) is gone: the stream's own `agent_settled` finalizes the
+    combined log in one message.
+  - Tests: 9 rewritten + 3 new (312/312); `mirror-retry` / `mirror-end` /
+    `mirror-settle` / `mirror-autocompact` updated; the two-message-mirror
+    spec §5.4 header, state table and `agent_end`/`agent_settled` rows
+    updated to match.

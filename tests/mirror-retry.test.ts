@@ -1,18 +1,24 @@
 // Retry carryover: when pi auto-retries a run that ended in a provider error
-// (429/5xx/…), the stream continues: agent_end → agent_settled →
-// agent.continue() → agent_start. The previous run's UN-PERSISTED work log
-// (the tool calls the user has been watching live) must NOT be wiped from the
-// draft — the continued run appends to the same log, and the final message
-// carries the whole story (old blocks → ⚠️ error → retried blocks → marker).
+// (429/5xx/…), the stream continues: agent_end → (backoff) →
+// agent.continue() → agent_start — all BEFORE agent_settled, which marks the
+// end of the WHOLE stream (all retries, recovery compactions and queued
+// continuations done; verified in pi 0.84.4/0.85.0 dist: the retry and its
+// backoff delay run inside the prompt's continuation loop). The previous
+// run's UN-PERSISTED work log (the tool calls the user has been watching
+// live) must NOT be wiped from the draft — the continued run appends to the
+// same log, and the final message carries the whole story (old blocks →
+// ⚠️ error → retried blocks → marker).
 //
 // Regression: a 502 mid-run used to clear the draft — the retried run's first
 // (failed) call became the only visible block, and the successful calls before
 // the error vanished from the message the user was watching.
 //
-// If NO continuation arrives (not retryable / retries exhausted / user silent),
-// the error log must still be persisted — after a grace window (cfg
-// `errorSettleMs`), not immediately at agent_settled (the retry's backoff is
-// 2 s by default; persisting earlier would double-post on a retry).
+// While the stream is open (the retry's backoff, a recovery compaction) the
+// draft stays alive showing ⚠️ line → `---` divider → <tg-thinking> spinner
+// (pi is still working). When agent_settled arrives with the run still a
+// live error end, the error log is persisted IMMEDIATELY. Only if
+// agent_settled is lost (pi's flush threw before the finally emitted it) does
+// the grace window (cfg `errorSettleMs`) backstop persist the log.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Mirror, type MirrorMessage } from "../src/mirror.ts";
@@ -62,10 +68,8 @@ test("502 mid-run then retry: the successful calls before the error survive in t
   await m.onAgentEnd([]);
   await tick();
   assert.equal(richCalls(h).length, 0, "no persistent send at agent_end (pi may retry)");
-  // pi: agent_settled fires before the retry continuation — still no send (the backoff is in flight)
-  await m.onAgentSettled();
-  await tick();
-  assert.equal(richCalls(h).length, 0, "no persistent send at settle yet (the retry window is open)");
+  // pi: the retry's agent_start comes after the backoff — NO agent_settled in
+  // between (it marks the end of the whole stream).
 
   // the retried run starts (agent.continue() → agent_start)
   m.onAgentStart();
@@ -101,9 +105,13 @@ test("502 mid-run then retry: the successful calls before the error survive in t
   const o4 = m1.indexOf("Completed ✔️");
   assert.ok(o1 !== -1 && o1 < o2 && o2 < o3 && o3 < o4, `wrong order in m1: ${m1}`);
   assert.equal(rich[1]?.text, "Done.", "m2 is the retried run's answer");
+
+  await m.onAgentSettled(); // the stream is over, after the clean finalize — a no-op
+  await tick();
+  assert.equal(richCalls(h).length, 2, "settled after a clean end persists nothing extra");
 });
 
-test("no continuation: the error log is persisted after the grace window (errorSettleMs)", async () => {
+test("no continuation: the error log is persisted AT agent_settled", async () => {
   const h = makeMirrorDeps({ streamEditMs: 0, errorSettleMs: 1000 });
   const m = new Mirror(h.deps);
   m.onAgentStart();
@@ -113,13 +121,29 @@ test("no continuation: the error log is persisted after the grace window (errorS
   await tick();
   await m.onAgentEnd([]);
   await tick();
-  await m.onAgentSettled();
-  await tick();
-  assert.equal(richCalls(h).length, 0, "not persisted immediately at settle (a retry may still be in its backoff)");
-  h.advance(1000);
+  assert.equal(richCalls(h).length, 0, "agent_end persists nothing (pi may retry)");
+  await m.onAgentSettled(); // the stream is over (no retry came) — finalize NOW
   await tick();
   const rich = richCalls(h);
-  assert.equal(rich.length, 1, "persisted once after the grace window");
+  assert.equal(rich.length, 1, "persisted exactly once, at settle");
+  assert.ok(rich[0]?.text?.includes("⚠️ error: 401 Unauthorized"), "the error is in the message");
+  assert.ok(rich[0]?.text?.includes("⚙ read ✔"), "the successful call is in the message");
+});
+
+test("backstop: when agent_settled never arrives, the grace timer persists the error log", async () => {
+  const h = makeMirrorDeps({ streamEditMs: 0, errorSettleMs: 1000 });
+  const m = new Mirror(h.deps);
+  m.onAgentStart();
+  await tick();
+  await okTool(m, "c1", "read", "Reading the spec.");
+  await m.onAssistantEnd(textMsg("", { stopReason: "error", errorMessage: "401 Unauthorized" }));
+  await tick();
+  await m.onAgentEnd([]);
+  await tick();
+  h.advance(1000); // no agent_settled ever arrives — the timer fires
+  await tick();
+  const rich = richCalls(h);
+  assert.equal(rich.length, 1, "persisted once by the grace timer");
   assert.ok(rich[0]?.text?.includes("⚠️ error: 401 Unauthorized"), "the error is in the message");
   assert.ok(rich[0]?.text?.includes("⚙ read ✔"), "the successful call is in the message");
 });
@@ -133,29 +157,27 @@ test("retry that fails again: the combined log persists exactly once", async () 
   await m.onAssistantEnd(textMsg("", { stopReason: "error", errorMessage: "502 status code (no body)" }));
   await tick();
   await m.onAgentEnd([]);
-  await m.onAgentSettled();
   await tick();
-  // retry 1 (carryover): fails again
+  assert.equal(richCalls(h).length, 0, "first agent_end persists nothing (pi may retry)");
+  // retry 1 (carryover), after the backoff — fails again
   m.onAgentStart();
   await tick();
   await badTool(m, "c2", "bash", "Retrying.", "boom");
   await m.onAssistantEnd(textMsg("", { stopReason: "error", errorMessage: "503 Service Unavailable" }));
   await tick();
   await m.onAgentEnd([]);
-  assert.equal(richCalls(h).length, 0, "still nothing after the second error end");
-  // the stream settles (no further retries)
+  assert.equal(richCalls(h).length, 0, "still nothing after the second error end (the stream is still open)");
+  // the stream settles (retries exhausted)
   await m.onAgentSettled();
   await tick();
-  h.advance(1000);
-  await tick();
   const rich = richCalls(h);
-  assert.equal(rich.length, 1, "the whole combined log persists exactly once");
+  assert.equal(rich.length, 1, "the whole combined log persists exactly once, at settle");
   const t = rich[0]?.text ?? "";
   assert.ok(t.includes("⚙ read ✔") && t.includes("⚙ bash ✖"), "both runs' blocks are in the one message");
   assert.ok(t.includes("⚠️ error: 502") && t.includes("⚠️ error: 503"), "both errors are documented");
 });
 
-test("a run that starts after the grace fired starts clean (the old log was already persisted)", async () => {
+test("a run that starts after the settle-finalization starts clean (the old log was already persisted)", async () => {
   const h = makeMirrorDeps({ streamEditMs: 0, errorSettleMs: 1000 });
   const m = new Mirror(h.deps);
   m.onAgentStart();
@@ -164,11 +186,10 @@ test("a run that starts after the grace fired starts clean (the old log was alre
   await m.onAssistantEnd(textMsg("", { stopReason: "error", errorMessage: "401 Unauthorized" }));
   await tick();
   await m.onAgentEnd([]);
-  await m.onAgentSettled();
   await tick();
-  h.advance(1000);
+  await m.onAgentSettled(); // the stream is over — the error log persists now
   await tick();
-  assert.equal(richCalls(h).length, 1, "the old error log was persisted by the grace timer");
+  assert.equal(richCalls(h).length, 1, "the old error log was persisted at settle");
   // the next prompt starts — its run must NOT inherit the already-persisted log
   m.onAgentStart();
   await tick();
@@ -184,7 +205,7 @@ test("a run that starts after the grace fired starts clean (the old log was alre
   assert.equal(rich[2]?.text, "New answer.");
 });
 
-test("a fast new prompt inside the grace window continues the live log (truthful, no loss)", async () => {
+test("a new prompt inside the retry window continues the live log (truthful, no loss)", async () => {
   const h = makeMirrorDeps({ streamEditMs: 0, errorSettleMs: 1000 });
   const m = new Mirror(h.deps);
   m.onAgentStart();
@@ -193,9 +214,9 @@ test("a fast new prompt inside the grace window continues the live log (truthful
   await m.onAssistantEnd(textMsg("", { stopReason: "error", errorMessage: "401 Unauthorized" }));
   await tick();
   await m.onAgentEnd([]);
-  await m.onAgentSettled();
   await tick();
-  // the user sends the next prompt before the grace fires (no retry was coming)
+  // the user's next prompt starts before the error was persisted (e.g. during
+  // the retry's backoff) — the live log must be carried, not wiped
   m.onAgentStart();
   await tick();
   await okTool(m, "c2", "bash", "New work.");

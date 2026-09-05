@@ -45,7 +45,12 @@ const drafts = (calls: FakeOutCall[]): FakeOutCall[] => calls.filter((c) => c.ki
 const rich = (calls: FakeOutCall[]): FakeOutCall[] => calls.filter((c) => c.kind === "sendRich");
 const lastDraft = (calls: FakeOutCall[]): FakeOutCall | undefined => drafts(calls).at(-1);
 
-/** An error-ended run with its grace window open (retryable 5xx). */
+/**
+ * An error-ended run with its retry window open (retryable 5xx). No
+ * agent_settled in between: pi emits it only at the end of the WHOLE stream
+ * (after any retry / recovery continuation), never between agent_end and the
+ * retry's agent_start.
+ */
 async function errorRun(m: Mirror): Promise<void> {
   m.onAgentStart();
   await tick();
@@ -53,8 +58,6 @@ async function errorRun(m: Mirror): Promise<void> {
   await m.onAssistantEnd(textMsg("", { stopReason: "error", errorMessage: "502 status code (no body)" }));
   await tick();
   await m.onAgentEnd([]);
-  await tick();
-  await m.onAgentSettled();
   await tick();
 }
 
@@ -151,6 +154,20 @@ test("lane 2: failed → the draft reverts to the error state; the grace is re-a
   const t = rich(h.out.calls)[0]?.text ?? "";
   assert.ok(t.includes("⚠️ error: 502") && t.includes("⚙ read ✔"), "the error log is intact");
   assert.ok(!t.includes(AUTO_COMPACT_DONE_TEXT), "no done line — the compaction never succeeded");
+});
+
+test("error end + auto-compact in flight: the draft shows the C1 status while compacting (not the error line)", async () => {
+  const h = makeMirrorDeps({ streamEditMs: 0, errorSettleMs: 1000 });
+  const m = new Mirror(h.deps);
+  await errorRun(m);
+  assert.equal(rich(h.out.calls).length, 0, "nothing persisted while the stream is open");
+
+  m.onAutoCompactStart();
+  await tick();
+  const last = lastDraft(h.out.calls);
+  assert.ok(last?.text?.includes(`<tg-thinking>${AUTO_COMPACT_STATUS}</tg-thinking>`), `C1 status while compacting: ${last?.text}`);
+  assert.ok(!last?.text?.includes("⚠️ error:"), "the error line is hidden while the compact runs (nothing is persisted yet)");
+  assert.ok(!last?.text?.includes("---"), "no divider while the C1 status is up");
 });
 
 test("lane 2 hooks are no-ops without a live draft (lane 1 owns the messaging)", async () => {

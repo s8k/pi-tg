@@ -15,15 +15,21 @@
  * richMessage. End state: the tool log is the previous message, the answer
  * the new one. Error ends stay single messages (the `⚠️ error: …` block at
  * the end of the work, the partial answer + `⚠ incomplete` — no `⚠ Error`
- * marker, no divider) and are persisted by a settle grace timer (cfg
- * `errorSettleMs`, 5 s default) — never at agent_end, never at
- * agent_settled: pi auto-retries retryable provider errors and emits
- * agent_settled right BEFORE the retry's agent_start (same stream), so an
- * error end does NOT finalize — the draft stays alive, and the retry's run
+ * marker, no divider). An error end does NOT finalize at agent_end: pi
+ * auto-retries retryable provider errors (429/5xx/…) after 2 s/4 s/8 s
+ * backoffs, and recovery compactions can run — all inside the prompt's
+ * continuation loop, all BEFORE agent_settled (verified in pi 0.84.4/0.85.0
+ * dist: settled fires in the finally of _runAgentPrompt, after the whole
+ * loop). While the stream is open the draft stays alive (heartbeat) with
+ * the ⚠️ line, a full-width `---` divider, and the <tg-thinking> spinner
+ * below it (pi is still working). When agent_settled arrives with the run
+ * still a live error end, the error log is persisted immediately — the
+ * stream cannot continue anymore. If a retry's agent_start comes first, it
  * CARRIES OVER the un-persisted work log (the user's successful tool calls
  * are not wiped from the draft; the continued run's final message carries
- * the whole story). Only if no continuation arrives within the grace window
- * is the error log persisted on its own. Each error end re-arms the timer.
+ * the whole story). The grace timer (cfg `errorSettleMs`, 5 s default) is
+ * the backstop only: it persists the log if agent_settled is lost. Each
+ * error end re-arms it.
  *
  * (2026-09-04 regression fix: a 502 mid-run used to wipe the live draft —
  * onAgentStart cleared the log unconditionally, so the retried run's first
@@ -87,7 +93,7 @@ export type BottomLine =
   | { kind: "thinking"; word: string } // working: <tg-thinking>word…</tg-thinking>
   | { kind: "compact"; status: string } // auto-compact in flight (lane 2): <tg-thinking>status</tg-thinking>
   | { kind: "done" } // clean end: Completed ✔️
-  | { kind: "error"; text: string } // error end: ⚠️ error: <text> (text pre-escaped; "" → no line)
+  | { kind: "error"; text: string; thinking?: boolean; word?: string } // error end: ⚠️ error: <text> (text pre-escaped; "" → no line); thinking → stream still open (pi may retry): `---` divider + spinner below the ⚠️ line
   | { kind: "aborted" }; // stop end: ⚠️ Request was aborted
 
 /**
@@ -97,18 +103,26 @@ export type BottomLine =
  *  - thinking / compact (while working): [blocks] [tail] [blank line] <tg-thinking>…</tg-thinking>
  *    — the spinner (or the auto-compact status) stays LAST, below the
  *    streaming text; whenever there is any text above it (blocks and/or the
- *    tail), an extra blank line (an NBSP paragraph — a horizontal line was
- *    tried and rejected: it collides with the <details> handle under tool
- *    blocks) separates the two (nothing above the spinner → no blank line).
+ *    tail), an extra blank line (an NBSP paragraph — a bare `---` right
+ *    above the spinner was tried and rejected: it collides with the
+ *    <details> handle under tool blocks; the error-end divider below works
+ *    because the ⚠️ line sits between the blocks and the line) separates
+ *    the two (nothing above the spinner → no blank line).
+ *  - error with thinking (error end, stream still open — pi may auto-retry):
+ *    [blocks] [tail] [⚠️ line] [---] <tg-thinking>…</tg-thinking> — the
+ *    full-width `---` divider separates the ⚠️ line from the spinner (pi is
+ *    still working). LIVE-DRAFT ONLY: the finalized message drops the
+ *    divider and the spinner (see the error bullet below). (No ⚠️ line — no
+ *    errorMessage — → the classic NBSP gap like plain thinking.)
  *  - done (clean end, finalized): [blocks] [Completed ✔️] [tail]
  *    — the marker sits at the end of the work (after the tool blocks), then
  *    the answer. NO divider: the answer is split into its own message anyway,
  *    so the log part needs no horizontal line.
- *  - error / aborted (end states, D3/D4): [blocks] [tail (+ ⚠ incomplete)]
- *    [⚠️ line] — the ⚠️ line is the BOTTOM line (LAST), never a log-area
- *    block: `⚠️ error: <msg>` for error ends, `⚠️ Request was aborted` for
- *    stop ends. (On a pi retry the carried error becomes a log block — see
- *    Mirror.onAgentStart.)
+ *  - error / aborted (finalized end states, D3/D4): [blocks]
+ *    [tail (+ ⚠ incomplete)] [⚠️ line] — the ⚠️ line is the BOTTOM line
+ *    (LAST), never a log-area block: `⚠️ error: <msg>` for error ends,
+ *    `⚠️ Request was aborted` for stop ends. (On a pi retry the carried
+ *    error becomes a log block — see Mirror.onAgentStart.)
  * The SAME builder renders live drafts and the final persistent send, so
  * the finalize transition cannot drift from what the draft showed.
  */
@@ -121,6 +135,15 @@ export function blocksToMd(log: LogBlock[], opts: { tail?: string; bottom: Botto
     return parts.join("\n\n");
   }
   if (tail) parts.push(tail);
+  if (opts.bottom.kind === "error" && opts.bottom.thinking) {
+    // Error end, stream still open (pi may auto-retry): the ⚠️ line, then a
+    // full-width horizontal line, then the spinner.
+    const err = bottomLineText(opts.bottom);
+    if (err) parts.push(err);
+    if (parts.length > 0) parts.push(err ? "---" : "\u00a0"); // divider after the ⚠️ line; classic gap without one
+    parts.push(`<tg-thinking>${opts.bottom.word ?? "Working"}…</tg-thinking>`);
+    return parts.join("\n\n");
+  }
   const bottom = bottomLineText(opts.bottom);
   if (bottom) {
     if (parts.length > 0 && (opts.bottom.kind === "thinking" || opts.bottom.kind === "compact")) parts.push("\u00a0"); // text above the spinner → an extra blank line
@@ -616,14 +639,15 @@ export class Mirror {
 
   async onAgentEnd(_messages: MirrorMessage[]): Promise<void> {
     if (this.phase !== "work") return; // already finalized — one-way switch
-    // A run that ended in an error is NOT the end of the stream: pi
-    // auto-retries retryable provider errors (429/5xx/…) — a new agent_start
-    // comes after the backoff. Do NOT finalize here: no persistent error
-    // message, the draft stays alive (heartbeat) showing the error state.
-    // Finalization for error ends is deferred to the grace timer (see
-    // onAgentSettled / armErrorSettle): not retryable, or retries exhausted
-    // → the timer persists the log; an auto-retry arrives first → it carries
-    // the log over.
+    // A run that ended in an error is NOT the end of the STREAM: pi
+    // auto-retries retryable provider errors (429/5xx/…) after a backoff and
+    // recovery compactions can run — all before agent_settled (which marks
+    // the end of the whole stream). Do NOT finalize here: no persistent
+    // error message, the draft stays alive (heartbeat) showing ⚠️ line →
+    // `---` divider → spinner. Final persistence happens at agent_settled
+    // (onAgentSettled); the grace timer (armErrorSettle) is the backstop if
+    // settled is lost. An auto-retry that arrives first carries the log
+    // over (onAgentStart).
     if (this.endKind === "error") {
       this.armErrorSettle();
       return;
@@ -633,21 +657,20 @@ export class Mirror {
   }
 
   /**
-   * The end of the STREAM (pi's `agent_settled`): the run has fully settled
-   * and no automatic retry, compaction, or queued continuation will run.
-   * Clean/stop ends are already finalized (at the confirming message_end /
-   * agent_end). Error ends are NOT finalized here: pi emits agent_settled
-   * right BEFORE the retry's agent_start (same stream), so persisting now
-   * would double-post the blocks the retry carries over — the grace timer
-   * (armed at the error end) persists the log if no continuation arrives
-   * within cfg.errorSettleMs.
+   * The end of the STREAM (pi's `agent_settled`): the whole prompt stream is
+   * over — every auto-retry (including its backoff delays), recovery
+   * compaction and queued continuation has completed (verified in pi
+   * 0.84.4/0.85.0: it fires in the finally of _runAgentPrompt, after the
+   * continuation loop). Clean/stop ends are already finalized (at the
+   * confirming message_end / agent_end) — this is a no-op for them. A live
+   * error end finalizes NOW: the stream cannot continue anymore, so the
+   * error log is the final word (a retry that came first already carried
+   * the log over and finalized as its own run — no double-post). The grace
+   * timer remains the backstop only: it fires if agent_settled is lost (a
+   * pi flush threw before the finally emitted it).
    */
   async onAgentSettled(): Promise<void> {
     if (this.phase !== "work") return; // already finalized — one-way switch
-    if (this.endKind === "error") {
-      this.armErrorSettle(); // idempotent — the error end already armed it
-      return;
-    }
     if (this.endKind === undefined) this.endKind = "stop"; // e.g. the run produced no assistant message
     await this.finalize();
   }
@@ -782,15 +805,19 @@ export class Mirror {
 
   /**
    * The live draft's bottom line: while working → the thinking spinner
-   * (auto-compact in flight → its C1 status); after a run end → that end's
-   * bottom line (the ⚠️ line, or the aborted line) — no spinner once the run
-   * has ended (the grace window, the stop, …).
+   * (auto-compact in flight → its C1 status — it also takes precedence over
+   * a live error end: the overflow-recovery compact runs while the error
+   * end is open, and the draft must show the compact, not the error line);
+   * after a run end → that end's bottom line: an error end still shows the
+   * ⚠️ line + divider + spinner (the stream may continue — pi auto-retry;
+   * agent_settled is what finalizes it), a stop end the final aborted line.
    */
   private currentBottom(): BottomLine {
     if (this.endKind === "clean") return { kind: "done" };
-    if (this.endKind === "error") return { kind: "error", text: this.endError ?? "" };
-    if (this.endKind === "stop") return { kind: "aborted" };
     if (this.autoCompacting) return { kind: "compact", status: AUTO_COMPACT_STATUS };
+    if (this.endKind === "error")
+      return { kind: "error", text: this.endError ?? "", thinking: true, word: this.thinkingWordNow() };
+    if (this.endKind === "stop") return { kind: "aborted" };
     return { kind: "thinking", word: this.thinkingWordNow() };
   }
 
@@ -917,9 +944,12 @@ export class Mirror {
   // ─────────────────────────── heartbeat & spinner ───────────────────────────
 
   /**
-   * Arm the error-settle grace: if no continuation starts within
-   * cfg.errorSettleMs and the run is still a live error end, persist the
-   * error log. Idempotent — one timer at a time.
+   * Arm the error-settle grace — the BACKSTOP for a lost agent_settled:
+   * if the run is still a live error end after cfg.errorSettleMs, persist
+   * the error log. (The primary finalize trigger is agent_settled — it
+   * arrives ms after agent_end when no retry comes, and after the last
+   * retry's attempt when retries did; this timer covers a missing settled.)
+   * Idempotent — one timer at a time.
    */
   private armErrorSettle(): void {
     if (this.errorSettleTimer !== undefined) return;

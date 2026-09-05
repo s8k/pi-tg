@@ -3,11 +3,17 @@
 //  - clean:  [log blocks] Completed ✔️ [answer]   (NO divider)
 //  - stop:   [log blocks] [partial tail] ⚠️ Request was aborted   (SILENT —
 //          the ⚠️ line is the BOTTOM line, not a log block; no spinner)
-//  - error: agent_end does NOT finalize (pi may auto-retry the run); the
-//          draft stays alive with the ⚠️ line in its bottom-line slot. Only
-//          after the grace window (no continuation) persists ONE message:
+//  - error: agent_end does NOT finalize (pi may auto-retry the run). While
+//          the stream is open (the retry's backoff, a recovery compaction)
+//          the draft stays alive: the ⚠️ line, then a full-width `---`
+//          divider, then the <tg-thinking> spinner (pi is still working).
+//          agent_settled marks the end of the WHOLE stream (all retries and
+//          continuations done) and persists ONE message:
 //          [log blocks] [partial tail + ⚠ incomplete] ⚠️ error: <msg>
-//          (the ⚠️ line is the BOTTOM line, NOTIFIES, no `⚠ Error` marker).
+//          (the ⚠️ line is the BOTTOM line, NOTIFIES, no `⚠ Error` marker,
+//          no spinner, no divider in the persistent message). Only if
+//          agent_settled is lost does the grace timer (cfg errorSettleMs)
+//          backstop persist the log.
 //  - muted:  nothing at all.
 // On a pi retry (agent_start again) the carried error moves INTO the log as
 // a ⚠️ error: block, so the retried run's m1 carries the whole story.
@@ -158,19 +164,16 @@ test("manual stop, spinner-only tail: log + aborted bottom line (nothing else to
   assert.equal(rich[0]?.opts?.disableNotification, true, "SILENT");
 });
 
-test("error end: agent_end does NOT finalize (pi may retry); the grace timer persists ONE message — log + error block + partial + ⚠ incomplete, NO ⚠ Error marker", async () => {
+test("error end: agent_end does NOT finalize (pi may retry); agent_settled persists ONE message — log + partial + ⚠ incomplete + ⚠️ error (LAST)", async () => {
   const h = makeMirrorDeps({ streamEditMs: 0 });
   const m = await runWithStreamedCandidate(h, "The answer is 42.");
   await m.onAssistantEnd(textMsg("The answer is 42.", { stopReason: "error", errorMessage: "Provider timeout" }));
   await tick();
-  await m.onAgentEnd([]); // the run ended — but pi may auto-retry: no finalize yet
+  await m.onAgentEnd([]); // the run ended — but the stream may continue (pi retry): no finalize yet
   await tick();
   assert.equal(richCalls(h).length, 0, "agent_end after an error persists nothing (the draft stays alive)");
 
-  await m.onAgentSettled(); // a retry may still be in its backoff — still no send
-  await tick();
-  assert.equal(richCalls(h).length, 0, "agent_settled persists nothing (the retry window is open)");
-  h.advance(5000); // the grace window (errorSettleMs) passes with no continuation
+  await m.onAgentSettled(); // the stream is over (no retry came) — finalize NOW
   await tick();
 
   const rich = richCalls(h);
@@ -189,7 +192,7 @@ test("error end: agent_end does NOT finalize (pi may retry); the grace timer per
   assert.ok(!rich[0]?.opts?.disableNotification, "D3 NOTIFIES — the error is the final word");
 });
 
-test("error end: during the grace window the draft shows the ⚠️ line in its bottom-line slot (no spinner, no log line)", async () => {
+test("error end: while the stream is open (a retry may come) the draft shows ⚠️ line, a `---` divider, then the spinner", async () => {
   const h = makeMirrorDeps({ streamEditMs: 0, errorSettleMs: 1000 });
   const m = await runWithStreamedCandidate(h, "");
   await m.onAssistantEnd({ role: "assistant", content: [], stopReason: "error", errorMessage: "502 status code (no body)" });
@@ -198,11 +201,16 @@ test("error end: during the grace window the draft shows the ⚠️ line in its 
   await tick();
 
   const lastDraft = h.out.calls.filter((c) => c.kind === "sendDraft").pop()?.text ?? "";
-  assert.ok(lastDraft.endsWith("⚠️ error: 502 status code (no body)"), `the ⚠️ line is the draft's bottom line: ${JSON.stringify(lastDraft)}`);
-  assert.ok(!lastDraft.includes("<tg-thinking>"), "no spinner in the error draft");
+  assert.ok(/<tg-thinking>[^<>]+…<\/tg-thinking>$/.test(lastDraft), `the draft ends with the spinner (pi may still retry): ${JSON.stringify(lastDraft)}`);
+  const oErr = lastDraft.lastIndexOf("⚠️ error: 502 status code (no body)");
+  const oHr = lastDraft.lastIndexOf("---");
+  const oSpin = lastDraft.lastIndexOf("<tg-thinking>");
+  assert.ok(oErr >= 0, `the ⚠️ line is in the draft: ${JSON.stringify(lastDraft)}`);
+  assert.ok(oErr < oHr && oHr < oSpin, `⚠️ line → divider → spinner, got: ${JSON.stringify(lastDraft)}`);
+  assert.ok(!lastDraft.includes("⚠ incomplete"), "no finalize trailer while the stream is open");
 });
 
-test("error end, no partial answer: the grace timer persists log + error block only, no marker", async () => {
+test("error end, no partial answer: agent_settled persists log + error block only, no marker", async () => {
   const h = makeMirrorDeps({ streamEditMs: 0 });
   const m = new Mirror(h.deps);
   m.onAgentStart();
@@ -214,10 +222,7 @@ test("error end, no partial answer: the grace timer persists log + error block o
   await tick();
   assert.equal(richCalls(h).length, 0, "agent_end persists nothing");
 
-  await m.onAgentSettled(); // a retry may still be in its backoff — still no send
-  await tick();
-  assert.equal(richCalls(h).length, 0, "agent_settled persists nothing (the retry window is open)");
-  h.advance(5000); // the grace window (errorSettleMs) passes with no continuation
+  await m.onAgentSettled(); // the stream is over — finalize NOW
   await tick();
 
   const rich = richCalls(h);
@@ -260,7 +265,7 @@ test("retryable error (502): nothing is persisted, the draft stays alive, and th
   assert.equal(richCalls(h).length, 2, "settled after a clean end persists nothing extra");
 });
 
-test("error → retry → error again: the CARRIED log persists exactly once, after the grace", async () => {
+test("error → retry → error again: the CARRIED log persists exactly once, at the stream's agent_settled", async () => {
   const h = makeMirrorDeps({ streamEditMs: 0, errorSettleMs: 1000 });
   const m = new Mirror(h.deps);
   m.onAgentStart();
@@ -270,28 +275,26 @@ test("error → retry → error again: the CARRIED log persists exactly once, af
   await tick();
   await m.onAgentEnd([]);
   await tick();
-  assert.equal(richCalls(h).length, 0, "first agent_end persists nothing");
+  assert.equal(richCalls(h).length, 0, "first agent_end persists nothing (pi may retry)");
 
-  await m.onAgentSettled(); // pi emits settled before the retry's agent_start (one settled per stream)
-  await tick();
-  assert.equal(richCalls(h).length, 0, "agent_settled persists nothing (the retry window is open)");
-
-  m.onAgentStart(); // the retry — CARRIES OVER the log (grace timer cancelled)
+  m.onAgentStart(); // the retry, after the backoff — CARRIES OVER the log (no agent_settled in between)
   await tick();
   m.onAssistantStart(textMsg(""));
   await m.onAssistantEnd({ role: "assistant", content: [], stopReason: "error", errorMessage: "502 status code (no body)" });
   await tick();
   await m.onAgentEnd([]);
   await tick();
-  assert.equal(richCalls(h).length, 0, "second agent_end persists nothing (the grace re-armed, the window is open)");
+  assert.equal(richCalls(h).length, 0, "second agent_end persists nothing (the stream is still open)");
 
-  h.advance(1000); // the grace window passes — no further retries
+  await m.onAgentSettled(); // the stream is over (retries exhausted) — finalize NOW
   await tick();
 
   const rich = richCalls(h);
   assert.equal(rich.length, 1, "the combined carried log persists exactly once");
   const text = rich[0]?.text ?? "";
   assert.equal(text.match(/⚠️ error: 502 status code \(no body\)/g)!.length, 2, "both failed attempts' error blocks are in the one message");
+  assert.ok(!text.includes("<tg-thinking>"), "no spinner in the persistent message");
+  assert.ok(!text.includes("---"), "no divider in the persistent message");
 });
 
 test("muted run: nothing at all — no drafts, no persistent sends", async () => {
