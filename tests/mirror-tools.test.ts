@@ -1,8 +1,9 @@
 // Single-message content builder — pure: block layout, blank-line
 // separation, tool-block rendering, and the bottom-line layout:
-//  - while working:  [blocks] [streaming tail] --- [<tg-thinking>…] — spinner
-//    LAST, separated from any text above it by a horizontal line (no text
-//    above the spinner → no line)
+//  - while working:  [blocks] [streaming tail] [blank line] [<tg-thinking>…]
+//    — spinner LAST; any text above it is separated by an extra blank line
+//    (an NBSP paragraph — no horizontal line, which collides with the
+//    <details> handle below tool blocks; no text above → no blank line)
 //  - done:           [blocks] [Completed ✔️] [answer]
 //    (marker at the end of the work, then the answer — NO divider;
 //    the answer is split into its own message anyway)
@@ -16,8 +17,8 @@ import { renderToolBlock } from "../src/markdown.ts";
 
 const thinking = (word = "Pondering"): BottomLine => ({ kind: "thinking", word });
 const done: BottomLine = { kind: "done" };
-const error: BottomLine = { kind: "error" };
-const none: BottomLine = { kind: "none" };
+const error = (text = "boom"): BottomLine => ({ kind: "error", text });
+const aborted: BottomLine = { kind: "aborted" };
 
 const toolBlock: LogBlock = {
   type: "tool",
@@ -28,9 +29,9 @@ const toolBlock: LogBlock = {
   state: "✔",
 };
 
-test("blocksToMd: single narration + thinking bottom line — horizontal line between the text and the spinner", () => {
+test("blocksToMd: single narration + thinking bottom line — extra blank line (NBSP) between the text and the spinner", () => {
   const out = blocksToMd([{ type: "narration", text: "Let me check the failing test." }], { bottom: thinking() });
-  assert.equal(out, 'Let me check the failing test.\n\n---\n\n<tg-thinking>Pondering…</tg-thinking>');
+  assert.equal(out, `Let me check the failing test.\n\n\u00a0\n\n<tg-thinking>Pondering…</tg-thinking>`);
 });
 
 test("blocksToMd: blocks are separated by exactly one blank line, in order", () => {
@@ -46,14 +47,14 @@ test("blocksToMd: blocks are separated by exactly one blank line, in order", () 
     "⚠️ terminal prompt: pick a model — answer there",
     "⚠️ error: overloaded",
   ];
-  assert.equal(blocksToMd(log, { bottom: none }), rendered.join("\n\n"));
+  assert.equal(blocksToMd(log, { bottom: aborted }), `${rendered.join("\n\n")}\n\n⚠️ Request was aborted`);
 });
 
-test("blocksToMd: done/error WITHOUT an answer — done has the marker, error has none", () => {
+test("blocksToMd: done/error/aborted WITHOUT an answer — done has the marker, error/aborted their bottom line", () => {
   const log: LogBlock[] = [{ type: "narration", text: "A" }];
   assert.equal(blocksToMd(log, { bottom: done }), "A\n\nCompleted ✔️");
-  assert.equal(blocksToMd(log, { bottom: error }), "A"); // no `⚠ Error` marker — the log block says it
-  assert.equal(blocksToMd(log, { bottom: none }), "A");
+  assert.equal(blocksToMd(log, { bottom: error("Provider timeout") }), "A\n\n⚠️ error: Provider timeout");
+  assert.equal(blocksToMd(log, { bottom: aborted }), "A\n\n⚠️ Request was aborted");
 });
 
 test("blocksToMd: done — marker at the end of the log, then the answer (NO divider)", () => {
@@ -62,10 +63,10 @@ test("blocksToMd: done — marker at the end of the log, then the answer (NO div
   assert.equal(out, "A\n\nCompleted ✔️\n\nThe answer is 42.");
 });
 
-test("blocksToMd: error — the (partial) answer follows the log, NO marker, NO divider", () => {
+test("blocksToMd: error — log, then the (partial) answer, then the ⚠️ line LAST (bottom-line slot)", () => {
   const log: LogBlock[] = [{ type: "narration", text: "A" }];
-  const out = blocksToMd(log, { tail: "Partial…", bottom: error });
-  assert.equal(out, "A\n\nPartial…");
+  const out = blocksToMd(log, { tail: "Partial…", bottom: error("Provider timeout") });
+  assert.equal(out, "A\n\nPartial…\n\n⚠️ error: Provider timeout");
 });
 
 test("blocksToMd: done with an empty log — marker + answer only", () => {
@@ -74,34 +75,34 @@ test("blocksToMd: done with an empty log — marker + answer only", () => {
 });
 
 test("blocksToMd: empty log — spinner only, no line (there is no text above it)", () => {
-  assert.equal(blocksToMd([], { bottom: none }), "");
   assert.equal(blocksToMd([], { bottom: thinking("Weaving") }), "<tg-thinking>Weaving…</tg-thinking>");
 });
 
-test("blocksToMd: blocks only (no tail) — the line separates the log from the spinner", () => {
+test("blocksToMd: blocks only (no tail) — the blank line separates the log from the spinner", () => {
   const out = blocksToMd([toolBlock], { bottom: thinking() });
-  assert.ok(out.endsWith("\n\n---\n\n<tg-thinking>Pondering…</tg-thinking>"), out);
+  assert.ok(out.endsWith("\n\n\u00a0\n\n<tg-thinking>Pondering…</tg-thinking>"), out);
 });
 
-test("blocksToMd: while working — the streaming tail goes between the log and the line + spinner", () => {
+test("blocksToMd: while working — the streaming tail goes between the log and the blank line + spinner", () => {
   const out = blocksToMd(
     [{ type: "narration", text: "Earlier text." }],
     { tail: "Let me check the failing test…", bottom: thinking() },
   );
-  assert.equal(out, 'Earlier text.\n\nLet me check the failing test…\n\n---\n\n<tg-thinking>Pondering…</tg-thinking>');
+  assert.equal(out, `Earlier text.\n\nLet me check the failing test…\n\n\u00a0\n\n<tg-thinking>Pondering…</tg-thinking>`);
 });
 
-test("blocksToMd: none — the tail follows the log, no marker and no divider", () => {
-  const out = blocksToMd([{ type: "narration", text: "A" }], { tail: "Partial answer.", bottom: none });
-  assert.equal(out, "A\n\nPartial answer.");
+test("blocksToMd: aborted — the partial answer follows the log, then the ⚠️ line LAST", () => {
+  const out = blocksToMd([{ type: "narration", text: "A" }], { tail: "Partial answer.", bottom: aborted });
+  assert.equal(out, "A\n\nPartial answer.\n\n⚠️ Request was aborted");
 });
 
 test("blocksToMd: whitespace-only tail is dropped (every bottom kind)", () => {
-  assert.equal(blocksToMd([], { tail: "   ", bottom: thinking() }), "<tg-thinking>Pondering…</tg-thinking>"); // nothing above the spinner → no line
-  assert.equal(blocksToMd([{ type: "narration", text: "A" }], { tail: "   ", bottom: thinking() }), "A\n\n---\n\n<tg-thinking>Pondering…</tg-thinking>"); // the log is still text above it
+  assert.equal(blocksToMd([], { tail: "   ", bottom: thinking() }), "<tg-thinking>Pondering…</tg-thinking>"); // nothing above the spinner → no blank line
+  assert.equal(blocksToMd([{ type: "narration", text: "A" }], { tail: "   ", bottom: thinking() }), "A\n\n\u00a0\n\n<tg-thinking>Pondering…</tg-thinking>"); // the log is still text above it
   assert.equal(blocksToMd([], { tail: "   ", bottom: done }), "Completed ✔️");
-  assert.equal(blocksToMd([], { tail: "   ", bottom: error }), "");
-  assert.equal(blocksToMd([], { tail: "   ", bottom: none }), "");
+  assert.equal(blocksToMd([], { tail: "   ", bottom: error("boom") }), "⚠️ error: boom");
+  assert.equal(blocksToMd([], { tail: "   ", bottom: aborted }), "⚠️ Request was aborted");
+  assert.equal(blocksToMd([], { tail: "   ", bottom: error("") }), ""); // no text → no line
 });
 
 // ── tool blocks ──

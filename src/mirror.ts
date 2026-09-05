@@ -15,10 +15,19 @@
  * richMessage. End state: the tool log is the previous message, the answer
  * the new one. Error ends stay single messages (the `⚠️ error: …` block at
  * the end of the work, the partial answer + `⚠ incomplete` — no `⚠ Error`
- * marker, no divider) and finalize only at agent_settled (the end of the
- * stream): pi auto-retries retryable provider errors, so an agent_end after
- * an error does NOT finalize — the draft stays alive until the retried run
- * starts or the stream settles.
+ * marker, no divider) and are persisted by a settle grace timer (cfg
+ * `errorSettleMs`, 5 s default) — never at agent_end, never at
+ * agent_settled: pi auto-retries retryable provider errors and emits
+ * agent_settled right BEFORE the retry's agent_start (same stream), so an
+ * error end does NOT finalize — the draft stays alive, and the retry's run
+ * CARRIES OVER the un-persisted work log (the user's successful tool calls
+ * are not wiped from the draft; the continued run's final message carries
+ * the whole story). Only if no continuation arrives within the grace window
+ * is the error log persisted on its own. Each error end re-arms the timer.
+ *
+ * (2026-09-04 regression fix: a 502 mid-run used to wipe the live draft —
+ * onAgentStart cleared the log unconditionally, so the retried run's first
+ * (re-executed, failing) call became the only visible block.)
  *
  * A tool-carrying message commits its text to the log at message_end (the
  * tail clears — the text keeps its place); a stop/length message with no tool
@@ -73,50 +82,48 @@ export type LogBlock =
   | { type: "prompt"; text: string } // user follow-ups while running (ui_prompt)
   | { type: "agentError"; text: string }; // provider/API failures, in the order they happened
 
-/** The bottom line of message 1 (the draft's last block). */
+/** The bottom line of the mirror message (its LAST block). */
 export type BottomLine =
   | { kind: "thinking"; word: string } // working: <tg-thinking>word…</tg-thinking>
+  | { kind: "compact"; status: string } // auto-compact in flight (lane 2): <tg-thinking>status</tg-thinking>
   | { kind: "done" } // clean end: Completed ✔️
-  | { kind: "error" } // error end: no marker (the ⚠️ error: log block says it)
-  | { kind: "none" }; // manual stop: removed, no marker
+  | { kind: "error"; text: string } // error end: ⚠️ error: <text> (text pre-escaped; "" → no line)
+  | { kind: "aborted" }; // stop end: ⚠️ Request was aborted
 
 /**
  * Render the single mirror message: committed blocks + the in-flight tail
  * (the current message's text) + the bottom line, each separated by one
  * blank line. Layout by bottom kind:
- *  - thinking (while working): [blocks] [tail] --- <tg-thinking>…</tg-thinking>
- *    — the spinner stays LAST, below the streaming text; whenever there is
- *    any text above it (blocks and/or the tail), a horizontal line
- *    separates the two (nothing above the spinner → no line).
- *  - done / error (finalized): [blocks] [Completed ✔️] [tail]
+ *  - thinking / compact (while working): [blocks] [tail] [blank line] <tg-thinking>…</tg-thinking>
+ *    — the spinner (or the auto-compact status) stays LAST, below the
+ *    streaming text; whenever there is any text above it (blocks and/or the
+ *    tail), an extra blank line (an NBSP paragraph — a horizontal line was
+ *    tried and rejected: it collides with the <details> handle under tool
+ *    blocks) separates the two (nothing above the spinner → no blank line).
+ *  - done (clean end, finalized): [blocks] [Completed ✔️] [tail]
  *    — the marker sits at the end of the work (after the tool blocks), then
  *    the answer. NO divider: the answer is split into its own message anyway,
- *    so the log part needs no horizontal line. Error ends have no marker at
- *    all — the `⚠️ error: …` log block already carries the signal.
- *  - none (stopped):           [blocks] [tail]
+ *    so the log part needs no horizontal line.
+ *  - error / aborted (end states, D3/D4): [blocks] [tail (+ ⚠ incomplete)]
+ *    [⚠️ line] — the ⚠️ line is the BOTTOM line (LAST), never a log-area
+ *    block: `⚠️ error: <msg>` for error ends, `⚠️ Request was aborted` for
+ *    stop ends. (On a pi retry the carried error becomes a log block — see
+ *    Mirror.onAgentStart.)
  * The SAME builder renders live drafts and the final persistent send, so
  * the finalize transition cannot drift from what the draft showed.
  */
 export function blocksToMd(log: LogBlock[], opts: { tail?: string; bottom: BottomLine }): string {
-  const parts = log.map((b) => {
-    switch (b.type) {
-      case "tool":
-        return renderToolBlock(b);
-      default:
-        return b.text;
-    }
-  });
+  const parts = log.map((b) => (b.type === "tool" ? renderToolBlock(b) : b.text));
   const tail = opts.tail && opts.tail.trim() ? opts.tail : undefined;
-  if (opts.bottom.kind === "done" || opts.bottom.kind === "error") {
-    const marker = bottomLineText(opts.bottom); // done: "Completed ✔️", error: ""
-    if (marker) parts.push(marker);
+  if (opts.bottom.kind === "done") {
+    parts.push("Completed ✔️");
     if (tail) parts.push(tail); // no divider — the answer is its own message
     return parts.join("\n\n");
   }
   if (tail) parts.push(tail);
   const bottom = bottomLineText(opts.bottom);
   if (bottom) {
-    if (parts.length > 0) parts.push("---"); // text above the spinner → a line between
+    if (parts.length > 0 && (opts.bottom.kind === "thinking" || opts.bottom.kind === "compact")) parts.push("\u00a0"); // text above the spinner → an extra blank line
     parts.push(bottom);
   }
   return parts.join("\n\n");
@@ -126,12 +133,14 @@ export function bottomLineText(bottom: BottomLine): string {
   switch (bottom.kind) {
     case "thinking":
       return `<tg-thinking>${bottom.word}…</tg-thinking>`;
+    case "compact":
+      return `<tg-thinking>${bottom.status}</tg-thinking>`;
     case "done":
       return "Completed ✔️";
     case "error":
-      return ""; // no second error line — the `⚠️ error: …` block in the log is the signal
-    case "none":
-      return "";
+      return bottom.text ? `⚠️ error: ${bottom.text}` : ""; // no message → no line
+    case "aborted":
+      return "⚠️ Request was aborted";
   }
 }
 
@@ -200,6 +209,10 @@ export const THINKING_WORDS = [
 
 /** The thinking word changes at most once per this many ms (no label flicker). */
 export const THINKING_WORD_MIN_INTERVAL_MS = 5000;
+/** The live draft's bottom line while a pi auto-compact is in flight (C1). */
+export const AUTO_COMPACT_STATUS = "🗜 Auto-compacting…";
+/** The stamped log line a successful auto-compact appends (C2, without the detail). */
+export const AUTO_COMPACT_DONE_TEXT = "🗜 Context auto-compacted ✔️";
 
 /** A 400 means this content is unparseable — quiet long cooldown; the same content cannot heal. */
 const DRAFT_400_COOLDOWN_MS = 60_000;
@@ -267,6 +280,15 @@ export class Mirror {
   /** The in-flight message's text — rendered between the log and the spinner. */
   private tail = "";
   private endKind: "clean" | "stop" | "error" | undefined;
+  /**
+   * The HTML-escaped errorMessage of the run's error end — its bottom line
+   * (D3). NOT a log block: on a pi retry (onAgentStart carryover) it moves
+   * into the log as an agentError block, so the retried run's final message
+   * carries the whole story.
+   */
+  private endError: string | undefined;
+  /** Lane-2 auto-compact in flight (C1): the bottom line is the status. */
+  private autoCompacting = false;
   // pacing
   private nextDraftAt = 0; // earliest time a new draft attempt is allowed (throttle + failure cooldown)
   private forceNext = false; // one-shot: the first send of a new message breaks through the window
@@ -276,34 +298,137 @@ export class Mirror {
   private drainTimer: unknown;
   // heartbeat
   private hbTimer: unknown;
+  // error settle: an error-ended run's log is NOT persisted immediately — pi's
+  // auto-retry (2 s backoff) may still be in flight and will CARRY OVER the
+  // log (see onAgentStart). This timer is the fallback: if no continuation
+  // starts within cfg.errorSettleMs, the log is persisted as the "⚠️ error"
+  // message. Armed at every error end, cancelled on carryover / finalization.
+  private errorSettleTimer: unknown;
   // thinking word rotation
   private thinkingWord = THINKING_WORDS[0];
   private thinkingWordAt = 0;
   // failure notifications (state-change only)
   private draftFailStreak = 0;
   private draftLastFailNotifyAt = 0;
+  // settlement: resolves when the current run's finalization (all persistent
+  // sends) has fully completed — or when a NEW run starts (a waiter on the
+  // old promise must never hang the bridge behind a stale run)
+  private settledPromise: Promise<void> | undefined;
+  private settledResolve: (() => void) | undefined;
 
   constructor(deps: MirrorDeps) {
     this.deps = deps;
+  }
+
+  /**
+   * Resolves once the current run has fully settled: its finalization has
+   * run to completion, i.e. every persistent send of the finalized message
+   * has been delivered (muted / no chat / already finalized → immediately).
+   * Needed because pi's extension runner does NOT await this mirror's
+   * fire-and-forget handlers, so `ctx.waitForIdle()` alone resolves before
+   * the finalized message has reached Telegram (a /compact draft sent in
+   * between would be cleared by it, breaking the abort-error-before-draft
+   * ordering).
+   */
+  whenSettled(): Promise<void> {
+    return this.settledPromise ?? Promise.resolve();
+  }
+
+  private markSettled(): void {
+    this.settledResolve?.();
+    this.settledResolve = undefined;
   }
 
   // ───────────────────────────── run lifecycle ─────────────────────────────
 
   onAgentStart(): void {
     this.runSeq++;
-    this.log = [];
+    // Retry carryover: pi auto-retries retryable provider errors (429/5xx/…) —
+    // the continuation's agent_start arrives while the failed run's log is
+    // still live (never persisted: error ends skip finalization). CARRY the
+    // log over instead of wiping it: the user has been watching those tool
+    // calls in the draft, and the continued run's final message must carry
+    // the whole story (old blocks → ⚠️ error → retried blocks → marker).
+    // The grace timer (armed at the error end) is cancelled — nothing is
+    // persisted separately.
+    const carryOver = this.phase === "work" && this.endKind === "error";
+    this.clearErrorSettle();
+    if (carryOver) {
+      // The failed run's bottom-line error becomes a LOG block: the retried
+      // run's final message must carry the whole story
+      // (old blocks → ⚠️ error → new blocks → marker).
+      if (this.endError) this.log.push({ type: "agentError", text: `⚠️ error: ${this.endError}` });
+    } else if (this.phase !== "work" || this.draftId === 0) {
+      // Stale state (a finalized run keeps its old log around) must not leak
+      // into the new run. The ONE exception: the live EARLY DRAFT (T6,
+      // onPromptAccepted) — no run has ended yet (endKind undefined) and its
+      // log holds the auto-compact narration of THIS pending run, already
+      // visible in the draft the user has been watching.
+      this.log = [];
+    }
     this.tail = "";
     this.endKind = undefined;
+    this.endError = undefined;
+    this.autoCompacting = false;
     this.nextDraftAt = 0;
     this.forceNext = false;
     this.pending.clear(); // a stale in-flight update from a prior run may settle later; it is gen-guarded
     this.draftFailStreak = 0;
     this.draftLastFailNotifyAt = 0;
+    // A new run starts: release any waiter left on the previous run's promise
+    // (its finalization, if still in flight, can no longer guarantee the
+    // ordering the waiter cares about — a new run already intervened).
+    this.markSettled();
+    this.settledPromise = new Promise<void>((resolve) => {
+      this.settledResolve = resolve;
+    });
     this.phase = "work";
+    this.startRunDraft();
+  }
+
+  /**
+   * Spawn the run's draft (spinner) — or no-op when there is nothing to
+   * spawn: muted / not paired yet / a draft is ALREADY live. That last case
+   * is the early draft (onPromptAccepted) being taken over by agent_start
+   * (same draft id, no second spawn) — or the retry continuation taking over
+   * the live error-end draft.
+   */
+  private startRunDraft(): void {
     if (this.deps.cfg.muted || this.deps.getChatId() === undefined) return;
+    if (this.draftId !== 0) return; // a draft is already live for this run — reuse it
     this.draftId = ++this.draftSeq;
     this.requestUpdate();
     this.armHeartbeat();
+  }
+
+  /**
+   * The owner's prompt was accepted and dispatched (bridge, BEFORE pi's
+   * agent_start): the run's draft (spinner) goes out immediately — the user
+   * sees "working" without waiting for the model's first event. A steer into
+   * a live run (phase work) is a no-op: that run already owns its draft.
+   */
+  onPromptAccepted(): void {
+    if (this.phase === "work") return; // steer: the live run already owns its draft
+    this.log = [];
+    this.tail = "";
+    this.endKind = undefined;
+    this.endError = undefined;
+    this.autoCompacting = false;
+    this.nextDraftAt = 0;
+    this.forceNext = false;
+    this.pending.clear();
+    this.clearErrorSettle();
+    this.draftFailStreak = 0;
+    this.draftLastFailNotifyAt = 0;
+    // A new run is coming: release waiters left on the previous promise and
+    // arm a fresh settlement promise (same contract as onAgentStart).
+    this.markSettled();
+    this.settledPromise = new Promise<void>((resolve) => {
+      this.settledResolve = resolve;
+    });
+    this.phase = "work";
+    this.draftId = 0; // force startRunDraft to spawn a fresh draft id
+    this.startRunDraft();
   }
 
   // ─────────────────────────── message stream ───────────────────────────
@@ -386,17 +511,19 @@ export class Mirror {
           : undefined;
     if (endKind && toolCount === 0) {
       // The run ends with a toolless message: its text is the PARTIAL ANSWER
-      // — it stays as the tail (rendered under the end marker at
-      // finalization), not a log block, so it is not duplicated.
-      if (msg.errorMessage) this.log.push({ type: "agentError", text: `⚠️ error: ${escapeHtml(msg.errorMessage)}` });
+      // — it stays as the tail (rendered above the end's bottom line at
+      // finalization), not a log block, so it is not duplicated. The
+      // errorMessage is the bottom line (D3) — never a log block.
+      if (msg.errorMessage) this.endError = escapeHtml(msg.errorMessage);
       this.endKind = endKind;
       this.tail = textAll;
     } else {
       // Tool-carrying (any stop reason) or mid-run (toolUse, deferred, …):
       // the text becomes a log block — the tail clears, the text keeps its
-      // place at the end of the log.
+      // place at the end of the log. A tool-carrying error end's message is
+      // likewise the bottom line, not a log block.
       flush();
-      if (msg.errorMessage) this.log.push({ type: "agentError", text: `⚠️ error: ${escapeHtml(msg.errorMessage)}` });
+      if (msg.errorMessage) this.endError = escapeHtml(msg.errorMessage);
       if (endKind) this.endKind = endKind;
       this.tail = "";
     }
@@ -432,6 +559,59 @@ export class Mirror {
     this.requestUpdate();
   }
 
+  // ─────────────────────── lane-2 auto-compact (C1/C2/C3) ───────────────────────
+
+  /**
+   * Lane selection (index.ts, session_before_compact auto): does this mirror
+   * currently own a LIVE draft? true → the auto-compact renders INSIDE the
+   * run's draft (lane 2); false → the bridge posts a standalone draft
+   * (lane 1).
+   */
+  hasLiveDraft(): boolean {
+    return this.phase === "work" && this.draftId !== 0;
+  }
+
+  /**
+   * pi auto-compaction STARTED (session_before_compact, auto) while the
+   * draft is live: the bottom line swaps to the C1 status and the error
+   * grace is SUSPENDED — the draft must not persist mid-compact (the
+   * overflow-with-retry continuation is still coming). No-op when there is
+   * no live draft (lane 1 owns the messaging).
+   */
+  onAutoCompactStart(): void {
+    if (!this.hasLiveDraft()) return;
+    this.clearErrorSettle();
+    this.autoCompacting = true;
+    this.requestUpdate();
+  }
+
+  /**
+   * pi auto-compaction SUCCEEDED (session_compact, auto): the stamped line
+   * joins the work log (the (retried) run's final message carries it), the
+   * spinner returns, and the error grace is re-armed if the run is still an
+   * error end. No-op when lane 1 owns the messaging.
+   */
+  onAutoCompactDone(detail?: string): void {
+    if (!this.autoCompacting) return;
+    this.autoCompacting = false;
+    this.log.push({ type: "narration", text: detail ? `${AUTO_COMPACT_DONE_TEXT} — ${detail}` : AUTO_COMPACT_DONE_TEXT });
+    if (this.endKind === "error") this.armErrorSettle();
+    this.requestUpdate();
+  }
+
+  /**
+   * pi auto-compaction FAILED (session_compact_failed, auto): the draft
+   * reverts to its prior state (spinner / error line). The ⚠️ notification
+   * is the caller's job (index.ts — the live draft carries on, C3). The
+   * error grace is re-armed if the run is still an error end.
+   */
+  onAutoCompactFailed(): void {
+    if (!this.autoCompacting) return;
+    this.autoCompacting = false;
+    if (this.endKind === "error") this.armErrorSettle();
+    this.requestUpdate();
+  }
+
   // ───────────────────────────── end of run ─────────────────────────────
 
   async onAgentEnd(_messages: MirrorMessage[]): Promise<void> {
@@ -440,9 +620,14 @@ export class Mirror {
     // auto-retries retryable provider errors (429/5xx/…) — a new agent_start
     // comes after the backoff. Do NOT finalize here: no persistent error
     // message, the draft stays alive (heartbeat) showing the error state.
-    // Finalization for error ends waits for onAgentSettled (the stream is
-    // really over: not retryable, or retries exhausted).
-    if (this.endKind === "error") return;
+    // Finalization for error ends is deferred to the grace timer (see
+    // onAgentSettled / armErrorSettle): not retryable, or retries exhausted
+    // → the timer persists the log; an auto-retry arrives first → it carries
+    // the log over.
+    if (this.endKind === "error") {
+      this.armErrorSettle();
+      return;
+    }
     if (this.endKind === undefined) this.endKind = "stop"; // e.g. the run produced no assistant message
     await this.finalize();
   }
@@ -450,12 +635,20 @@ export class Mirror {
   /**
    * The end of the STREAM (pi's `agent_settled`): the run has fully settled
    * and no automatic retry, compaction, or queued continuation will run.
-   * This is where error ends finalize; everything else is already done
-   * (clean ends finalize at the confirming message_end, stops at agent_end).
+   * Clean/stop ends are already finalized (at the confirming message_end /
+   * agent_end). Error ends are NOT finalized here: pi emits agent_settled
+   * right BEFORE the retry's agent_start (same stream), so persisting now
+   * would double-post the blocks the retry carries over — the grace timer
+   * (armed at the error end) persists the log if no continuation arrives
+   * within cfg.errorSettleMs.
    */
   async onAgentSettled(): Promise<void> {
     if (this.phase !== "work") return; // already finalized — one-way switch
-    if (this.endKind === undefined) this.endKind = "stop";
+    if (this.endKind === "error") {
+      this.armErrorSettle(); // idempotent — the error end already armed it
+      return;
+    }
+    if (this.endKind === undefined) this.endKind = "stop"; // e.g. the run produced no assistant message
     await this.finalize();
   }
 
@@ -479,27 +672,48 @@ export class Mirror {
     if (this.phase === "finalized") return;
     this.phase = "finalized";
     this.stopHeartbeat();
+    this.clearErrorSettle(); // a finalization supersedes the pending error persistence
     this.pending.clear(); // no further draft updates follow the run
-    if (this.deps.cfg.muted) return;
-    const chatId = this.deps.getChatId();
-    if (chatId === undefined) return;
-    const bottom: BottomLine =
-      this.endKind === "clean" ? { kind: "done" } : this.endKind === "error" ? { kind: "error" } : { kind: "none" };
-    if (this.endKind === "clean" && this.tail.trim()) {
-      // step 1 — the completed state in the draft. Awaited so the client sees
-      // it before step 2 replaces the draft. Best effort: runDraftOnce
-      // swallows failures (429/400) — the persistent messages still go out.
-      if (this.draftId)
-        await this.runDraftOnce(this.draftId, this.draftContent(bottom), false /* no Stop button — the run is over */);
-      // step 2 — m1: the work log + the Completed marker (the answer is cut).
-      await this.sendPersistent(chatId, blocksToMd(this.log, { bottom }));
-      // step 3 — m2: the final answer, its own message.
-      await this.sendPersistent(chatId, this.tail);
-      return;
+    // THIS run's resolver, captured: if a new run starts while our finalization
+    // is still in flight, onAgentStart swaps the promise — our late `finally`
+    // must release only our own waiters, not the new run's.
+    const settle = this.settledResolve;
+    try {
+      if (this.deps.cfg.muted) return;
+      const chatId = this.deps.getChatId();
+      if (chatId === undefined) return;
+      const bottom: BottomLine =
+        this.endKind === "clean"
+          ? { kind: "done" }
+          : this.endKind === "error"
+            ? { kind: "error", text: this.endError ?? "" }
+            : { kind: "aborted" };
+      if (this.endKind === "clean" && this.tail.trim()) {
+        // step 1 — the completed state in the draft. Awaited so the client sees
+        // it before step 2 replaces the draft. Best effort: runDraftOnce
+        // swallows failures (429/400) — the persistent messages still go out.
+        if (this.draftId)
+          await this.runDraftOnce(this.draftId, this.draftContent(bottom), false /* no Stop button — the run is over */);
+        // step 2 — m1: the work log + the Completed marker (the answer is cut).
+        // SILENT: the notification belongs to the final answer (m2) only.
+        await this.sendPersistent(chatId, blocksToMd(this.log, { bottom }), { disableNotification: true });
+        // step 3 — m2: the final answer, its own message — the only send that notifies.
+        await this.sendPersistent(chatId, this.tail);
+        return;
+      }
+      const tail = this.endKind === "error" && this.tail.trim() ? `${this.tail.trimEnd()}\n\n⚠ incomplete` : this.tail;
+      const md = blocksToMd(this.log, { tail, bottom }); // full content — chunked, never tailView-capped
+      if (md.trim())
+        // D4: a stop end's message is SILENT (no notification) — an error end
+        // notifies (the error is the final word the user must see).
+        await this.sendPersistent(chatId, md, { disableNotification: this.endKind === "stop" });
+    } finally {
+      // Every exit path (muted, no chat, sends done, sends threw after all
+      // retries) releases the settlement waiters — a hung promise would hang
+      // the bridge's poll loop forever.
+      settle?.();
+      this.draftId = 0; // no live draft anymore — the next run gets a fresh id
     }
-    const tail = this.endKind === "error" && this.tail.trim() ? `${this.tail.trimEnd()}\n\n⚠ incomplete` : this.tail;
-    const md = blocksToMd(this.log, { tail, bottom }); // full content — chunked, never tailView-capped
-    if (md.trim()) await this.sendPersistent(chatId, md);
   }
 
   /**
@@ -511,27 +725,29 @@ export class Mirror {
    * HTML path; on a 400 there, plain text. A 400 that survives all three
    * levels rethrows without retrying.
    */
-  private async deliverOnce(chatId: number, md: string): Promise<void> {
+  private async deliverOnce(chatId: number, md: string, opts?: { disableNotification?: boolean }): Promise<void> {
+    // the silence flag survives the rich → HTML → plain fallback chain
+    const silence = opts?.disableNotification ? { disableNotification: true } : undefined;
     const { out } = this.deps;
     const folded = foldLongFences(md, this.deps.cfg.codeFoldLines);
     const pieces = folded.length <= RICH_CAP ? [folded] : chunkRich(folded);
     try {
-      for (const p of pieces) await out.sendRich(chatId, p);
+      for (const p of pieces) await out.sendRich(chatId, p, silence);
       return;
     } catch (err) {
       if (!(err instanceof TgError && err.code === 400)) throw err;
     }
     try {
-      for (const chunk of chunkMarkdown(md)) await out.send(chatId, chunk, { parseMode: "HTML" });
+      for (const chunk of chunkMarkdown(md)) await out.send(chatId, chunk, { parseMode: "HTML", ...silence });
       return;
     } catch (err) {
       if (!(err instanceof TgError && err.code === 400)) throw err;
     }
-    for (const chunk of chunkText(toPlainText(md))) await out.send(chatId, chunk, { parseMode: null });
+    for (const chunk of chunkText(toPlainText(md))) await out.send(chatId, chunk, { parseMode: null, ...silence });
   }
 
   /** Up to PERSIST_ATTEMPTS with 1s/2s/4s backoff, honoring a 429's retry_after. */
-  private async sendPersistent(chatId: number, md: string): Promise<void> {
+  private async sendPersistent(chatId: number, md: string, opts?: { disableNotification?: boolean }): Promise<void> {
     let lastErr: unknown;
     for (let attempt = 1; attempt <= PERSIST_ATTEMPTS; attempt++) {
       if (attempt > 1) {
@@ -540,7 +756,7 @@ export class Mirror {
         await this.sleep(delay);
       }
       try {
-        await this.deliverOnce(chatId, md);
+        await this.deliverOnce(chatId, md, opts);
         return;
       } catch (err) {
         lastErr = err;
@@ -560,8 +776,22 @@ export class Mirror {
   private content(bottom?: BottomLine): string {
     return blocksToMd(this.log, {
       tail: this.tail,
-      bottom: bottom ?? { kind: "thinking", word: this.thinkingWordNow() },
+      bottom: bottom ?? this.currentBottom(),
     });
+  }
+
+  /**
+   * The live draft's bottom line: while working → the thinking spinner
+   * (auto-compact in flight → its C1 status); after a run end → that end's
+   * bottom line (the ⚠️ line, or the aborted line) — no spinner once the run
+   * has ended (the grace window, the stop, …).
+   */
+  private currentBottom(): BottomLine {
+    if (this.endKind === "clean") return { kind: "done" };
+    if (this.endKind === "error") return { kind: "error", text: this.endError ?? "" };
+    if (this.endKind === "stop") return { kind: "aborted" };
+    if (this.autoCompacting) return { kind: "compact", status: AUTO_COMPACT_STATUS };
+    return { kind: "thinking", word: this.thinkingWordNow() };
   }
 
   /** The draft's content capped for the ephemeral window (the draft has a hard size limit). */
@@ -685,6 +915,26 @@ export class Mirror {
   }
 
   // ─────────────────────────── heartbeat & spinner ───────────────────────────
+
+  /**
+   * Arm the error-settle grace: if no continuation starts within
+   * cfg.errorSettleMs and the run is still a live error end, persist the
+   * error log. Idempotent — one timer at a time.
+   */
+  private armErrorSettle(): void {
+    if (this.errorSettleTimer !== undefined) return;
+    this.errorSettleTimer = this.deps.setTimer(() => {
+      this.errorSettleTimer = undefined;
+      if (this.phase === "work" && this.endKind === "error") void this.finalize();
+    }, this.deps.cfg.errorSettleMs);
+  }
+
+  private clearErrorSettle(): void {
+    if (this.errorSettleTimer !== undefined) {
+      this.deps.clearTimer(this.errorSettleTimer);
+      this.errorSettleTimer = undefined;
+    }
+  }
 
   private armHeartbeat(): void {
     if (this.hbTimer !== undefined) return;

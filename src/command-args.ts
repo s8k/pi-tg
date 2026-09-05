@@ -1,7 +1,7 @@
 import type { TgAction } from "./router.ts";
 
 const PLAIN = new Set(["start", "help", "new", "sessions", "modelList", "thinkingList", "status", "stop", "mute", "unmute", "compact", "reload", "killAsk"]);
-const INDEX = new Set(["sessionActivate", "switchOk", "modelSet", "thinkingSet"]);
+const INDEX = new Set(["sessionActivate", "modelSet", "thinkingSet"]);
 
 /**
  * Encode a TgAction as the argument string for a `/tg internal …` command.

@@ -69,6 +69,17 @@ test("sanitize: muted is a strict boolean, default false", () => {
   assert.equal(DEFAULTS.muted, false);
 });
 
+test("sanitize: pendingAction.new keeps a valid ackMsgId, drops invalid ones (A7)", () => {
+  assert.deepEqual(sanitize({ pendingAction: { type: "new", chatId: 7, ackMsgId: 42 } }).pendingAction, {
+    type: "new",
+    chatId: 7,
+    ackMsgId: 42,
+  });
+  assert.deepEqual(sanitize({ pendingAction: { type: "new", chatId: 7, ackMsgId: "nope" } }).pendingAction, { type: "new", chatId: 7 });
+  assert.deepEqual(sanitize({ pendingAction: { type: "new", chatId: 7, ackMsgId: -3 } }).pendingAction, { type: "new", chatId: 7 });
+  assert.deepEqual(sanitize({ pendingAction: { type: "new", chatId: 7, ackMsgId: 2.5 } }).pendingAction, { type: "new", chatId: 7 });
+});
+
 test("sanitize: clamps and drops invalid fields", () => {
   const cfg = sanitize({
     streamEditMs: 10,        // below min → default

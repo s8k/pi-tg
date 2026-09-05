@@ -56,7 +56,7 @@ test("callbacks: owner only, vocabulary maps, stale → ignore", () => {
   assert.deepEqual(route(cbUpdate(1, 99, "stop"), owner), { kind: "notAuthorized", chatId: 7, fromId: 99 });
   assert.deepEqual(route(cbUpdate(1, owner, CB.STOP), owner), { kind: "stop", chatId: 7 });
   assert.deepEqual(route(cbUpdate(2, owner, CB.session(3)), owner), { kind: "sessionActivate", chatId: 7, index: 3 });
-  assert.deepEqual(route(cbUpdate(3, owner, CB.sessionOk(2)), owner), { kind: "switchOk", chatId: 7, index: 2 });
+  assert.deepEqual(route(cbUpdate(3, owner, "so:2"), owner), { kind: "ignore" }); // the dead switchOk button: stale → ignore
   assert.deepEqual(route(cbUpdate(4, owner, CB.model(0)), owner), { kind: "modelSet", chatId: 7, index: 0 });
   assert.deepEqual(route(cbUpdate(5, owner, CB.thinking(1)), owner), { kind: "thinkingSet", chatId: 7, index: 1 });
   assert.deepEqual(route(cbUpdate(6, owner, CB.kill(true)), owner), { kind: "kill", chatId: 7, yes: true });

@@ -40,10 +40,10 @@ export interface CtxLike {
 }
 
 export interface ClientLike {
-  sendMessage(chatId: number, text: string, opts?: { parseMode?: "HTML" | null; replyToId?: number; replyMarkup?: unknown }): Promise<{ message_id: number }>;
+  sendMessage(chatId: number, text: string, opts?: { parseMode?: "HTML" | null; replyToId?: number; replyMarkup?: unknown; disableNotification?: boolean }): Promise<{ message_id: number }>;
   editMessageText(chatId: number, messageId: number, text: string, opts?: { parseMode?: "HTML" | null; replyMarkup?: unknown }): Promise<boolean>;
   deleteMessage(chatId: number, messageId: number): Promise<void>;
-  sendRichMessage(chatId: number, rich: { markdown?: string }): Promise<{ message_id: number }>;
+  sendRichMessage(chatId: number, rich: { markdown?: string }, opts?: { replyToId?: number; disableNotification?: boolean }): Promise<{ message_id: number }>;
   sendRichMessageDraft(chatId: number, draftId: number, rich: { markdown?: string }, canStop?: boolean, keepOnStop?: boolean): Promise<boolean>;
 }
 
@@ -53,13 +53,13 @@ export function makeOut(client: ClientLike, state: TelegaState, persist: () => P
   return {
     async send(chatId, text, opts) {
       const parseMode: "HTML" | null = opts && opts.parseMode !== undefined ? opts.parseMode : "HTML";
-      const sent = await client.sendMessage(chatId, text, { parseMode, replyToId: opts?.replyToId, replyMarkup: opts?.replyMarkup });
+      const sent = await client.sendMessage(chatId, text, { parseMode, replyToId: opts?.replyToId, replyMarkup: opts?.replyMarkup, disableNotification: opts?.disableNotification });
       state.addSent(sent.message_id);
       await persist();
       return sent.message_id;
     },
-    async sendRich(chatId, md) {
-      const sent = await client.sendRichMessage(chatId, { markdown: md });
+    async sendRich(chatId, md, opts) {
+      const sent = await client.sendRichMessage(chatId, { markdown: md }, opts);
       state.addSent(sent.message_id);
       await persist();
       return sent.message_id;
@@ -75,6 +75,22 @@ export function makeOut(client: ClientLike, state: TelegaState, persist: () => P
 }
 
 // ── TelegaPi adapter: pi + latest contexts → the bridge’s structural interface ──
+
+/**
+ * Wrap `pi.waitForIdle` so it additionally waits for the mirror to finish
+ * the run's finalization (all persistent sends delivered). pi's extension
+ * runner does not await the mirror's fire-and-forget handlers, so the bare
+ * wait resolves before e.g. the aborted run's "⚠️ error: Request was
+ * aborted" message has reached Telegram — the bridge's compact/stop flows
+ * rely on the wrapped wait to keep their sends ordered after it.
+ */
+export function wrapWaitForIdle(pi: { waitForIdle(): Promise<void> }, whenSettled: () => Promise<void>): void {
+  const base = pi.waitForIdle.bind(pi);
+  pi.waitForIdle = async () => {
+    await base();
+    await whenSettled();
+  };
+}
 
 export interface TelegaPiDeps {
   pi: PiLike;
@@ -143,8 +159,15 @@ export function makeTelegaPi(deps: TelegaPiDeps): TelegaPi {
     compact(onDone) {
       requireCtx().compact({
         onComplete: (r) => {
-          const s = (r as { summary?: string } | undefined)?.summary;
-          onDone(true, s ?? "compacted");
+          // Short "before → after tokens" note — NEVER the full summary (it
+          // exceeds Telegram's 4096-char limit and the completion message
+          // would be dropped).
+          const res = r as { tokensBefore?: number; estimatedTokensAfter?: number } | undefined;
+          const detail =
+            typeof res?.tokensBefore === "number" && typeof res?.estimatedTokensAfter === "number"
+              ? `${res.tokensBefore.toLocaleString("en-US")} → ${res.estimatedTokensAfter.toLocaleString("en-US")} tokens`
+              : undefined;
+          onDone(true, detail);
         },
         onError: (e) => onDone(false, e.message),
       });

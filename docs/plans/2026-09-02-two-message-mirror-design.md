@@ -28,11 +28,13 @@ One agent run produces **exactly 1 live rich draft** for the whole run, and
    the chat instantly clears the ephemeral drafts), and **message 2** is the
    final answer, sent as its own regular `sendRichMessage`. End state: the
    tool log is the previous message, the answer is the new one. Stop/error
-   ends persist a single message instead — and an ERROR end only persists
-   at `agent_settled` (the real end of the stream): pi auto-retries
-   retryable provider errors, so an `agent_end` after an error must NOT
-   finalize (the draft stays alive until the retried run starts or the
-   stream settles).
+   ends persist a single message instead — and an ERROR end persists only
+   after the settle grace window (`errorSettleMs`, 5 s default): never at
+   `agent_end` and never at `agent_settled` (pi auto-retries retryable
+   provider errors and emits `agent_settled` right before the retry's
+   `agent_start`, same stream) — a retry that arrives carries over the live
+   work log instead (§5.4), and only a grace expiry persists the error log
+   on its own.
 
 ## Progress
 
@@ -44,6 +46,7 @@ One agent run produces **exactly 1 live rich draft** for the whole run, and
 - [x] 5. End states & finalization mechanics
 - [x] 6. Code plan & TDD order
 - [x] 7. Out of scope & validation notes
+- [x] Addendum: retry carryover & settle grace (§5.4) — a 502 mid-run no longer wipes the live draft; the auto-retry's run continues the un-persisted work log, and the error log is grace-persisted only when no continuation arrives
 
 ## 1. Goal & final look
 
@@ -60,9 +63,9 @@ What the user sees in the chat for a typical run:
   │   <pre>RangeError: …</pre>
   │ The fix works. Here is what I      ← the answer streams in,
   │ changed: …                            token by token, ABOVE the spinner
-  │ ---                                   ← a line separates any text above
-  │ <tg-thinking>…</tg-thinking>           the spinner (spinner only → no line)
-  └
+  │                                       ← extra blank line (NBSP) whenever
+  │ <tg-thinking>…</tg-thinking>           there is text above the spinner
+  └                                       (spinner only → no blank line)
 
 [after a clean end — the draft completes, then splits into two messages]
   draft (momentarily):          msg 1 (persistent — the tool log):
@@ -114,10 +117,11 @@ phase: "work" | "finalized" // one-way switch
 ```
 
 Content is always **derived from state, never stored**: the draft renders as
-`blocksToMd(log, { tail, bottom })` — `[blocks] [tail] --- [spinner]` while
-working (the horizontal line appears whenever there is text above the
-spinner; spinner alone → no line), `[blocks] [Completed ✔️] [tail]` in the
-completed state (no divider — the answer is its own message anyway). The
+`blocksToMd(log, { tail, bottom })` — `[blocks] [tail] [blank line]
+[spinner]` while working (the extra blank line — an NBSP paragraph —
+appears whenever there is text above the spinner; spinner alone → no
+blank line), `[blocks] [Completed ✔️] [tail]` in the completed state (no
+divider — the answer is its own message anyway). The
 SAME builder renders the live draft, the completed-state preview, and the
 persistent sends, so the split cannot drift from what the draft showed.
 
@@ -125,15 +129,15 @@ persistent sends, so the split cannot drift from what the draft showed.
 
 | Event | Action |
 |---|---|
-| `agent_start` | create draft 1 (spinner, `can_stop`, `keep_on_stop`); phase = work. Muted → no drafts at all. |
+| `agent_start` | create draft 1 (spinner, `can_stop`, `keep_on_stop`); phase = work. Muted → no drafts at all. If the previous run ended in an error and was never persisted → **carry over its live work log** (do NOT clear it — the retried/continued run appends; the draft must not visually lose the tool calls the user watched; §5.4). |
 | `message_start` (assistant) | tail = "" (the message's text accumulates from its parts); the first send of a new message breaks through the throttle window (one-shot `forceNext`) |
 | `message_update` | accumulate the `text` parts into the tail and request an update if the tail is non-empty. A `toolCall` part mid-stream is IGNORED — it must not wipe the in-flight text (that was the old flicker). Textless candidates never update. |
 | `message_end` | **commit** the finished message: scan content in order → narration blocks (text before each tool call), tool blocks (`why` = last thinking sentence seen so far), error block if `errorMessage`. If `stopReason ∈ {"stop","length"}` **and the message has no tool calls** → **confirm**: tail = its text (the answer), endKind = clean, finalize (§5). A `"length"` stop WITH tool calls does NOT confirm (pi fails those truncated calls and the loop continues). Tool-carrying / mid-run messages: their text commits to the log, tail = "". `"aborted"`/`"error"` with no tools: the text stays as the partial-answer tail (not a log block — no duplication). |
 | `tool_execution_start` | mark the committed tool block (by `toolCallId`) `running` (it was committed with `…` at message_end; the start just guards ordering) |
 | `tool_execution_end` | stamp the block `✔` / `✖` + capture `result` text for `✖` blocks |
 | `ui_prompt_start` | append a prompt block to the log |
-| `agent_end` | if not finalized **and the end is not an error** → run the end-state finalization (§5). An ERROR end waits for `agent_settled` — pi auto-retries retryable provider errors (429/5xx/…; up to `retry.maxRetries` runs, backoff 2·2ⁿˢ), so the run ending is not the stream ending. |
-| `agent_settled` | pi's “no automatic retry, compaction, or queued continuation will run” — the end of the STREAM. If not finalized → run the end-state finalization (§5). This is where error ends persist. |
+| `agent_end` | if not finalized **and the end is not an error** → run the end-state finalization (§5). An ERROR end does NOT finalize — it arms the settle grace timer (`errorSettleMs`): pi auto-retries retryable provider errors (429/5xx/…; up to `retry.maxRetries` runs, backoff 2·2ⁿˢ), so the run ending is not the stream ending. |
+| `agent_settled` | pi's “no automatic retry, compaction, or queued continuation will run” — the end of the STREAM. A run that ended with no message at all → finalize as stop. An ERROR end is NOT persisted here (the retry's `agent_start` arrives right after this, same stream, and carries the log over — persisting now would double-post): the grace timer armed at the error end persists the log if no continuation arrives within `errorSettleMs`. |
 
 ### Invariants
 
@@ -202,10 +206,19 @@ narration { text }     // a message's visible text, verbatim markdown
 
 There is NO horizontal divider between the work log and the answer
 ANYWHERE (revised 2026-09-04): the answer is split into its own message
-anyway, so the `---` line had no purpose. The ONE place a `---` line IS
-used (revised 2026-09-05): in the working draft, between any text (blocks
-and/or the streaming tail) and the `<tg-thinking>` spinner below it —
-spinner alone (fresh run) → no line.
+anyway, so the `---` line had no purpose.
+
+Separating the `<tg-thinking>` spinner from the text above it
+(revised 2026-09-05, live A/B in the user's chat): an **extra blank
+line** — a single NBSP (\u00a0) paragraph — is emitted between any text
+(blocks and/or the streaming tail) and the spinner; spinner alone (fresh
+run) → no blank line. The earlier `---`/`<hr/>` line was rejected in the
+A/B: directly under a tool `<details>` block it rendered as a double
+line (the details handle + the rule). NBSP works in BOTH render paths:
+rich markdown (the server renders it as an empty line) and the local
+markdown→HTML fallback (escapeHtml leaves the literal character alone);
+in the plain fallback a line-trim may drop it — acceptable graceful
+degradation.
 
 ### Sizing & escaping
 
@@ -278,6 +291,14 @@ complete the moment the message finishes). THREE steps, in order:
    way. End state: the tool log is the previous message, the answer is the
    new one.
 
+**Notification rule:** m1 is sent with `disable_notification: true` — the
+work log is a mirror artifact and must not buzz. Only m2 (the final answer)
+notifies. Drafts cannot carry `disable_notification` (the Bot API's draft
+methods have no such parameter), so the silence lives on the persistent
+send only. The flag survives the rich → HTML → plain fallback chain (all
+three levels pass `disable_notification`), and the stop/error single-message
+send still notifies — it *is* the final word.
+
 The one-way switch flips and the heartbeat stops FIRST; no draft updates
 ever follow a persistent send (verified on the wire 2026-09-03).
 
@@ -293,14 +314,45 @@ m2 (chronology).
 No split: ONE persistent send with the final layout —
 - **stop** (finalized at `agent_end`): [log] [partial tail] (no marker, no
   spinner);
-- **error** (finalized at `agent_settled`, never at `agent_end` — pi may
-  auto-retry): [log + `⚠️ error:` block] [partial tail + trailing
-  `⚠ incomplete` line] — no `⚠ Error` marker (the log block says it), no
-  divider anywhere.
+- **error** (persisted by the settle grace timer after `errorSettleMs` —
+  never at `agent_end`, never at `agent_settled`: pi may auto-retry, and the
+  retry's continuation CARRIES THE LOG OVER instead, §5.4): [log +
+  `⚠️ error:` block] [partial tail + trailing `⚠ incomplete` line] — no
+  `⚠ Error` marker (the log block says it), no divider anywhere.
 
-While waiting for the retry/settle, the draft stays alive (heartbeat)
-showing the error state: [log + `⚠️ error:` block] [partial tail]
-`<tg-thinking>` spinner.
+While the grace window is open (a retry may still be in its backoff), the
+draft stays alive (heartbeat) showing the error state: [log + `⚠️ error:`
+block] [partial tail] `<tg-thinking>` spinner.
+
+### Retry carryover & settle grace (§5.4)
+
+pi emits `agent_end` → `agent_settled` → (backoff) → `agent_start` for an
+auto-retry — the settled event precedes the continuation's start, within the
+same prompt stream. The mirror therefore:
+
+- **carries over**: `agent_start` while the previous run is a live error end
+  (never persisted) keeps the work log — the continued run appends to it, the
+  draft never visually loses the successful tool calls the user watched, and
+  the continued run's final m1 carries the whole story in order: [old blocks]
+  [`⚠️ error: …`] [retried blocks] [`Completed ✔️`]. The grace timer is
+  cancelled — no separate error message is posted.
+- **grace-persists**: if no continuation arrives (not retryable, retries
+  exhausted, user silent), the timer fires after `errorSettleMs` (5 s default
+  — must exceed pi's retry backoff, 2 s) and persists the error log exactly
+  as the stop/error single message above. Each error end re-arms the timer,
+  so chained retries (backoffs 2 s / 4 s) keep carrying over.
+- **fast new prompt inside the grace** (rare: the error was not retryable and
+  the user sends the next prompt before the timer fires) continues the live
+  log — the same session context continues, so the combined m1 is truthful
+  and nothing is lost.
+- **run after the grace fired** starts clean (the old log was already
+  persisted).
+
+Invariants: an error log is persisted **at most once** (grace expiry or the
+continued run's own end — never both); the live draft never loses already
+rendered blocks across a continuation; `whenSettled` resolves when the
+persistence actually happened (timer → finalize → settled) or when a new run
+started (as before).
 
 ### End-state table
 
@@ -308,7 +360,7 @@ showing the error state: [log + `⚠️ error:` block] [partial tail]
 |---|---|---|---|
 | **Clean** (answer confirmed) | completed state: log + `Completed ✔️` + answer (no divider) | log + `Completed ✔️` (answer cut) — **always sent**, even with an empty log (then just the marker) | the answer |
 | **Manual stop** | (killed by m1) | log + partial tail (skipped when both are empty) | — |
-| **Error** (provider/API, or message `errorMessage`; finalized at `agent_settled`) | (killed by the persistent send) | log + error block (+ partial + `⚠ incomplete` when there is a partial tail) — no `⚠ Error` marker | — |
+| **Error** (provider/API, or message `errorMessage`; persisted by the grace timer after `errorSettleMs` — or carried into the continued run's m1) | (killed by the persistent send) | log + error block (+ partial + `⚠ incomplete` when there is a partial tail) — no `⚠ Error` marker | — |
 | **Muted** | never spawned | nothing | nothing |
 
 Notes:

@@ -19,7 +19,7 @@ test("makeOut: send → addSent + persist, default parseMode HTML", async () => 
   assert.equal(id, 777);
   assert.deepEqual(state.sentIds(), [777]);
   assert.equal(persists, 1);
-  assert.deepEqual(calls[0][3], { parseMode: "HTML", replyToId: undefined, replyMarkup: undefined });
+  assert.deepEqual(calls[0][3], { parseMode: "HTML", replyToId: undefined, replyMarkup: undefined, disableNotification: undefined });
 });
 
 test("makeOut: explicit parseMode null survives; edit/delete passthrough", async () => {
@@ -128,11 +128,15 @@ test("makeTelegaPi: compact callbacks map to onDone(ok, detail)", () => {
   const t = makeTelegaPi({ pi: {} as PiLike, getCmdCtx: () => ctx, getSessionCtx: () => undefined, listSessions: async () => [] });
   const results: [boolean, string?][] = [];
   t.compact((ok, detail) => results.push([ok, detail]));
-  onComplete!({ summary: "summarized 12 msgs" });
-  assert.deepEqual(results, [[true, "summarized 12 msgs"]]);
+  // detail is a SHORT token note — never the full summary (4096-char limit)
+  onComplete!({ tokensBefore: 12345, estimatedTokensAfter: 1024 });
+  assert.deepEqual(results, [[true, "12,345 → 1,024 tokens"]]);
+  t.compact((ok, detail) => results.push([ok, detail]));
+  onComplete!({ summary: "no token info in the result" });
+  assert.deepEqual(results[1], [true, undefined]);
   t.compact((ok, detail) => results.push([ok, detail]));
   onError!(new Error("boom"));
-  assert.deepEqual(results[1], [false, "boom"]);
+  assert.deepEqual(results[2], [false, "boom"]);
 });
 
 test("makeTelegaPi: reload → ctx.reload(), forwards ok/error to onDone (fire-and-forget)", async () => {
@@ -257,6 +261,23 @@ test("makeOut: sendRich → client.sendRichMessage + addSent + persist", async (
   assert.equal(id, 888);
   assert.deepEqual(state.sentIds(), [888]);
   assert.deepEqual(calls[0], ["rich", 7, { markdown: "a table" }]);
+});
+
+test("makeOut: sendRich disableNotification → client.sendRichMessage opts (undefined for notifying)", async () => {
+  const calls: unknown[][] = [];
+  const client: ClientLike = {
+    sendMessage: async () => { throw new Error("unexpected"); },
+    editMessageText: async () => true,
+    deleteMessage: async () => {},
+    sendRichMessage: async (chatId, rich, opts) => { calls.push(["rich", chatId, rich, opts]); return { message_id: 889 }; },
+    sendRichMessageDraft: async () => true,
+  };
+  const state = new TelegaState();
+  const out = makeOut(client, state, async () => {});
+  await out.sendRich(7, "silent table", { disableNotification: true });
+  assert.deepEqual(calls[0], ["rich", 7, { markdown: "silent table" }, { disableNotification: true }]);
+  await out.sendRich(7, "loud table");
+  assert.equal(calls[1]?.[3], undefined, "a notifying send passes no opts");
 });
 
 test("makeOut: sendDraft → passthrough (draftId + canStop + keepOnStop), no addSent", async () => {

@@ -4,7 +4,6 @@ import type { TgUpdate } from "./telegram-client.ts";
 export const CB = {
   STOP: "stop",
   session: (i: number) => `s:${i}`,
-  sessionOk: (i: number) => `so:${i}`,
   model: (i: number) => `m:${i}`,
   thinking: (i: number) => `t:${i}`,
   kill: (yes: boolean) => (yes ? "k:1" : "k:0"),
@@ -20,7 +19,6 @@ export type TgAction =
   | { kind: "new"; chatId: number }
   | { kind: "sessions"; chatId: number }
   | { kind: "sessionActivate"; chatId: number; index: number }
-  | { kind: "switchOk"; chatId: number; index: number }
   | { kind: "modelList"; chatId: number }
   | { kind: "modelSet"; chatId: number; index: number }
   | { kind: "thinkingList"; chatId: number }
@@ -48,7 +46,7 @@ const CMD_RE = /^\/([a-zA-Z0-9_]+)(?:@[a-zA-Z0-9_]+)?\s*(.*)$/;
  */
 export function route(update: TgUpdate, ownerId: number | undefined): TgAction {
   // The rich draft's native Stop button (Bot API 10.2). Reuses the existing
-  // `stop` action: the bridge aborts the turn and mirrors a ⏹ message.
+  // `stop` action: the bridge aborts the turn and mirrors a ⏹️ message.
   const stopped = update.stopped_message_generation;
   if (stopped) return { kind: "stop", chatId: stopped.chat.id };
 
@@ -60,7 +58,6 @@ export function route(update: TgUpdate, ownerId: number | undefined): TgAction {
     }
     const d = cb.data ?? "";
     if (d === CB.STOP) return { kind: "stop", chatId };
-    if (d.startsWith("so:")) return { kind: "switchOk", chatId, index: Number(d.slice(3)) };
     if (d.startsWith("s:")) return { kind: "sessionActivate", chatId, index: Number(d.slice(2)) };
     if (d.startsWith("m:")) return { kind: "modelSet", chatId, index: Number(d.slice(2)) };
     if (d.startsWith("t:")) return { kind: "thinkingSet", chatId, index: Number(d.slice(2)) };

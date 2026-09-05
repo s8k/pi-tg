@@ -91,7 +91,7 @@ export interface FakeOutCall {
   chatId: number;
   messageId?: number;
   text?: string;
-  opts?: { parseMode?: "HTML" | null; replyToId?: number; replyMarkup?: unknown };
+  opts?: { parseMode?: "HTML" | null; replyToId?: number; replyMarkup?: unknown; disableNotification?: boolean };
   draftId?: number;
   canStop?: boolean;
   keepOnStop?: boolean;
@@ -121,11 +121,11 @@ export class FakeOut {
   delete = async (chatId: number, messageId: number): Promise<void> => {
     this.calls.push({ kind: "delete", chatId, messageId });
   };
-  sendRich = async (chatId: number, md: string): Promise<number | undefined> => {
+  sendRich = async (chatId: number, md: string, opts?: { disableNotification?: boolean }): Promise<number | undefined> => {
     const attempt = this.sendRichAttempts++;
     const err = this.sendRichFailScript ? this.sendRichFailScript(attempt) : this.sendRichFailsWith;
     if (err) throw err;
-    this.calls.push({ kind: "sendRich", chatId, text: md });
+    this.calls.push({ kind: "sendRich", chatId, text: md, opts });
     return this.nextMessageId++;
   };
   sendDraft = async (chatId: number, draftId: number, md: string, canStop?: boolean, keepOnStop?: boolean): Promise<boolean> => {

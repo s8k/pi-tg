@@ -97,15 +97,26 @@ test("clear: Keep → no deletes; Clear → drains tracker, deletes each, thrott
   assert.ok(out.calls[out.calls.length - 1].text?.includes("Cleared 3/3"));
 });
 
-test("compact: progress note + completion callback posts result", async () => {
+test("compact: spinner draft (canStop, keepOnStop) + stamped persistent result", async () => {
   const pi = new FakePi();
   const out = new FakeOut();
   const bridge = new SessionBridge(makeDeps(pi.build(), out));
   await bridge.dispatch({ kind: "compact", chatId: 7 });
-  assert.ok(out.calls[0].text?.includes("Compacting"));
-  pi.compactDone?.(true, "summarized 12 msgs");
+  const draft = out.calls[0]!;
+  assert.equal(draft.kind, "sendDraft"); // the in-progress state is an EPHEMERAL draft, never a message
+  assert.equal(draft.text, "<tg-thinking>🗜 Compacting context…</tg-thinking>");
+  assert.equal(draft.canStop, true); // the native Stop button cancels the compaction
+  assert.equal(draft.keepOnStop, true);
+  assert.ok(draft.draftId! >= 1_000_000, "compact drafts live in their own id namespace");
+  pi.compactDone?.(true, "12,345 → 1,024 tokens");
   await new Promise((r) => setTimeout(r, 0));
-  assert.ok(out.calls[out.calls.length - 1].text?.includes("Compacted"));
+  const stamp = out.calls[out.calls.length - 2]!;
+  assert.equal(stamp.kind, "sendDraft", "the draft is stamped with the final state first");
+  assert.equal(stamp.text, "🗜 Context compacted ✔️ — 12,345 → 1,024 tokens");
+  const last = out.calls[out.calls.length - 1]!;
+  assert.equal(last.kind, "send"); // "stamp and save": a normal persistent message (also clears the draft)
+  assert.equal(last.text, "🗜 Context compacted ✔️ — 12,345 → 1,024 tokens");
+  assert.equal(last.opts?.parseMode, null); // detail is free text — no HTML parse
 });
 
 test("compact callback: a failed result send must not produce an unhandled rejection", async () => {

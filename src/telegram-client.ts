@@ -210,12 +210,13 @@ export class TelegramClient {
   sendMessage(
     chatId: number,
     text: string,
-    opts?: { parseMode?: "HTML" | null; replyToId?: number; replyMarkup?: unknown },
+    opts?: { parseMode?: "HTML" | null; replyToId?: number; replyMarkup?: unknown; disableNotification?: boolean },
   ): Promise<TgSentMessage> {
     const p: Record<string, unknown> = { chat_id: chatId, text };
     if (opts?.parseMode) p.parse_mode = opts.parseMode;
     if (opts?.replyToId) p.reply_to_message = { message_id: opts.replyToId };
     if (opts?.replyMarkup) p.reply_markup = opts.replyMarkup;
+    if (opts?.disableNotification) p.disable_notification = true;
     return this.call("sendMessage", p) as Promise<TgSentMessage>;
   }
 
@@ -256,10 +257,11 @@ export class TelegramClient {
   sendRichMessage(
     chatId: number,
     richMessage: InputRichMessage,
-    opts?: { replyToId?: number },
+    opts?: { replyToId?: number; disableNotification?: boolean },
   ): Promise<TgSentMessage> {
     const p: Record<string, unknown> = { chat_id: chatId, rich_message: richMessage };
     if (opts?.replyToId) p.reply_to_message = { message_id: opts.replyToId };
+    if (opts?.disableNotification) p.disable_notification = true;
     return this.call("sendRichMessage", p) as Promise<TgSentMessage>;
   }
 

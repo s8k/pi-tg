@@ -248,6 +248,17 @@ test("sendRichMessage: no replyToId omits reply_to_message", async () => {
   assert.ok(!("reply_to_message" in body));
 });
 
+test("sendRichMessage: disableNotification → disable_notification param; omitted when absent", async () => {
+  const ff = makeFakeFetch(() => ({ status: 200, body: { ok: true, result: { message_id: 5, chat: { id: 7, type: "private" }, date: 1 } } }));
+  const c = new TelegramClient("T", { fetchImpl: ff.fetchImpl });
+  await c.sendRichMessage(7, { markdown: "x" }, { disableNotification: true });
+  const b1 = JSON.parse(String(ff.calls[0].init?.body ?? "{}"));
+  assert.equal(b1.disable_notification, true, "silent send carries disable_notification: true");
+  await c.sendRichMessage(7, { markdown: "y" });
+  const b2 = JSON.parse(String(ff.calls[1].init?.body ?? "{}"));
+  assert.ok(!("disable_notification" in b2), "a notifying send omits the param");
+});
+
 test("sendRichMessageDraft: draft_id + can_stop only when true; omitted when falsy", async () => {
   const ff = makeFakeFetch(() => ({ status: 200, body: { ok: true, result: true } }));
   const c = new TelegramClient("T", { fetchImpl: ff.fetchImpl });

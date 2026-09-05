@@ -11,7 +11,6 @@ test("round-trip: every dispatchable action", () => {
     { kind: "new", chatId: 7 },
     { kind: "sessions", chatId: 7 },
     { kind: "sessionActivate", chatId: 7, index: 3 },
-    { kind: "switchOk", chatId: 7, index: 2 },
     { kind: "modelList", chatId: 7 },
     { kind: "modelSet", chatId: 7, index: 0 },
     { kind: "thinkingList", chatId: 7 },
@@ -54,4 +53,5 @@ test("parse: garbage → null (never throws)", () => {
   assert.equal(parseInternal("internal prompt 7 {1}"), null);
   assert.equal(parseInternal("internal sessionActivate 7 x"), null);
   assert.equal(parseInternal("internal kill 7 maybe"), null);
+  assert.equal(parseInternal("internal switchOk 7 2"), null); // the dead switchOk action
 });

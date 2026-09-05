@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { SessionManager, getAgentDir } from "@earendil-works/pi-coding-agent";
+import { SessionManager, getAgentDir, convertToLlm } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { loadConfig, saveConfig, getBotToken } from "./src/config.ts";
 import { TelegramClient, pollLoop } from "./src/telegram-client.ts";
@@ -13,7 +13,8 @@ import type { Out, TelegaPi } from "./src/session-bridge.ts";
 import { Mirror } from "./src/mirror.ts";
 import type { MirrorMessage } from "./src/mirror.ts";
 import { renderQr, qrWidgetFactory, tokenLooksValid, notAuthorizedText } from "./src/onboarding.ts";
-import { makeOut, makeTelegaPi, ctxIsAlive } from "./src/wiring.ts";
+import { makeOut, makeTelegaPi, ctxIsAlive, wrapWaitForIdle } from "./src/wiring.ts";
+import { runTgCompaction } from "./src/compact.ts";
 
 const CFG = { path: join(getAgentDir(), "pi-telega.json") };
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -46,6 +47,11 @@ export default function piTelega(pi: ExtensionAPI): void {
   let pollGen = 0;
   let pollPromise: Promise<void> | undefined;
   let currentMirror: Mirror | undefined;
+  // T6 auto-compact lane, chosen at session_before_compact (auto): where the
+  // result events land — the live run's draft (mirror) or the bridge's
+  // standalone draft (bridge). Undefined = nothing to report (muted /
+  // unpaired / manual / no result yet).
+  let autoCompactLane: "mirror" | "bridge" | undefined;
 
   const persist = async (): Promise<void> => {
     await saveConfig(cfg, CFG);
@@ -96,6 +102,9 @@ export default function piTelega(pi: ExtensionAPI): void {
       persist,
       sleep,
       probeGpu,
+      // T6 early draft: the run's draft (spinner) goes out when the prompt is
+      // dispatched, before pi's agent_start.
+      onPromptAccepted: () => safeCall(() => currentMirror?.onPromptAccepted()),
     };
     bridge = new SessionBridge(deps);
     if (!token) {
@@ -128,6 +137,13 @@ export default function piTelega(pi: ExtensionAPI): void {
       notify: (msg, level) => ui(msg, level ?? "error"),
     });
     currentMirror = mirror;
+    // The bridge's compact/stop flows await pi.waitForIdle() — extend it so
+    // the wait ALSO covers the mirror's run finalization (all persistent
+    // sends delivered). pi's extension runner does not await the mirror's
+    // fire-and-forget handlers, so the bare wait would resolve before e.g.
+    // the aborted run's "⚠️ error: Request was aborted" reached Telegram —
+    // and the /compact draft sent in between would be cleared by it.
+    wrapWaitForIdle(piAdapter, () => mirror.whenSettled());
     await pollLoop({
       client,
       getOffset: () => state!.getOffset(),
@@ -314,6 +330,7 @@ export default function piTelega(pi: ExtensionAPI): void {
     // ExtensionRunner) — drop the command ctx so nothing stale can shadow the
     // fresh sessionCtx. See pi docs: “reestablish any in-memory state in session_start”.
     cmdCtx = undefined;
+    autoCompactLane = undefined; // the old instance's lane choice is stale
     cfg = loadConfig(CFG);
     state = new TelegaState(cfg.lastOffset ?? 0);
     state.restoreSentIds(cfg.sentMessageIds ?? []);
@@ -341,7 +358,9 @@ export default function piTelega(pi: ExtensionAPI): void {
   });
   pi.on("agent_settled", () => {
     // The stream is really over (no auto-retry/compaction/continuation will
-    // run) — error ends finalize here, not at agent_end.
+    // run) — NOT where error ends persist: the retry's agent_start arrives
+    // right after this and carries the log over; the mirror's grace timer
+    // persists an error log only if no continuation arrives.
     safe(currentMirror?.onAgentSettled());
   });
   pi.on("message_start", (event) => {
@@ -361,5 +380,103 @@ export default function piTelega(pi: ExtensionAPI): void {
   });
   pi.on("ui_prompt_start", (event) => {
     safeCall(() => currentMirror?.onUiPromptStart(event.title));
+  });
+
+  // ── stoppable manual compaction ──
+  // pi runs ctx.compact()'s summarization with an internal abort controller
+  // that is NOT exposed to extensions (checked 0.84.4: no abortCompaction,
+  // no isCompacting on the context) — a Telegram Stop button could never
+  // cancel it. So for TG-initiated /compact the bridge calls ctx.compact()
+  // (which aborts any in-flight run and fires THIS hook) and replays pi's
+  // default summarization here — with the bridge's own AbortController, so
+  // the Stop button (session-bridge case "stop") cancels the in-flight LLM
+  // call and the hook returns {cancel: true} ("Compaction cancelled").
+  // Auto-compaction (threshold/overflow) and TUI /compact keep pi's default.
+  pi.on("session_before_compact", (event, ctx) => {
+    if (event.reason !== "manual") {
+      // AUTO-compaction (0.84.4: "threshold" | "overflow"; 0.85.0: "auto") →
+      // pi's default path runs; we only CHOOSE THE LANE for the result
+      // events: lane 2 = the live run's draft renders the status inside it
+      // (the mirror), lane 1 = a standalone draft (the bridge). Muted /
+      // unpaired → no messaging at all (lane undefined → the results no-op).
+      if (cfg.muted || ownerChatId === undefined) return;
+      autoCompactLane = currentMirror?.hasLiveDraft() ? "mirror" : "bridge";
+      if (autoCompactLane === "mirror") safeCall(() => currentMirror?.onAutoCompactStart());
+      else bridge?.autoCompactStart(ownerChatId);
+      return;
+    }
+    autoCompactLane = undefined; // a manual compact owns its own result path (onDone)
+    const handle = bridge?.manualCompact();
+    if (!handle) return; // not TG-initiated (e.g. TUI /compact) → pi's default
+    const model = ctx.model;
+    if (!model) return; // no model → let pi's default report the failure
+    return (async () => {
+      if (handle.stopRequested || handle.controller.signal.aborted) return { cancel: true };
+      try {
+        const result = await runTgCompaction({
+          preparation: {
+            ...event.preparation,
+            // src/compact.ts is pi-free (tests/boundary.test.ts) — convert the
+            // session messages here with pi's own converter, and pass the
+            // already-converted LLM messages in.
+            messagesToSummarize: convertToLlm(event.preparation.messagesToSummarize),
+            turnPrefixMessages: convertToLlm(event.preparation.turnPrefixMessages),
+          },
+          model,
+          thinkingLevel: ctx.thinkingLevel,
+          customInstructions: event.customInstructions,
+          signal: handle.controller.signal,
+          complete: (model, context, options) =>
+            ctx.modelRegistry.complete(
+              model as Parameters<typeof ctx.modelRegistry.complete>[0],
+              context as Parameters<typeof ctx.modelRegistry.complete>[1],
+              options as Parameters<typeof ctx.modelRegistry.complete>[2],
+            ),
+        });
+        if ("aborted" in result) return { cancel: true };
+        return { compaction: result.compaction };
+      } catch (err) {
+        if (handle.stopRequested || handle.controller.signal.aborted) return { cancel: true };
+        throw err; // the runner catches it → pi's default compaction runs as a fallback
+      }
+    })();
+  });
+
+  // ── auto-compaction results (T6 lanes) ──
+  // pi emits session_compact / session_compact_failed for EVERY compaction
+  // (manual included). Manual results are already reported by the bridge's
+  // compact onDone callback (ctx.compact) — only the AUTO lane chosen above
+  // is handled here. The auto detail is the token count BEFORE the compact:
+  // pi does not expose the "after" number to extensions (getContextUsage()
+  // reports tokens: null right after a compact).
+  pi.on("session_compact", (event) => {
+    if (event.reason === "manual") return;
+    const tokensBefore = event.compactionEntry?.tokensBefore;
+    const detail =
+      typeof tokensBefore === "number" && Number.isFinite(tokensBefore)
+        ? `${tokensBefore.toLocaleString("en-US")} tokens`
+        : undefined;
+    if (autoCompactLane === "mirror") safeCall(() => currentMirror?.onAutoCompactDone(detail));
+    else if (autoCompactLane === "bridge") bridge?.autoCompactFinish(true, detail);
+    autoCompactLane = undefined;
+  });
+
+  pi.on("session_compact_failed", (event) => {
+    if (event.reason === "manual") return;
+    if (event.aborted && !event.errorMessage) {
+      autoCompactLane = undefined; // teardown / cancel — nothing to report
+      return;
+    }
+    const msg = event.errorMessage ?? "compaction failed";
+    if (autoCompactLane === "mirror") {
+      // C3: the live draft carries on (spinner / error line) — the failure
+      // is a standalone notification. pi already prefixes errorMessage
+      // ("Auto-compaction failed: …") — verbatim, plain text (no double ⚠️).
+      safeCall(() => currentMirror?.onAutoCompactFailed());
+      if (out && ownerChatId !== undefined) void out.send(ownerChatId, `⚠️ ${msg}`, { parseMode: null }).catch(() => {});
+    } else if (autoCompactLane === "bridge") {
+      bridge?.autoCompactFinish(false, msg);
+    }
+    autoCompactLane = undefined;
   });
 }

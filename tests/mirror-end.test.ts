@@ -1,13 +1,16 @@
-// End states (2026-09-03 single-message flow): one persistent send for the
-// whole run —
+// End states (2026-09-04 Message Framework, D3/D4): one persistent send for
+// the whole run —
 //  - clean:  [log blocks] Completed ✔️ [answer]   (NO divider)
-//  - stop:   [log blocks] [partial tail]   (no marker, no divider, no spinner)
+//  - stop:   [log blocks] [partial tail] ⚠️ Request was aborted   (SILENT —
+//          the ⚠️ line is the BOTTOM line, not a log block; no spinner)
 //  - error: agent_end does NOT finalize (pi may auto-retry the run); the
-//          draft stays alive. Only agent_settled (the end of the stream —
-//          retries exhausted / not retryable) persists ONE message:
-//          [log blocks] [partial tail + ⚠ incomplete] — NO `⚠ Error` marker
-//          (the `⚠️ error: …` log block already says it), NO divider
+//          draft stays alive with the ⚠️ line in its bottom-line slot. Only
+//          after the grace window (no continuation) persists ONE message:
+//          [log blocks] [partial tail + ⚠ incomplete] ⚠️ error: <msg>
+//          (the ⚠️ line is the BOTTOM line, NOTIFIES, no `⚠ Error` marker).
 //  - muted:  nothing at all.
+// On a pi retry (agent_start again) the carried error moves INTO the log as
+// a ⚠️ error: block, so the retried run's m1 carries the whole story.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Mirror, type MirrorMessage } from "../src/mirror.ts";
@@ -24,6 +27,9 @@ const textMsg = (text: string, extra: Partial<MirrorMessage> = {}): MirrorMessag
 });
 
 const richCalls = (h: H): Call[] => h.out.calls.filter((c) => c.kind === "sendRich");
+
+/** the last blank-line-separated part of a composed message */
+const lastBlock = (md: string): string => md.trimEnd().split(/\n\n+/).pop() ?? "";
 
 /**
  * A run with one stamped tool block (non-empty log) whose answer message has
@@ -105,11 +111,17 @@ test("clean end, with log: m1 = log + Completed ✔️ (answer cut), m2 = the an
   assert.ok(order[0]! < order[1]! && order[1]! < order[2]!, `wrong preview order: ${order}`);
 });
 
-test("manual stop: ONE message — log + partial answer, no marker, no divider, no spinner", async () => {
+test("manual stop: ONE message — log + partial answer + bottom line ⚠️ Request was aborted, SILENT", async () => {
   const h = makeMirrorDeps({ streamEditMs: 0 });
   const m = await runWithStreamedCandidate(h, "The answer is 42.");
   await m.onAssistantEnd(textMsg("The answer is 42.", { stopReason: "aborted" }));
   await tick();
+
+  // live draft at the stop end: the aborted bottom line, no spinner
+  const lastDraft = h.out.calls.filter((c) => c.kind === "sendDraft").pop()?.text ?? "";
+  assert.ok(lastDraft.endsWith("⚠️ Request was aborted"), `the draft ends with the aborted bottom line: ${JSON.stringify(lastDraft)}`);
+  assert.ok(!lastDraft.includes("<tg-thinking>"), "no spinner in the stopped draft");
+
   await m.onAgentEnd([]);
   await tick();
 
@@ -122,9 +134,12 @@ test("manual stop: ONE message — log + partial answer, no marker, no divider, 
   assert.ok(!text.includes("⚠ Error"), "no error marker on stop");
   assert.ok(!text.includes("---"), "no divider without a marker");
   assert.ok(!text.includes("<tg-thinking>"), "no spinner");
+  assert.equal(lastBlock(text), "⚠️ Request was aborted", "the ⚠️ line is the BOTTOM line (last), not a log line");
+  assert.equal(text.split("⚠️ Request was aborted").length - 1, 1, "exactly one ⚠️ line");
+  assert.equal(rich[0]?.opts?.disableNotification, true, "D4 is SILENT — no notification");
 });
 
-test("manual stop, spinner-only tail: log only (nothing to append)", async () => {
+test("manual stop, spinner-only tail: log + aborted bottom line (nothing else to append), SILENT", async () => {
   const h = makeMirrorDeps({ streamEditMs: 0 });
   const m = await runWithStreamedCandidate(h, "");
   m.onAssistantUpdate(textMsg(""));
@@ -136,11 +151,14 @@ test("manual stop, spinner-only tail: log only (nothing to append)", async () =>
 
   const rich = richCalls(h);
   assert.equal(rich.length, 1, "one persistent send");
-  assert.ok(rich[0]?.text?.includes("⚙ read ✔"), "the log is persisted");
-  assert.ok(!rich[0]?.text?.includes("Completed ✔️"), "no marker");
+  const text = rich[0]?.text ?? "";
+  assert.ok(text.includes("⚙ read ✔"), "the log is persisted");
+  assert.ok(!text.includes("Completed ✔️"), "no marker");
+  assert.equal(lastBlock(text), "⚠️ Request was aborted", "the ⚠️ line is the bottom line");
+  assert.equal(rich[0]?.opts?.disableNotification, true, "SILENT");
 });
 
-test("error end: agent_end does NOT finalize (pi may retry); agent_settled persists ONE message — log + error block + partial + ⚠ incomplete, NO ⚠ Error marker", async () => {
+test("error end: agent_end does NOT finalize (pi may retry); the grace timer persists ONE message — log + error block + partial + ⚠ incomplete, NO ⚠ Error marker", async () => {
   const h = makeMirrorDeps({ streamEditMs: 0 });
   const m = await runWithStreamedCandidate(h, "The answer is 42.");
   await m.onAssistantEnd(textMsg("The answer is 42.", { stopReason: "error", errorMessage: "Provider timeout" }));
@@ -149,23 +167,42 @@ test("error end: agent_end does NOT finalize (pi may retry); agent_settled persi
   await tick();
   assert.equal(richCalls(h).length, 0, "agent_end after an error persists nothing (the draft stays alive)");
 
-  await m.onAgentSettled(); // the end of the stream — no retry is coming
+  await m.onAgentSettled(); // a retry may still be in its backoff — still no send
+  await tick();
+  assert.equal(richCalls(h).length, 0, "agent_settled persists nothing (the retry window is open)");
+  h.advance(5000); // the grace window (errorSettleMs) passes with no continuation
   await tick();
 
   const rich = richCalls(h);
   assert.equal(rich.length, 1, `one persistent send, got ${rich.length}`);
   const text = rich[0]?.text ?? "";
-  assert.ok(text.includes("⚠️ error: Provider timeout"), "the errorMessage became an error block in the log");
-  assert.ok(!text.includes("⚠ Error"), "no second error marker — the log block already says it");
+  assert.ok(text.includes("⚠️ error: Provider timeout"), "the errorMessage is in the message");
+  assert.ok(!text.includes("⚠ Error"), "no legacy error marker");
   assert.ok(!text.includes("---"), "no divider");
   assert.ok(text.includes("The answer is 42."), "the partial answer is preserved");
   assert.ok(text.includes("⚠ incomplete"), "the incomplete trailer is present");
-  const order = [text.indexOf("⚠️ error:"), text.indexOf("The answer is 42."), text.indexOf("⚠ incomplete")];
+  // strict order: log → partial answer → ⚠ incomplete → ⚠️ line (LAST)
+  const order = [text.indexOf("⚙ read ✔"), text.indexOf("The answer is 42."), text.indexOf("⚠ incomplete"), text.lastIndexOf("⚠️ error:")];
   assert.ok(order.every((i) => i >= 0), `all parts present, got: ${JSON.stringify(text)}`);
-  assert.ok(order[0]! < order[1]! && order[1]! < order[2]!, `wrong order: ${order}`);
+  assert.ok(order[0]! < order[1]! && order[1]! < order[2]! && order[2]! < order[3]!, `wrong order: ${order}`);
+  assert.equal(lastBlock(text), "⚠️ error: Provider timeout", "the ⚠️ line is the BOTTOM line (last), not a log line");
+  assert.ok(!rich[0]?.opts?.disableNotification, "D3 NOTIFIES — the error is the final word");
 });
 
-test("error end, no partial answer: settled persists log + error block only, no marker", async () => {
+test("error end: during the grace window the draft shows the ⚠️ line in its bottom-line slot (no spinner, no log line)", async () => {
+  const h = makeMirrorDeps({ streamEditMs: 0, errorSettleMs: 1000 });
+  const m = await runWithStreamedCandidate(h, "");
+  await m.onAssistantEnd({ role: "assistant", content: [], stopReason: "error", errorMessage: "502 status code (no body)" });
+  await tick();
+  await m.onAgentEnd([]);
+  await tick();
+
+  const lastDraft = h.out.calls.filter((c) => c.kind === "sendDraft").pop()?.text ?? "";
+  assert.ok(lastDraft.endsWith("⚠️ error: 502 status code (no body)"), `the ⚠️ line is the draft's bottom line: ${JSON.stringify(lastDraft)}`);
+  assert.ok(!lastDraft.includes("<tg-thinking>"), "no spinner in the error draft");
+});
+
+test("error end, no partial answer: the grace timer persists log + error block only, no marker", async () => {
   const h = makeMirrorDeps({ streamEditMs: 0 });
   const m = new Mirror(h.deps);
   m.onAgentStart();
@@ -177,14 +214,18 @@ test("error end, no partial answer: settled persists log + error block only, no 
   await tick();
   assert.equal(richCalls(h).length, 0, "agent_end persists nothing");
 
-  await m.onAgentSettled();
+  await m.onAgentSettled(); // a retry may still be in its backoff — still no send
+  await tick();
+  assert.equal(richCalls(h).length, 0, "agent_settled persists nothing (the retry window is open)");
+  h.advance(5000); // the grace window (errorSettleMs) passes with no continuation
   await tick();
 
   const rich = richCalls(h);
   assert.equal(rich.length, 1, "one persistent send");
   const text = rich[0]?.text ?? "";
-  assert.ok(text.includes("⚠️ error: boom"), "error block");
-  assert.ok(!text.includes("⚠ Error"), "no second error marker");
+  assert.ok(text.includes("⚠️ error: boom"), "error line");
+  assert.equal(lastBlock(text), "⚠️ error: boom", "the ⚠️ line is the bottom line");
+  assert.ok(!text.includes("⚠ Error"), "no legacy error marker");
 });
 
 test("retryable error (502): nothing is persisted, the draft stays alive, and the retried run can still finalize", async () => {
@@ -212,15 +253,15 @@ test("retryable error (502): nothing is persisted, the draft stays alive, and th
   const rich = richCalls(h);
   assert.equal(rich.length, 2, `the retried run finalizes normally (m1 + m2), got ${rich.length}`);
   assert.equal(rich[1]?.text, "The retried answer.", "m2 is the retried answer");
-  assert.ok(!rich[0]?.text?.includes("⚠️ error:"), "the error block of the failed attempt is not in the retried run's m1");
+  assert.ok(rich[0]?.text?.includes("⚠️ error: 502 status code (no body)"), "the failed attempt's error block is CARRIED INTO the retried run's m1 (no wipe of the live log)");
 
   await m.onAgentSettled(); // after the successful retry — a no-op (already finalized)
   await tick();
   assert.equal(richCalls(h).length, 2, "settled after a clean end persists nothing extra");
 });
 
-test("error → retry → error again: only the settled end persists, one message", async () => {
-  const h = makeMirrorDeps({ streamEditMs: 0 });
+test("error → retry → error again: the CARRIED log persists exactly once, after the grace", async () => {
+  const h = makeMirrorDeps({ streamEditMs: 0, errorSettleMs: 1000 });
   const m = new Mirror(h.deps);
   m.onAgentStart();
   await tick();
@@ -231,21 +272,26 @@ test("error → retry → error again: only the settled end persists, one messag
   await tick();
   assert.equal(richCalls(h).length, 0, "first agent_end persists nothing");
 
-  m.onAgentStart(); // the retry
+  await m.onAgentSettled(); // pi emits settled before the retry's agent_start (one settled per stream)
+  await tick();
+  assert.equal(richCalls(h).length, 0, "agent_settled persists nothing (the retry window is open)");
+
+  m.onAgentStart(); // the retry — CARRIES OVER the log (grace timer cancelled)
   await tick();
   m.onAssistantStart(textMsg(""));
   await m.onAssistantEnd({ role: "assistant", content: [], stopReason: "error", errorMessage: "502 status code (no body)" });
   await tick();
   await m.onAgentEnd([]);
   await tick();
-  assert.equal(richCalls(h).length, 0, "second agent_end persists nothing");
+  assert.equal(richCalls(h).length, 0, "second agent_end persists nothing (the grace re-armed, the window is open)");
 
-  await m.onAgentSettled(); // retries exhausted — the stream is over
+  h.advance(1000); // the grace window passes — no further retries
   await tick();
 
   const rich = richCalls(h);
-  assert.equal(rich.length, 1, "the settled end persists one message");
-  assert.ok(rich[0]?.text?.includes("⚠️ error: 502 status code (no body)"), "the error block is persisted");
+  assert.equal(rich.length, 1, "the combined carried log persists exactly once");
+  const text = rich[0]?.text ?? "";
+  assert.equal(text.match(/⚠️ error: 502 status code \(no body\)/g)!.length, 2, "both failed attempts' error blocks are in the one message");
 });
 
 test("muted run: nothing at all — no drafts, no persistent sends", async () => {

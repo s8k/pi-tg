@@ -94,6 +94,8 @@ test("confirm: draft completed state → m1 (log + Completed, answer cut) → m2
   assert.ok(!m1.includes("The answer is 42."), "the answer is cut from m1");
   assert.ok(!m1.includes("---"), "no divider in m1 (there is no answer after it)");
   assert.equal(m2, "The answer is 42.", "m2 is the answer, verbatim");
+  assert.equal(rich[0]?.opts?.disableNotification, true, "m1 (the work log) is SILENT — no notification");
+  assert.ok(!rich[1]?.opts?.disableNotification, "m2 (the final answer) NOTIFIES");
 
   // chronology: completed-state draft → m1 → m2
   assert.ok(idx(h, newDrafts[0]!) < idx(h, rich[0]!), "the completed-state preview precedes m1");

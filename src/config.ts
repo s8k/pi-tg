@@ -3,7 +3,16 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
 export type PendingAction =
-  | { type: "new"; chatId: number }
+  | {
+      type: "new";
+      chatId: number;
+      /**
+       * The id of the "🔄 Creating new session…" ack message (A7): the
+       * replacement instance edit-stamps it with ✔️ before posting the new
+       * session's card.
+       */
+      ackMsgId?: number;
+    }
   | { type: "activate"; chatId: number; path: string }
   | { type: "reload"; chatId: number };
 
@@ -15,6 +24,13 @@ export interface TelegaConfig {
   maxSessionList: number;
   /** Re-send cadence of the rich draft (keeps the ~30 s ephemeral window alive). */
   draftHeartbeatMs: number;
+  /**
+   * Grace before an error-ended run's un-persisted work log is posted as its
+   * own "⚠️ error" message when no continuation arrives. Must exceed pi's
+   * retry backoff (2 s default) so an auto-retry CARRIES OVER the log
+   * instead of the error message being double-posted.
+   */
+  errorSettleMs: number;
   /** Code fences with a body of more than this many lines are wrapped in a closed <details>. */
   codeFoldLines: number;
   /** When true, agent output (mirror) is suppressed; command replies still work. */
@@ -36,12 +52,13 @@ export interface ConfigOptions {
 
 export const DEFAULTS: Pick<
   TelegaConfig,
-  "streamEditMs" | "askClearOnSwitch" | "maxSessionList" | "draftHeartbeatMs" | "codeFoldLines" | "muted" | "sentMessageIds"
+  "streamEditMs" | "askClearOnSwitch" | "maxSessionList" | "draftHeartbeatMs" | "errorSettleMs" | "codeFoldLines" | "muted" | "sentMessageIds"
 > = {
   streamEditMs: 1500,
   askClearOnSwitch: true,
   maxSessionList: 20,
   draftHeartbeatMs: 17_000,
+  errorSettleMs: 5_000,
   codeFoldLines: 25,
   muted: false,
   sentMessageIds: [],
@@ -76,7 +93,10 @@ function sanitizePending(value: unknown): PendingAction | undefined {
   if (!value || typeof value !== "object") return undefined;
   const p = value as Record<string, unknown>;
   if (typeof p.chatId !== "number" || !Number.isFinite(p.chatId)) return undefined;
-  if (p.type === "new") return { type: "new", chatId: p.chatId };
+  if (p.type === "new") {
+    const ackMsgId = typeof p.ackMsgId === "number" && Number.isInteger(p.ackMsgId) && p.ackMsgId > 0 ? p.ackMsgId : undefined;
+    return ackMsgId !== undefined ? { type: "new", chatId: p.chatId, ackMsgId } : { type: "new", chatId: p.chatId };
+  }
   if (p.type === "activate" && typeof p.path === "string" && p.path !== "") {
     return { type: "activate", chatId: p.chatId, path: p.path };
   }
@@ -94,6 +114,7 @@ export function sanitize(raw: unknown): TelegaConfig {
     askClearOnSwitch: typeof obj.askClearOnSwitch === "boolean" ? obj.askClearOnSwitch : DEFAULTS.askClearOnSwitch,
     maxSessionList: clampInt(obj.maxSessionList, DEFAULTS.maxSessionList, 5, 50),
     draftHeartbeatMs: clampInt(obj.draftHeartbeatMs, DEFAULTS.draftHeartbeatMs, 5_000, 25_000),
+    errorSettleMs: clampInt(obj.errorSettleMs, DEFAULTS.errorSettleMs, 1_000, 30_000),
     codeFoldLines: clampInt(obj.codeFoldLines, DEFAULTS.codeFoldLines, 5, 500),
     muted: typeof obj.muted === "boolean" ? obj.muted : DEFAULTS.muted,
     sentMessageIds: capSentIds(obj.sentMessageIds),

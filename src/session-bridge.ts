@@ -7,6 +7,8 @@ import { supportedThinkingLevels } from "./thinking.ts";
 import { pairWelcome, notAuthorizedText } from "./onboarding.ts";
 import { escapeHtml } from "./markdown.ts";
 import { formatGpuLines, type GpuStats } from "./gpu.ts";
+import { COMPACT_CANCELLED_MSG } from "./compact.ts";
+import { AUTO_COMPACT_STATUS, AUTO_COMPACT_DONE_TEXT } from "./mirror.ts";
 
 export interface PiModelInfo {
   model: PiModel;
@@ -69,7 +71,7 @@ export interface Out {
   send(
     chatId: number,
     text: string,
-    opts?: { parseMode?: "HTML" | null; replyToId?: number; replyMarkup?: unknown }
+    opts?: { parseMode?: "HTML" | null; replyToId?: number; replyMarkup?: unknown; disableNotification?: boolean }
   ): Promise<number | undefined>;
   edit(
     chatId: number,
@@ -78,8 +80,8 @@ export interface Out {
     opts?: { parseMode?: "HTML" | null; replyMarkup?: unknown }
   ): Promise<boolean>; // false = text unchanged (not an error)
   delete(chatId: number, messageId: number): Promise<void>; // idempotent
-  /** Rich message (markdown pass-through); records the sent id; returns it. */
-  sendRich(chatId: number, md: string): Promise<number | undefined>;
+  /** Rich message (markdown pass-through); records the sent id; returns it. `disableNotification` suppresses the notification sound (persistent sends only — drafts cannot). */
+  sendRich(chatId: number, md: string, opts?: { disableNotification?: boolean }): Promise<number | undefined>;
   /** Ephemeral draft; the same draftId refreshes in place. keepOnStop keeps the draft when Stop is pressed. */
   sendDraft(chatId: number, draftId: number, md: string, canStop?: boolean, keepOnStop?: boolean): Promise<boolean>;
 }
@@ -94,6 +96,13 @@ export interface BridgeDeps {
   sleep: (ms: number) => Promise<void>;
   /** GPU probe for /status; bounded by its own short timeout; undefined = unavailable. */
   probeGpu: () => Promise<GpuStats[] | undefined>;
+  /**
+   * T6 early draft: called synchronously when the owner's prompt is
+   * dispatched, BEFORE pi's agent_start — the run's draft (spinner) appears
+   * immediately. index.ts wires it to the current mirror; optional (tests
+   * that don't exercise the early draft leave it unset).
+   */
+  onPromptAccepted?: () => void;
 }
 
 export function timeAgo(ms: number, now = Date.now()): string {
@@ -120,7 +129,7 @@ export function helpText(): string {
     "<b>/stop</b> — Esc (abort the current turn)",
     "<b>/mute</b> — stop agent output (commands still work)",
     "<b>/unmute</b> — resume agent output",
-    "<b>/compact</b> — compact the history",
+    "<b>/compact</b> — compact the context (stoppable via the Stop button)",
     "<b>/reload</b> — hot-reload extensions & resources (idle only)",
     "<b>/name &lt;text&gt;</b> — rename this session",
     "<b>/kill</b> — shut down pi",
@@ -128,11 +137,178 @@ export function helpText(): string {
   ].join("\n");
 }
 
+// ── compact draft (Telegram Bot API 10.2 rich message drafts) ──
+// The in-progress state of /compact is an EPHEMERAL draft — it never touches
+// the message history and is replaced by the stamped persistent result (the
+// send itself also clears the draft, so no explicit delete is needed).
+// Draft ids live in their own namespace: the mirror uses 1.., compact starts
+// at 1_000_000.
+const COMPACT_DRAFT_ID_BASE = 1_000_000;
+export const COMPACT_DRAFT_MD = "<tg-thinking>🗜 Compacting context…</tg-thinking>";
+/** Lane-1 auto-compact draft content: the C1 status, wrapped in the ephemeral thinking block. */
+const AUTO_COMPACT_DRAFT_MD = `<tg-thinking>${AUTO_COMPACT_STATUS}</tg-thinking>`;
+
+/** The in-progress state of a TG-initiated /compact (see case "compact"). */
+interface CompactState {
+  chatId: number;
+  /** 0 until the draft send succeeds (then it is heartbeat-kept alive). */
+  draftId: number;
+  /** Set by the Stop button — the session_before_compact hook bails on it. */
+  stopRequested: boolean;
+  /** Aborted by the Stop button — the hook's summarization LLM call watches it. */
+  controller: AbortController;
+}
+
 export class SessionBridge {
   private deps: BridgeDeps;
+  private compactState: CompactState | undefined;
+  private compactDraftSeq = 0;
+  private compactHbTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(deps: BridgeDeps) {
     this.deps = deps;
+  }
+
+  /**
+   * For the `session_before_compact` hook (index.ts): the pending
+   * TG-initiated manual compaction, or undefined when the compaction was not
+   * started by Telegram (TUI /compact, auto-compaction) — in which case the
+   * hook leaves pi's default compaction untouched.
+   */
+  manualCompact(): { stopRequested: boolean; controller: AbortController } | undefined {
+    const c = this.compactState;
+    return c ? { stopRequested: c.stopRequested, controller: c.controller } : undefined;
+  }
+
+  /**
+   * Finalize a /compact: clear state + heartbeat, STAMP the draft with the
+   * final state, then persist the stamped result — the persistent send also
+   * CLEARS the ephemeral draft ("stamp and save": the result becomes a normal
+   * message in the history, the draft is gone). Plain text: the failure
+   * detail is an error message and may contain HTML characters (a 400 here
+   * would lose the result notice entirely). A Stop cancellation (A3) stamps
+   * the Stop ack instead: ⏹️ Stopping… → ⏹️ Stopping… ✔️ →
+   * ⚠️ Compaction cancelled.
+   */
+  private async finishCompact(ok: boolean, detail?: string): Promise<void> {
+    const c = this.compactState;
+    if (!c) return;
+    this.compactState = undefined;
+    this.clearCompactHeartbeat();
+    const cancelled = !ok && detail === COMPACT_CANCELLED_MSG;
+    const text = ok
+      ? `🗜 Context compacted ✔️${detail ? ` — ${detail}` : ""}`
+      : cancelled
+        ? "⚠️ Compaction cancelled"
+        : `⚠️ Compaction Failed${detail ? `: ${detail}` : "."}`;
+    const { out } = this.deps;
+    if (c.draftId !== 0) {
+      // The stamped state lands in the draft FIRST — the user sees the draft
+      // morph into the result before the persistent message replaces it.
+      const stamp = cancelled ? "⏹️ Stopping… ✔️" : text;
+      await out.sendDraft(c.chatId, c.draftId, stamp, false /* no Stop button — it is over */).catch(() => {});
+    }
+    // A failed send must not become an unhandled rejection.
+    await out.send(c.chatId, text, { parseMode: null }).catch(() => {});
+  }
+
+  /** Re-send the compact draft every cfg.draftHeartbeatMs (Bot API drafts expire after ~30 s). */
+  private armCompactHeartbeat(): void {
+    this.clearCompactHeartbeat();
+    const tick = (): void => {
+      this.compactHbTimer = undefined;
+      const c = this.compactState;
+      if (!c || c.draftId === 0) return; // finished or the draft never went up
+      void this.deps.out.sendDraft(c.chatId, c.draftId, COMPACT_DRAFT_MD, true, true).catch(() => {});
+      this.armCompactHeartbeat();
+    };
+    const t = setTimeout(tick, this.deps.cfg.draftHeartbeatMs);
+    t.unref?.();
+    this.compactHbTimer = t;
+  }
+
+  private clearCompactHeartbeat(): void {
+    if (this.compactHbTimer !== undefined) {
+      clearTimeout(this.compactHbTimer);
+      this.compactHbTimer = undefined;
+    }
+  }
+
+  // ── lane-1 auto-compact (T6: pi auto-compacts with NO live run draft) ──
+  // The result events (session_compact / session_compact_failed) are routed
+  // here by index.ts when the mirror had no live draft. Deliberately
+  // SEPARATE from CompactState: a /stop during an auto-compact must hit the
+  // plain idle branch (A2) — there is no bot-side controller that could
+  // cancel pi's auto-compaction, so a ⏹️ Stopping… state would be a lie.
+  private autoCompactState: { chatId: number; draftId: number } | undefined;
+  private autoCompactHbTimer: ReturnType<typeof setTimeout> | undefined;
+
+  /**
+   * Lane-1 auto-compact started (index.ts, session_before_compact auto with
+   * no live mirror draft): raise the standalone ephemeral draft. No Stop
+   * button — nothing bot-side can cancel pi's auto-compaction.
+   */
+  autoCompactStart(chatId: number): void {
+    if (this.autoCompactState) return; // one at a time
+    // The draft id is OURS (client-chosen) — claim it optimistically: a
+    // session_compact that arrives before the first send lands must still
+    // stamp it. If the send never lands, the stamp's sendDraft just fails
+    // (caught) and the persistent send still goes out.
+    const draftId = COMPACT_DRAFT_ID_BASE + ++this.compactDraftSeq;
+    const state: { chatId: number; draftId: number } = { chatId, draftId };
+    this.autoCompactState = state;
+    void this.deps.out
+      .sendDraft(chatId, draftId, AUTO_COMPACT_DRAFT_MD, false /* no Stop button */, true /* keepOnStop */)
+      .then((up) => {
+        if (this.autoCompactState !== state) return; // finished / superseded meanwhile
+        if (up) this.armAutoCompactHeartbeat(); // landed: the draft expires after ~30 s — keep it alive
+      })
+      .catch(() => {});
+  }
+
+  /**
+   * Lane-1 auto-compact finished (index.ts, session_compact /
+   * session_compact_failed auto): stamp the draft with the result, then
+   * persist it (the send also clears the draft). Plain text: the failure is
+   * pi's pre-formatted error message (already ⚠-prefixed — verbatim, no
+   * double prefix) and may contain HTML characters.
+   */
+  autoCompactFinish(ok: boolean, detail?: string): void {
+    const s = this.autoCompactState;
+    if (!s) return; // no lane-1 compaction in flight (duplicate / raced event)
+    this.autoCompactState = undefined;
+    this.clearAutoCompactHeartbeat();
+    const text = ok
+      ? `${AUTO_COMPACT_DONE_TEXT}${detail ? ` — ${detail}` : ""}`
+      : `⚠️ ${detail ?? "compaction failed"}`;
+    void (async () => {
+      if (s.draftId !== 0) {
+        await this.deps.out.sendDraft(s.chatId, s.draftId, text, false).catch(() => {});
+      }
+      await this.deps.out.send(s.chatId, text, { parseMode: null }).catch(() => {});
+    })();
+  }
+
+  /** Re-send the lane-1 draft every cfg.draftHeartbeatMs (drafts expire after ~30 s). */
+  private armAutoCompactHeartbeat(): void {
+    this.clearAutoCompactHeartbeat();
+    const tick = (): void => {
+      this.autoCompactHbTimer = undefined;
+      const s = this.autoCompactState;
+      if (!s || s.draftId === 0) return;
+      void this.deps.out.sendDraft(s.chatId, s.draftId, AUTO_COMPACT_DRAFT_MD, false, true).catch(() => {});
+      this.armAutoCompactHeartbeat();
+    };
+    const t = setTimeout(tick, this.deps.cfg.draftHeartbeatMs);
+    t.unref?.();
+    this.autoCompactHbTimer = t;
+  }
+
+  private clearAutoCompactHeartbeat(): void {
+    if (this.autoCompactHbTimer !== undefined) {
+      clearTimeout(this.autoCompactHbTimer);
+      this.autoCompactHbTimer = undefined;
+    }
   }
 
   /** Top-level entry: never throws; failures become a ⚠ message + TUI notice. */
@@ -162,6 +338,11 @@ export class SessionBridge {
     cfg.pendingAction = undefined;
     await this.deps.persist();
     if (pa.chatId !== chatId) return;
+    // A7: the /new ack ("🔄 Creating new session…") is edit-stamped with ✔️
+    // BEFORE the new session's card — chronological in the history.
+    if (pa.type === "new" && pa.ackMsgId !== undefined) {
+      await out.edit(chatId, pa.ackMsgId, "🔄 Creating new session… ✔️").catch(() => {}); // message gone → best effort
+    }
     await out.send(chatId, this.sessionCardText());
     // A /reload keeps the same session — nothing new posted, no clear question.
     if (pa.type !== "reload" && cfg.askClearOnSwitch) {
@@ -248,6 +429,10 @@ export class SessionBridge {
         await out.send(action.chatId, `Unknown command ${escapeHtml(action.text)} — see /help`);
         return;
       case "prompt": {
+        // T6 early draft: the spinner goes out as soon as the prompt is
+        // accepted — BEFORE the busy check (a broken ctx must not keep the
+        // draft from going out) and before agent_start.
+        this.deps.onPromptAccepted?.();
         const busy = !pi.isIdle();
         pi.sendPrompt(action.text, busy ? "steer" : "now");
         if (busy) await out.send(action.chatId, "⚡ queued (applies after current tool step)");
@@ -257,11 +442,27 @@ export class SessionBridge {
         await out.send(action.chatId, await this.statusText());
         return;
       case "stop": {
+        const compacting = this.compactState;
+        if (compacting) {
+          // Stop the IN-PROGRESS MANUAL COMPACTION (a compaction runs with
+          // isIdle() === true, so this must come before the idle check):
+          // flag it (the hook bails before/inside the LLM call) and abort the
+          // compaction's own LLM call; also abort any not-yet-ended run so the
+          // pre-compaction settle can't swallow the request.
+          compacting.stopRequested = true;
+          compacting.controller.abort();
+          pi.abort();
+          if (compacting.draftId !== 0)
+            void out
+              .sendDraft(compacting.chatId, compacting.draftId, "⏹️ Stopping…", false /* the draft is about to be stamped (finishCompact) */)
+              .catch(() => {});
+          return; // the final "⚠️ Compaction cancelled" comes via finishCompact
+        }
         if (pi.isIdle()) await out.send(action.chatId, "Nothing to stop — session is idle.");
         else {
           pi.abort();
-          const stopMsg = await out.send(action.chatId, "⏹ Stopping…");
-          if (stopMsg !== undefined) void this.stampAfterIdle(action.chatId, stopMsg, "⏹ Stopping… ✔️"); // waits for the aborted turn to end
+          const stopMsg = await out.send(action.chatId, "⏹️ Stopping…");
+          if (stopMsg !== undefined) void this.stampAfterIdle(action.chatId, stopMsg, "⏹️ Stopping… ✔️"); // waits for the aborted turn to end
         }
         return;
       }
@@ -275,22 +476,66 @@ export class SessionBridge {
         await this.deps.persist();
         await out.send(action.chatId, "🔊 Unmuted — agent output is back on.");
         return;
-      case "compact":
-        await out.send(action.chatId, "🗜 Compacting history… (may take a moment)");
-        pi.compact((ok, detail) => {
-          // fire-and-forget result: a failed send must not become an unhandled rejection
-          void out.send(
-            action.chatId,
-            ok ? `✓ Compacted${detail ? ` — ${detail}` : "."}` : `⚠️ Compact failed${detail ? `: ${detail}` : "."}`
-          ).catch(() => { /* best effort — compact itself already ran */ });
-        });
+      case "compact": {
+        if (this.compactState) {
+          await out.send(action.chatId, "🗜 Compaction already in progress — use the Stop button to abort");
+          return;
+        }
+        const controller = new AbortController();
+        this.compactState = { chatId: action.chatId, draftId: 0, stopRequested: false, controller };
+        const onDone = (ok: boolean, detail?: string): void => {
+          void this.finishCompact(ok, detail); // stamp the draft, then persist (the state guards re-entry)
+        };
+        const fail = (err: unknown): void => onDone(false, err instanceof Error ? err.message : String(err));
+        const busy = !pi.isIdle();
+        if (busy) {
+          // FIRST: abort the in-flight run so its persistent error lands before our draft.
+          try {
+            pi.compact(onDone);
+            await pi.waitForIdle(); // wrapped in index.ts: also waits for the mirror to finish flushing the aborted run
+          } catch (err) {
+            fail(err); // e.g. no live pi context — the state must be finalized either way
+            return;
+          }
+          if (!this.compactState) return; // fast path: onDone already stamped (or a Stop landed)
+        }
+        // The in-progress state: an ephemeral draft (never a message) with the
+        // Stop button — pressing it aborts the compaction's LLM call (the
+        // session_before_compact hook watches this.compactState's controller).
+        let draftUp = false;
+        if (!this.compactState.stopRequested) {
+          const draftId = COMPACT_DRAFT_ID_BASE + ++this.compactDraftSeq;
+          draftUp = await out
+            .sendDraft(action.chatId, draftId, COMPACT_DRAFT_MD, true /* canStop */, true /* keepOnStop — the bot persists it as the stamped result */)
+            .catch(() => false);
+          if (!this.compactState) return; // onDone raced past the draft send
+          if (draftUp) {
+            this.compactState.draftId = draftId;
+            this.armCompactHeartbeat(); // the draft expires after ~30 s — keep it alive during the LLM call
+          }
+        }
+        if (!busy) {
+          try {
+            pi.compact(onDone);
+          } catch (err) {
+            fail(err);
+          }
+        }
         return;
-      case "new":
-        cfg.pendingAction = { type: "new", chatId: action.chatId };
-        await this.deps.persist();
-        await out.send(action.chatId, "🔄 Creating new session…");
+      }
+      case "new": {
+        const ackMsg = await out.send(action.chatId, "🔄 Creating new session…");
+        // The ack message's id rides with the pending action: the REPLACEMENT
+        // instance (onSessionReplaced) edit-stamps it with ✔️ before the card.
+        cfg.pendingAction = {
+          type: "new",
+          chatId: action.chatId,
+          ...(ackMsg !== undefined ? { ackMsgId: ackMsg } : {}),
+        };
+        await this.deps.persist(); // awaited BEFORE newSession — the replacement instance reads it
         pi.newSession();
         return;
+      }
       case "reload":
         if (!pi.isIdle()) {
           await out.send(action.chatId, "Agent is busy — send /stop first.");
@@ -319,9 +564,6 @@ export class SessionBridge {
         return;
       case "sessionActivate":
         await this.handleSessionActivate(action);
-        return;
-      case "switchOk":
-        await this.handleSwitchOk(action);
         return;
       case "modelList":
         await this.handleModelList(action.chatId);
@@ -407,23 +649,10 @@ export class SessionBridge {
       await this.doSwitch(action.chatId, item.path);
       return;
     }
-    await out.send(action.chatId, "Agent is running — switch when the current turn ends?", {
-      replyMarkup: {
-        inline_keyboard: [[{ text: "⏳ OK", callback_data: CB.sessionOk(action.index) }, { text: "Cancel", callback_data: "xc" }]],
-      },
-    });
-  }
-
-  private async handleSwitchOk(action: Extract<TgAction, { kind: "switchOk" }>): Promise<void> {
-    const { out, pi, state } = this.deps;
-    const item = state.sessionAt(action.index);
-    if (!item) {
-      await out.send(action.chatId, "⚠️ List expired — send /sessions again.");
-      return;
-    }
-    await out.send(action.chatId, "⏳ Waiting for the current turn to end…");
-    await pi.waitForIdle();
-    await this.doSwitch(action.chatId, item.path);
+    // A switch cannot wait for the current turn to end (a mid-run session
+    // replacement would destroy the in-flight mirror draft): plain refusal —
+    // the user must /stop first.
+    await out.send(action.chatId, "Agent is busy — send /stop first.");
   }
 
   private async doSwitch(chatId: number, path: string): Promise<void> {
