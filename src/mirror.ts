@@ -147,6 +147,21 @@ export function fmtTokens(n: number): string {
   return `${f(Math.round((n / 1_000_000) * 10) / 10)}m`;
 }
 
+/**
+ * The detail of a compact success string, shared by the manual and auto
+ * lanes: `105,414 → 32,876 tokens` (before + after) or `105,414 tokens`
+ * (before only — the auto lane falls back to this when the post-compact
+ * count cannot be derived). `undefined` = no usable before count → the
+ * string carries no detail at all.
+ */
+export function compactTokenDetail(before?: number, after?: number): string | undefined {
+  if (typeof before !== "number" || !Number.isFinite(before)) return undefined;
+  const b = before.toLocaleString("en-US");
+  return typeof after === "number" && Number.isFinite(after)
+    ? `${b} → ${after.toLocaleString("en-US")} tokens`
+    : `${b} tokens`;
+}
+
 /** The run's usage suffix for a bottom line — ` ↑<in> ↓<out>` — or "" until the first usage arrives. */
 function tokensSuffix(t?: { input: number; output: number }): string {
   const i = t?.input ?? 0;
@@ -713,7 +728,7 @@ export class Mirror {
   onAutoCompactDone(detail?: string): void {
     if (!this.autoCompacting) return;
     this.autoCompacting = false;
-    this.log.push({ type: "narration", text: detail ? `${AUTO_COMPACT_DONE_TEXT} — ${detail}` : AUTO_COMPACT_DONE_TEXT });
+    this.log.push({ type: "narration", text: detail ? `${AUTO_COMPACT_DONE_TEXT} ${detail}` : AUTO_COMPACT_DONE_TEXT });
     if (this.endKind === "error") this.armErrorSettle();
     this.requestUpdate();
   }

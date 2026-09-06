@@ -59,7 +59,7 @@ auto-compaction is the first (and only current) instance.
   draft's bottom-line spinner is **replaced** by the status text
   (`🗜 Auto-compacting…`); on completion the spinner is **restored** and the
   **stamped success line is appended to the log area as a regular log line**
-  (`🗜 Context auto-compacted ✔️ — <detail>`); the draft keeps going until the
+  (`🗜 Context auto-compacted ✔️ <detail>`); the draft keeps going until the
   run finalizes normally.
 - **No active draft** (e.g. between runs): degrades to **lane 1 (B)** with the
   auto strings.
@@ -84,9 +84,15 @@ auto-compaction is the first (and only current) instance.
 - `session_compact` carries `compactionEntry` (a `CompactionEntry`): it has
   `tokensBefore`, but **no** `estimatedTokensAfter` is exposed to
   extensions, and `getContextUsage().tokens` is `null` right after a
-  compact → the auto `<detail>` is `<before> tokens` only (e.g.
-  `128,432 tokens`). The manual `<before> → <after> tokens` detail comes
-  from the `ctx.compact()` callback instead (unchanged).
+  compact. The auto `<detail>` is nevertheless `<before> → <after>
+  tokens`: pi computes `estimatedTokensAfter = Σ estimateTokens(
+  buildSessionContext().messages)` internally just before emitting the
+  event (the compaction entry is already appended), so index.ts re-derives
+  the SAME number from the public API (the ctx's `sessionManager.
+  buildSessionContext()` + pi's exported `estimateTokens`) and degrades to
+  `<before> tokens` when the computation is unavailable. The manual
+  `<before> → <after> tokens` detail comes from the `ctx.compact()`
+  callback instead (unchanged).
 - `session_compact_failed` carries `{ reason, errorMessage?, aborted,
   willRetry }`; `aborted && !errorMessage` = teardown/cancel → silent.
 - `reason`: 0.84.4 auto = `"threshold"` | `"overflow"`, 0.85.0 auto =
@@ -205,17 +211,20 @@ Documented exceptions (confirmed with user):
 |---|---|---|---|
 | edit-stamp | A | same message text + ` ✔️` (editMessageText / draft re-send) | `⏹️ Stopping…` → `⏹️ Stopping… ✔️` |
 | draft-stamp | B | draft status text **replaced** by the success message, then draft finalized | `🗜 Compacting context…` → `🗜 Context compacted ✔️ <detail>` |
-| log-stamp | C | stamped line appended to the log area as a regular line; spinner restored | log += `🗜 Context auto-compacted ✔️ — <detail>` |
+| log-stamp | C | stamped line appended to the log area as a regular line; spinner restored | log += `🗜 Context auto-compacted ✔️ <detail>` |
 | bottom-line stamp | D | live-spinner slot becomes the outcome | `⋯ Thinking…` → `Completed ✔️` |
 
 - `✔️` = success (user-confirmed or completed). `⚠️` = failure / cancellation / abort.
-- `<detail>` for compaction: **manual** = `<before> → <after> tokens` (en-US
-  comma thousands separators) from the `ctx.compact()` callback
-  (`tokensBefore` / `estimatedTokensAfter`). **Auto** (DEVIATION 2026-09-05,
-  see Change log) = `<before> tokens` only (e.g. `128,432 tokens`) — pi does
-  not expose the "after" number to extensions (`session_compact` carries
-  `compactionEntry.tokensBefore` only; `getContextUsage().tokens` is null
-  post-compact). Omitted when unavailable.
+- `<detail>` for compaction: **manual and auto** = `<before> → <after>
+  tokens` (en-US comma thousands separators, e.g. `128,432 → 21,904
+  tokens`). Manual: from the `ctx.compact()` callback
+  (`tokensBefore` / `estimatedTokensAfter`). Auto: the event exposes only
+  `tokensBefore`, so index.ts re-derives the "after" exactly as pi does
+  internally — Σ pi's public `estimateTokens` over `sessionManager.
+  buildSessionContext().messages` (the post-compact context — the entry is
+  appended before the event fires). Both degrade to `<before> tokens` when
+  the "after" cannot be obtained; omitted when the "before" is unavailable.
+  Shared formatter: `compactTokenDetail(before, after)` in `src/mirror.ts`.
 - Glyph: `⏹️` is U+23F9 + VS16 per the confirmed spec; current code uses `⏹`
   without VS16 — standardize on the VS16 form.
 
@@ -277,8 +286,8 @@ file in the same change (and note it under "Change log" at the bottom).
 
 | # | Trigger | Lifecycle | Notify |
 |---|---|---|---|
-| C1 | auto-compact, live draft (pre-run) | spinner → `🗜 Auto-compacting…` → spinner back + log line `🗜 Context auto-compacted ✔️ — <detail>`; draft keeps going | silence until `m2` 🔔 |
-| C2 | auto-compact, no live draft (between runs) | → B with auto strings: draft `🗜 Auto-compacting…` → `🗜 Context auto-compacted ✔️ — <detail>` → persist | 🔔 |
+| C1 | auto-compact, live draft (pre-run) | spinner → `🗜 Auto-compacting…` → spinner back + log line `🗜 Context auto-compacted ✔️ <detail>`; draft keeps going | silence until `m2` 🔔 |
+| C2 | auto-compact, no live draft (between runs) | → B with auto strings: draft `🗜 Auto-compacting…` → `🗜 Context auto-compacted ✔️ <detail>` → persist | 🔔 |
 | C3 | auto-compact fails (any window) | standalone `⚠️ <pi errorMessage>` (already formatted by pi, e.g. `⚠️ Auto-compaction failed: …`); live draft continues | 🔔 |
 
 - A prompt sent during **in-run** auto-compact is deliberately **NOT
@@ -294,9 +303,9 @@ file in the same change (and note it under "Change log" at the bottom).
   it to TUI-only error listeners); out of scope for Phase 1.
 
 `<detail>` = `<before> → <after> tokens` (e.g. `128,432 → 21,904 tokens`)
-for MANUAL compaction; for AUTO it is `<before> tokens` (e.g. `128,432
-tokens`) — pi exposes only `tokensBefore` to extensions (see Change log,
-2026-09-05). Omitted when pi doesn't report it.
+for BOTH manual and auto compaction (the auto "after" is re-derived from
+the public API — see §3). Degrades to `<before> tokens` when the "after"
+cannot be computed; omitted when the "before" is unavailable.
 
 ### E — System
 
@@ -394,15 +403,15 @@ Per-command changes. "Today" = working tree at 2026-09-04.
 - **C1 (live draft):** `session_before_compact` with `reason !== "manual"`
   (pi's default auto-compaction) is observed (not intercepted): mirror
   bottom line switches to `🗜 Auto-compacting…` (replacing the spinner); on
-  `session_compact` (verified: `compactionEntry.tokensBefore` only) the
+  `session_compact` (the "after" count is re-derived — see §3) the
   spinner is restored **and** the line
-  `🗜 Context auto-compacted ✔️ — <detail>` is appended to the log area.
+  `🗜 Context auto-compacted ✔️ <detail>` is appended to the log area.
   The stamped line stays in the log and therefore lands in the finalized m1
   (an early-draft run's `onAgentStart` must PRESERVE that log — no wipe,
   since no run has ended yet).
 - **C2 (no live draft):** same observation path, but with no active draft the
   bridge runs the lane-1 flow with auto strings (draft `🗜 Auto-compacting…`
-  → `🗜 Context auto-compacted ✔️ — <detail>` → persist, 🔔). Uses the
+  → `🗜 Context auto-compacted ✔️ <detail>` → persist, 🔔). Uses the
   compact draft id namespace (`COMPACT_DRAFT_ID_BASE`) but a SEPARATE
   `autoCompactState` (NOT `compactState` — the Stop flow checks that first
   and auto-compact has no bot-side controller: `/stop` in the window hits
@@ -438,7 +447,9 @@ facts"). Summary:
 
 1. **Completion event:** `pi.on("session_compact")` — `compactionEntry`
    carries `tokensBefore` only (no `estimatedTokensAfter` is exposed to
-   extensions) → auto detail is `<before> tokens`. (`compaction_start` /
+   extensions) → the auto "after" is re-derived from the public API (Σ
+   `estimateTokens` over `buildSessionContext().messages` — see §3).
+   (`compaction_start` /
    `compaction_end` are internal TUI events — not extension-visible; the
    original entry here was corrected on 2026-09-05, see Change log.)
 2. **Observe vs intercept:** not returning `{cancel}`/`{compaction}` from
@@ -491,7 +502,7 @@ Order matters: T1 before T6 (lane 2 renders into the same bottom line).
     (empty log + spinner), heartbeat armed;
   - auto-compact observed during pre-run → bottom line
     `🗜 Auto-compacting…`; completion → spinner restored **and** log line
-    `🗜 Context auto-compacted ✔️ — <detail>`; the line survives into the
+    `🗜 Context auto-compacted ✔️ <detail>`; the line survives into the
     finalized m1; m1 silent, m2 notifies;
   - auto-compact with no active draft → lane-1 auto strings, 🔔;
   - auto-compact failure (any window) → standalone notifying `⚠️ <errorMessage>`;
@@ -542,8 +553,11 @@ Order matters: T1 before T6 (lane 2 renders into the same bottom line).
     version-safe across 0.84.4 `threshold|overflow` and 0.85.0 `auto`).
   - Auto `<detail>` is `<before> tokens` (`compactionEntry.tokensBefore`
     only — `estimatedTokensAfter` is not exposed to extensions and
-    `getContextUsage().tokens` is null post-compact) — deviates from the
-    §3/§4 `<before> → <after> tokens`; manual keeps the two-number detail.
+    `getContextUsage().tokens` is null post-compact) — deviated from the
+    §3/§4 `<before> → <after> tokens`; manual kept the two-number detail.
+    SUPERSEDED the same day (see the "auto-compact detail" entry below):
+    the auto "after" is now re-derived from the public API, so the auto
+    detail is two-number as well.
   - C3 implemented as the standalone `⚠️ <errorMessage>` (lane 2: live draft
     continues; lane 1: draft stamped + plain send); `aborted &&
     !errorMessage` is silent.
@@ -628,9 +642,10 @@ Order matters: T1 before T6 (lane 2 renders into the same bottom line).
   extended (`bridge-compact`).
 - 2026-09-05 — string change (user request): the MANUAL compact success
   drops the ` — ` separator before the detail: `🗜 Context compacted ✔️
-  <detail>` (draft-stamp and persistent final, B1). The AUTO string keeps
-  the separator (`🗜 Context auto-compacted ✔️ — <detail>`). Tests:
-  expectations updated in `bridge-compact` / `bridge-misc`.
+  <detail>` (draft-stamp and persistent final, B1). Tests: expectations
+  updated in `bridge-compact` / `bridge-misc`. (The "AUTO string keeps the
+  separator" note was superseded the same day — see the "auto-compact
+  detail" entry below.)
 - 2026-09-05 — string change (user request): the steer acknowledgement
   (A15, prompt while busy) is renamed `⚡ queued (applies after current
   tool step)` → `⚡️ Message queued`. Test: expectation updated in
@@ -691,3 +706,25 @@ Order matters: T1 before T6 (lane 2 renders into the same bottom line).
   the card omits it while zero. `fmtTokens` exported from `mirror.ts` (shared by the mirror and the
   bridge). Tests: 12 new (`mirror-tokens` ×8, `bridge-card-tokens` ×3,
   `wiring` ×1) + the two `bridge-core` /status tests extended.
+- 2026-09-05 — auto-compact detail (user request: the received `🗜
+  Context auto-compacted ✔️ — 105,414 tokens` should read `🗜 Context
+  auto-compacted ✔️ 105,414 → <new value> tokens`): (a) the ` — `
+  separator is dropped from the AUTO string too — the detail is
+  space-joined in BOTH lanes (mirror `onAutoCompactDone` log push +
+  bridge `autoCompactFinish`); (b) the auto `<detail>` is now
+  `<before> → <after> tokens` — `session_compact` exposes only
+  `tokensBefore`, but pi computes `estimatedTokensAfter = Σ
+  estimateTokens(buildSessionContext().messages)` internally just before
+  emitting the event (the compaction entry is already appended, so the
+  public `buildSessionContext()` returns the POST-compact context); index.ts
+  re-derives the identical number via `estimatePostCompactTokens` (pi's
+  exported `estimateTokens`, chars/4 per-message heuristic) and degrades to
+  `<before> tokens` when the computation is unavailable (stale ctx / API
+  drift — version-safe against 0.85.0). Manual path unchanged in output,
+  now routed through the shared `compactTokenDetail(before, after)`
+  formatter (`src/mirror.ts`; wiring.ts + index.ts). Tests: new
+  `compactTokenDetail` unit (`mirror-autocompact`), lane-1 / lane-2 string
+  expectations updated (`bridge-autocompact`, `mirror-autocompact`),
+  `index-smoke` end-to-end: fake ctx exposes `buildSessionContext` → the
+  wire carries `128,432 → 2 tokens` (the exact re-derived number) in both
+  lanes.

@@ -2,14 +2,14 @@
 // while the run's draft is LIVE. The draft swaps its bottom line for the C1
 // status (🗜 Auto-compacting…) — the error grace is SUSPENDED so the draft
 // cannot persist mid-compact (the overflow continuation is still coming) —
-// and on success the stamped line (🗜 Context auto-compacted ✔️ — <detail>)
+// and on success the stamped line (🗜 Context auto-compacted ✔️ <detail>)
 // joins the work log, so the (retried) run's final message carries it. A
 // failed auto-compact leaves the draft's state untouched (the ⚠️ notification
 // is the caller's job — index.ts, C3). With no live draft the hooks are
 // no-ops (lane 1, the bridge's standalone draft, owns the messaging).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { Mirror, type MirrorMessage, AUTO_COMPACT_STATUS, AUTO_COMPACT_DONE_TEXT } from "../src/mirror.ts";
+import { Mirror, type MirrorMessage, AUTO_COMPACT_STATUS, AUTO_COMPACT_DONE_TEXT, compactTokenDetail } from "../src/mirror.ts";
 import { makeMirrorDeps, tick } from "./mirror-helpers.ts";
 import type { FakeOutCall } from "./fake-pi.ts";
 
@@ -40,6 +40,15 @@ async function badTool(m: Mirror, id: string, name: string, text: string, err: s
   m.onToolEnd(id, true, err);
   await tick();
 }
+
+test("compactTokenDetail: before → after (two numbers) / before only / guards", () => {
+  assert.equal(compactTokenDetail(128432, 21904), "128,432 → 21,904 tokens");
+  assert.equal(compactTokenDetail(128432, undefined), "128,432 tokens");
+  assert.equal(compactTokenDetail(undefined, 21904), undefined, "no before → no detail at all");
+  assert.equal(compactTokenDetail(NaN, 21904), undefined);
+  assert.equal(compactTokenDetail(128432, Infinity), "128,432 tokens", "a non-finite after degrades to before only");
+  assert.equal(compactTokenDetail(128432, NaN), "128,432 tokens");
+});
 
 const drafts = (calls: FakeOutCall[]): FakeOutCall[] => calls.filter((c) => c.kind === "sendDraft");
 const rich = (calls: FakeOutCall[]): FakeOutCall[] => calls.filter((c) => c.kind === "sendRich");
@@ -73,7 +82,7 @@ test("lane 2 (threshold): start → C1 status on the live draft; done → spinne
   let last = lastDraft(h.out.calls);
   assert.ok(last?.text?.includes(`<tg-thinking>${AUTO_COMPACT_STATUS}</tg-thinking>`), `C1 status in the draft: ${last?.text}`);
 
-  m.onAutoCompactDone("128,432 tokens");
+  m.onAutoCompactDone("128,432 → 21,904 tokens");
   await tick();
   last = lastDraft(h.out.calls);
   assert.ok(!last?.text?.includes(AUTO_COMPACT_STATUS), "the status is gone after done");
@@ -85,7 +94,7 @@ test("lane 2 (threshold): start → C1 status on the live draft; done → spinne
   await m.onAssistantEnd(textMsg("Done.", { stopReason: "stop" }));
   await tick();
   const m1 = rich(h.out.calls)[0]?.text ?? "";
-  assert.ok(m1.includes(`${AUTO_COMPACT_DONE_TEXT} — 128,432 tokens`), `the stamped line is in m1: ${m1}`);
+  assert.ok(m1.includes(`${AUTO_COMPACT_DONE_TEXT} 128,432 → 21,904 tokens`), `the stamped line is in m1 (space-joined, two numbers): ${m1}`);
   const oTool = m1.indexOf("⚙ read ✔");
   const oCompact = m1.indexOf(AUTO_COMPACT_DONE_TEXT);
   const oDone = m1.indexOf("Completed ✔️");
@@ -106,7 +115,7 @@ test("lane 2 (overflow-with-retry): the grace is suspended during the compact; t
   await tick();
   assert.equal(rich(h.out.calls).length, 0, "no persistence mid-compact (the grace is suspended)");
 
-  m.onAutoCompactDone("128,432 tokens");
+  m.onAutoCompactDone("128,432 → 21,904 tokens");
   await tick();
   let last = lastDraft(h.out.calls);
   assert.ok(last?.text?.includes("⚠️ error: 502 status code (no body)"), "the error bottom is back: " + last?.text);
@@ -122,7 +131,7 @@ test("lane 2 (overflow-with-retry): the grace is suspended during the compact; t
 
   const m1 = rich(h.out.calls)[0]?.text ?? "";
   assert.ok(m1.includes("⚙ read ✔"), "run 1's tool block survives");
-  assert.ok(m1.includes(`${AUTO_COMPACT_DONE_TEXT} — 128,432 tokens`), "the stamped line is in the final m1");
+  assert.ok(m1.includes(`${AUTO_COMPACT_DONE_TEXT} 128,432 → 21,904 tokens`), "the stamped line is in the final m1");
   assert.ok(m1.includes("⚠️ error: 502 status code (no body)"), "the interruption is documented");
   assert.ok(m1.includes("⚙ bash ✖"), "the retried run's failed call is in the same log");
   assert.ok(m1.includes("Completed ✔️"), "the marker ends the combined log");

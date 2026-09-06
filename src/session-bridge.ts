@@ -281,7 +281,7 @@ export class SessionBridge {
     this.autoCompactState = undefined;
     this.clearAutoCompactHeartbeat();
     const text = ok
-      ? `${AUTO_COMPACT_DONE_TEXT}${detail ? ` — ${detail}` : ""}`
+      ? `${AUTO_COMPACT_DONE_TEXT}${detail ? ` ${detail}` : ""}`
       : `⚠️ ${detail ?? "compaction failed"}`;
     void (async () => {
       if (s.draftId !== 0) {

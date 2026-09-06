@@ -26,14 +26,14 @@ test("autoCompactStart: a standalone ephemeral draft (no Stop button); finish(ok
   assert.equal(spawn.canStop, false, "no Stop button — nothing bot-side can cancel an auto-compact");
   assert.ok(spawn.draftId !== undefined && spawn.draftId >= 1_000_000, "shares the compact draft id namespace");
 
-  bridge.autoCompactFinish(true, "128,432 tokens");
+  bridge.autoCompactFinish(true, "128,432 → 21,904 tokens");
   await tick();
   const tail = out.calls.slice(-2);
   assert.equal(tail[0]?.kind, "sendDraft", "the draft is stamped…");
   assert.equal(tail[0]?.draftId, spawn.draftId, "…on the same draft…");
-  assert.equal(tail[0]?.text, "🗜 Context auto-compacted ✔️ — 128,432 tokens");
+  assert.equal(tail[0]?.text, "🗜 Context auto-compacted ✔️ 128,432 → 21,904 tokens", "space-joined, no em dash");
   assert.equal(tail[1]?.kind, "send", "…then the result is persisted");
-  assert.equal(tail[1]?.text, "🗜 Context auto-compacted ✔️ — 128,432 tokens");
+  assert.equal(tail[1]?.text, "🗜 Context auto-compacted ✔️ 128,432 → 21,904 tokens");
   assert.equal(tail[1]?.opts?.parseMode, null, "plain text — no parse mode");
 });
 
@@ -124,7 +124,7 @@ test("the draft never went up: finish still attempts the stamp (harmless) and se
   // harmlessly, and the persistent result goes out regardless.
   const drafts = out.calls.filter((c) => c.kind === "sendDraft");
   assert.equal(drafts.length, 2, "the spawn attempt + the stamp attempt");
-  assert.equal(drafts[1]?.text, "🗜 Context auto-compacted ✔️ — 50 tokens", "the stamp carried the result");
+  assert.equal(drafts[1]?.text, "🗜 Context auto-compacted ✔️ 50 tokens", "the stamp carried the result (space-joined)");
   assert.equal(out.calls.at(-1)?.kind, "send");
-  assert.equal(out.calls.at(-1)?.text, "🗜 Context auto-compacted ✔️ — 50 tokens");
+  assert.equal(out.calls.at(-1)?.text, "🗜 Context auto-compacted ✔️ 50 tokens");
 });

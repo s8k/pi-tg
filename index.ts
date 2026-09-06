@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { SessionManager, getAgentDir, convertToLlm } from "@earendil-works/pi-coding-agent";
+import { SessionManager, getAgentDir, convertToLlm, estimateTokens } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { loadConfig, saveConfig, getBotToken } from "./src/config.ts";
 import { TelegramClient, pollLoop } from "./src/telegram-client.ts";
@@ -10,7 +10,7 @@ import { TelegaState } from "./src/state.ts";
 import { SessionBridge } from "./src/session-bridge.ts";
 import { probeGpu } from "./src/gpu.ts";
 import type { Out, TelegaPi } from "./src/session-bridge.ts";
-import { Mirror } from "./src/mirror.ts";
+import { Mirror, compactTokenDetail } from "./src/mirror.ts";
 import type { MirrorMessage } from "./src/mirror.ts";
 import { renderQr, qrWidgetFactory, tokenLooksValid, notAuthorizedText } from "./src/onboarding.ts";
 import { makeOut, makeTelegaPi, ctxIsAlive, wrapWaitForIdle } from "./src/wiring.ts";
@@ -18,6 +18,33 @@ import { runTgCompaction } from "./src/compact.ts";
 
 const CFG = { path: join(getAgentDir(), "pi-telega.json") };
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/**
+ * The "after" count for the AUTO compact detail (`before → after tokens`).
+ * pi computes estimatedTokensAfter = Σ estimateTokens(buildSessionContext()
+ * .messages) internally right before it emits session_compact, but only
+ * tokensBefore reaches the extension event. The compaction entry is already
+ * appended to the session when the event fires, so the public
+ * buildSessionContext() returns the POST-compact context — summing pi's own
+ * public estimateTokens over its messages reproduces the identical number.
+ * `undefined` = unavailable (API drift, stale ctx, …) → the detail degrades
+ * to before-only; version-safe against 0.85.0.
+ */
+const estimatePostCompactTokens = (ctx: ExtensionContext | undefined): number | undefined => {
+  try {
+    // The ctx type exposes the read-only Pick; at runtime it is the full
+    // SessionManager (pi constructs it). If a future pi drops the method
+    // from the runtime object, the ?. chain degrades to undefined (before-only).
+    const sm = ctx?.sessionManager as SessionManager | undefined;
+    const messages = sm?.buildSessionContext?.()?.messages;
+    if (!Array.isArray(messages) || messages.length === 0) return undefined;
+    let total = 0;
+    for (const m of messages) total += estimateTokens(m as never);
+    return total;
+  } catch {
+    return undefined;
+  }
+};
 
 const listSessionsImpl = async (cwd: string) => {
   const infos = await SessionManager.list(cwd);
@@ -446,16 +473,13 @@ export default function piTelega(pi: ExtensionAPI): void {
   // pi emits session_compact / session_compact_failed for EVERY compaction
   // (manual included). Manual results are already reported by the bridge's
   // compact onDone callback (ctx.compact) — only the AUTO lane chosen above
-  // is handled here. The auto detail is the token count BEFORE the compact:
-  // pi does not expose the "after" number to extensions (getContextUsage()
-  // reports tokens: null right after a compact).
+  // is handled here. The auto detail is `before → after tokens`: pi does
+  // not pass the "after" number on the event, so it is re-derived from the
+  // public API (estimatePostCompactTokens) — before-only when unavailable.
   pi.on("session_compact", (event) => {
     if (event.reason === "manual") return;
     const tokensBefore = event.compactionEntry?.tokensBefore;
-    const detail =
-      typeof tokensBefore === "number" && Number.isFinite(tokensBefore)
-        ? `${tokensBefore.toLocaleString("en-US")} tokens`
-        : undefined;
+    const detail = compactTokenDetail(tokensBefore, estimatePostCompactTokens(sessionCtx));
     if (autoCompactLane === "mirror") safeCall(() => currentMirror?.onAutoCompactDone(detail));
     else if (autoCompactLane === "bridge") bridge?.autoCompactFinish(true, detail);
     autoCompactLane = undefined;

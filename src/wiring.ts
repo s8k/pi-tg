@@ -1,4 +1,5 @@
 import type { Out, TelegaPi, PiContextUsage, PiSessionInfo } from "./session-bridge.ts";
+import { compactTokenDetail } from "./mirror.ts";
 import type { PiModel, PiThinkingLevel } from "./thinking.ts";
 import type { TelegaState } from "./state.ts";
 
@@ -163,11 +164,7 @@ export function makeTelegaPi(deps: TelegaPiDeps): TelegaPi {
           // exceeds Telegram's 4096-char limit and the completion message
           // would be dropped).
           const res = r as { tokensBefore?: number; estimatedTokensAfter?: number } | undefined;
-          const detail =
-            typeof res?.tokensBefore === "number" && typeof res?.estimatedTokensAfter === "number"
-              ? `${res.tokensBefore.toLocaleString("en-US")} → ${res.estimatedTokensAfter.toLocaleString("en-US")} tokens`
-              : undefined;
-          onDone(true, detail);
+          onDone(true, compactTokenDetail(res?.tokensBefore, res?.estimatedTokensAfter));
         },
         onError: (e) => onDone(false, e.message),
       });

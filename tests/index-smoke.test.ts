@@ -45,7 +45,22 @@ async function waitFor(pred: () => boolean, what: string, ms = 15000): Promise<v
 // session_start.
 const handlers = new Map<string, (...a: unknown[]) => unknown>();
 piTelega({ registerCommand: () => {}, on: (name: string, fn: (...a: unknown[]) => unknown) => handlers.set(name, fn) } as never);
-const fakeCtx = { cwd: "/tmp", ui: { notify: () => {} } };
+// The fake ctx exposes the post-compact session context so index.ts can
+// re-derive pi's "after" count exactly as pi does internally (Σ estimateTokens
+// over buildSessionContext().messages): user "hi" = ceil(2/4) = 1,
+// compactionSummary "s" = ceil(1/4) = 1 → after = 2.
+const fakeCtx = {
+  cwd: "/tmp",
+  ui: { notify: () => {} },
+  sessionManager: {
+    buildSessionContext: () => ({
+      messages: [
+        { role: "user", content: [{ type: "text", text: "hi" }] },
+        { role: "compactionSummary", summary: "s" },
+      ],
+    }),
+  },
+};
 
 /**
  * Fake wire: getMe ok; the FIRST getUpdates returns one owner prompt (that
@@ -224,8 +239,9 @@ test("T6 lane 2: auto-compact with a live draft → C1 status in the run's draft
     "C1 status in the run's draft",
   );
 
-  // success: the auto detail is the pre-compact token count (no "after" is
-  // exposed to extensions)
+  // success: the auto detail is "before → after tokens" — the "after" is
+  // re-derived by index.ts from the public buildSessionContext() +
+  // estimateTokens (pi's own internal formula, same number)
   handlers.get("session_compact")!({
     reason: "threshold",
     compactionEntry: {
@@ -241,7 +257,7 @@ test("T6 lane 2: auto-compact with a live draft → C1 status in the run's draft
         (c) =>
           c.method === "sendRichMessageDraft" &&
           !c.markdown.includes("🗜 Auto-compacting…") &&
-          c.markdown.includes("🗜 Context auto-compacted ✔️ — 128,432 tokens"),
+          c.markdown.includes("🗜 Context auto-compacted ✔️ 128,432 → 2 tokens"),
       ),
     "stamped narration in the draft (status back to the spinner)",
   );
@@ -252,7 +268,7 @@ test("T6 lane 2: auto-compact with a live draft → C1 status in the run's draft
   handlers.get("message_update")!({ message: { role: "assistant", content: [{ type: "text", text: "Done." }] } });
   handlers.get("message_end")!({ message: { role: "assistant", content: [{ type: "text", text: "Done." }], stopReason: "stop" } });
   await waitFor(
-    () => calls.some((c) => c.method === "sendRichMessage" && c.markdown.includes("🗜 Context auto-compacted ✔️ — 128,432 tokens")),
+    () => calls.some((c) => c.method === "sendRichMessage" && c.markdown.includes("🗜 Context auto-compacted ✔️ 128,432 → 2 tokens")),
     "stamped narration in m1",
   );
 });
@@ -348,7 +364,7 @@ test("T6 lane 1: auto-compact with no live draft → standalone draft; finish st
     willRetry: false,
   });
   await waitFor(
-    () => calls.some((c) => c.method === "sendMessage" && String(c.body.text ?? "") === "🗜 Context auto-compacted ✔️ — 128,432 tokens"),
+    () => calls.some((c) => c.method === "sendMessage" && String(c.body.text ?? "") === "🗜 Context auto-compacted ✔️ 128,432 → 2 tokens"),
     "the plain-text result",
   );
   const stampedDrafts = calls.filter((c) => c.method === "sendRichMessageDraft" && c.markdown.includes("✔️"));
