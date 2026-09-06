@@ -455,7 +455,7 @@ export default function piTelega(pi: ExtensionAPI): void {
       // events: lane 2 = the live run's draft renders the status inside it
       // (the mirror), lane 1 = a standalone draft (the bridge). Muted /
       // unpaired → no messaging at all (lane undefined → the results no-op).
-      if (cfg.muted || ownerChatId === undefined) return;
+      if (cfg.level === "mute" || ownerChatId === undefined) return;
       autoCompactLane = currentMirror?.hasLiveDraft() ? "mirror" : "bridge";
       if (autoCompactLane === "mirror") safeCall(() => currentMirror?.onAutoCompactStart());
       else bridge?.autoCompactStart(ownerChatId);

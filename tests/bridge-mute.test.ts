@@ -10,7 +10,7 @@ test("mute: sets cfg.muted, persists, confirms with 🔇 + /unmute hint", async 
   let persisted = 0;
   deps.persist = async () => { persisted++; };
   await new SessionBridge(deps).dispatch({ kind: "mute", chatId: 7 });
-  assert.equal(deps.cfg.muted, true);
+  assert.equal(deps.cfg.level, "mute");
   assert.equal(persisted, 1);
   assert.ok(lastSend(out).includes("🔇"));
   assert.ok(lastSend(out).includes("/unmute"));
@@ -18,11 +18,11 @@ test("mute: sets cfg.muted, persists, confirms with 🔇 + /unmute hint", async 
 
 test("unmute: clears cfg.muted, persists, confirms with 🔊", async () => {
   const out = new FakeOut();
-  const deps = makeDeps(new FakePi().build(), out, { muted: true });
+  const deps = makeDeps(new FakePi().build(), out, { level: "mute" });
   let persisted = 0;
   deps.persist = async () => { persisted++; };
   await new SessionBridge(deps).dispatch({ kind: "unmute", chatId: 7 });
-  assert.equal(deps.cfg.muted, false);
+  assert.equal(deps.cfg.level, "full");
   assert.equal(persisted, 1);
   assert.ok(lastSend(out).includes("🔊"));
 });
@@ -35,6 +35,6 @@ test("help lists /mute and /unmute", () => {
 test("status shows muted flag while muted", async () => {
   const pi = new FakePi({ cwd: "/proj", messageCount: 3 });
   const out = new FakeOut();
-  await new SessionBridge(makeDeps(pi.build(), out, { muted: true })).dispatch({ kind: "status", chatId: 7 });
+  await new SessionBridge(makeDeps(pi.build(), out, { level: "mute" })).dispatch({ kind: "status", chatId: 7 });
   assert.ok(lastSend(out).includes("muted"));
 });

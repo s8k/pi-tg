@@ -509,7 +509,7 @@ export class Mirror {
    * the live error-end draft.
    */
   private startRunDraft(): void {
-    if (this.deps.cfg.muted || this.deps.getChatId() === undefined) return;
+    if (this.deps.cfg.level === "mute" || this.deps.getChatId() === undefined) return;
     if (this.draftId !== 0) return; // a draft is already live for this run — reuse it
     this.draftId = ++this.draftSeq;
     this.requestUpdate();
@@ -813,7 +813,7 @@ export class Mirror {
     // must release only our own waiters, not the new run's.
     const settle = this.settledResolve;
     try {
-      if (this.deps.cfg.muted) return;
+      if (this.deps.cfg.level === "mute") return;
       const chatId = this.deps.getChatId();
       if (chatId === undefined) return;
       const bottom: BottomLine =
@@ -956,7 +956,7 @@ export class Mirror {
    *    content of the same draft (latest wins, no concurrent retry chains).
    */
   private requestDraftUpdate(draftId: number, content: string, canStop: boolean): void {
-    if (this.deps.cfg.muted || this.phase !== "work") return;
+    if (this.deps.cfg.level === "mute" || this.phase !== "work") return;
     if (this.deps.getChatId() === undefined) return;
     this.pending.set(draftId, { content, canStop, run: this.runSeq });
     if (this.deps.now() < this.nextDraftAt && !this.forceNext) {

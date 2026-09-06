@@ -16,6 +16,14 @@ export type PendingAction =
   | { type: "activate"; chatId: number; path: string }
   | { type: "reload"; chatId: number };
 
+/**
+ * Agent output level — the mirror's render filter: `mute` = nothing (old
+ * `muted: true`), `minimal` = visible text only (narration + answer),
+ * `full` = today's behavior (draft + work log + final answer, default).
+ * Commands, cards and help are unaffected by any level.
+ */
+export type OutputLevel = "mute" | "minimal" | "full";
+
 export interface TelegaConfig {
   botToken?: string;
   ownerId?: number;
@@ -33,8 +41,8 @@ export interface TelegaConfig {
   errorSettleMs: number;
   /** Code fences with a body of more than this many lines are wrapped in a closed <details>. */
   codeFoldLines: number;
-  /** When true, agent output (mirror) is suppressed; command replies still work. */
-  muted: boolean;
+  /** Agent output level (see `OutputLevel`). Legacy `muted` still parses: true → "mute", false → "full". */
+  level: OutputLevel;
   /** IDs of bot-sent messages, for chat cleaning (capped at 500, newest last). */
   sentMessageIds: number[];
   /** Polling cursor, persisted so a restart/instance-swap resumes without re-read. */
@@ -52,7 +60,7 @@ export interface ConfigOptions {
 
 export const DEFAULTS: Pick<
   TelegaConfig,
-  "streamEditMs" | "askClearOnSwitch" | "maxSessionList" | "draftHeartbeatMs" | "errorSettleMs" | "codeFoldLines" | "muted" | "sentMessageIds"
+  "streamEditMs" | "askClearOnSwitch" | "maxSessionList" | "draftHeartbeatMs" | "errorSettleMs" | "codeFoldLines" | "level" | "sentMessageIds"
 > = {
   streamEditMs: 1500,
   askClearOnSwitch: true,
@@ -60,7 +68,7 @@ export const DEFAULTS: Pick<
   draftHeartbeatMs: 17_000,
   errorSettleMs: 5_000,
   codeFoldLines: 25,
-  muted: false,
+  level: "full",
   sentMessageIds: [],
 };
 
@@ -104,6 +112,14 @@ function sanitizePending(value: unknown): PendingAction | undefined {
   return undefined;
 }
 
+/** `level`: a valid value wins; otherwise legacy `muted` (strict boolean: true → "mute", false → "full"); otherwise the default. */
+function parseLevel(obj: Record<string, unknown>): OutputLevel {
+  if (obj.level === "mute" || obj.level === "minimal" || obj.level === "full") return obj.level;
+  if (obj.muted === true) return "mute";
+  if (obj.muted === false) return "full";
+  return DEFAULTS.level;
+}
+
 /** Repair a raw (possibly hand-edited/corrupt) config object into a valid one. */
 export function sanitize(raw: unknown): TelegaConfig {
   const obj = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
@@ -116,7 +132,7 @@ export function sanitize(raw: unknown): TelegaConfig {
     draftHeartbeatMs: clampInt(obj.draftHeartbeatMs, DEFAULTS.draftHeartbeatMs, 5_000, 25_000),
     errorSettleMs: clampInt(obj.errorSettleMs, DEFAULTS.errorSettleMs, 1_000, 30_000),
     codeFoldLines: clampInt(obj.codeFoldLines, DEFAULTS.codeFoldLines, 5, 500),
-    muted: typeof obj.muted === "boolean" ? obj.muted : DEFAULTS.muted,
+    level: parseLevel(obj),
     sentMessageIds: capSentIds(obj.sentMessageIds),
     lastOffset: typeof obj.lastOffset === "number" && Number.isFinite(obj.lastOffset) ? obj.lastOffset : undefined,
     pendingAction: sanitizePending(obj.pendingAction),

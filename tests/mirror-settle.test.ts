@@ -100,7 +100,7 @@ test("whenSettled: a new run starts while the old settle is pending → the old 
 });
 
 test("whenSettled: muted run → resolves without any send", async () => {
-  const h = makeMirrorDeps({ muted: true });
+  const h = makeMirrorDeps({ level: "mute" });
   const m = new Mirror(h.deps);
   m.onAgentStart();
   m.onAssistantStart(textMsg(""));

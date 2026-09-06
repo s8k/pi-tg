@@ -314,7 +314,7 @@ test("error → retry → error again: the CARRIED log persists exactly once, at
 });
 
 test("muted run: nothing at all — no drafts, no persistent sends", async () => {
-  const h = makeMirrorDeps({ streamEditMs: 0, muted: true });
+  const h = makeMirrorDeps({ streamEditMs: 0, level: "mute" });
   const m = new Mirror(h.deps);
   m.onAgentStart();
   await tick();

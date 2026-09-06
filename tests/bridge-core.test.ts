@@ -86,7 +86,7 @@ test("status: card format 📌/📁/🤖/📖/📨/🪙, plain session name, rou
   // busy + muted + no model + no context usage
   const pi2 = new FakePi({ cwd: "/p", busy: true, sessionName: "My <sess>" });
   const out2 = new FakeOut();
-  await new SessionBridge(makeDeps(pi2.build(), out2, { muted: true })).dispatch({ kind: "status", chatId: 7 });
+  await new SessionBridge(makeDeps(pi2.build(), out2, { level: "mute" })).dispatch({ kind: "status", chatId: 7 });
   const lines2 = lastSend(out2).split("\n");
   assert.equal(lines2[0], "📌 My &lt;sess&gt; — busy · 🔇 muted");
   assert.equal(lines2[2], "🤖 model: n/a · 🧠 thinking: default");

@@ -385,7 +385,7 @@ export class SessionBridge {
     const name = pi.getSessionName() ?? "Untitled session";
     const tokens = pi.sessionUsage();
     const lines = [
-      `📌 ${escapeHtml(name)} — ${pi.isIdle() ? "idle" : "busy"}${cfg.muted ? " · 🔇 muted" : ""}`,
+      `📌 ${escapeHtml(name)} — ${pi.isIdle() ? "idle" : "busy"}${cfg.level === "mute" ? " · 🔇 muted" : ""}`,
       `📁 dir: <code>${escapeHtml(pi.cwd)}</code>`,
       `🤖 model: ${model ? escapeHtml(model.name) : "n/a"} · 🧠 thinking: ${pi.currentThinking() ?? "default"}`,
       `📖 context: ${usage?.percent != null ? `${Math.round(usage.percent)}%` : "n/a"}${usage?.tokens != null ? ` (${usage.tokens}/${usage.contextWindow})` : ""}`,
@@ -492,12 +492,12 @@ export class SessionBridge {
         return;
       }
       case "mute":
-        cfg.muted = true;
+        cfg.level = "mute";
         await this.deps.persist();
         await out.send(action.chatId, "🔇 Muted — I won’t post agent output (progress, tools, answers) until you send /unmute. Commands still work.");
         return;
       case "unmute":
-        cfg.muted = false;
+        cfg.level = "full";
         await this.deps.persist();
         await out.send(action.chatId, "🔊 Unmuted — agent output is back on.");
         return;

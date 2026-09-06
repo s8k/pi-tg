@@ -231,7 +231,7 @@ test("spinner-only run: the single draft never gains text", async () => {
 });
 
 test("muted: no draft calls of any kind", async () => {
-  const h = makeMirrorDeps({ muted: true });
+  const h = makeMirrorDeps({ level: "mute" });
   const m = new Mirror(h.deps);
   m.onAgentStart();
   m.onAssistantStart(textMsg(""));
