@@ -60,7 +60,8 @@ test("onSessionReplaced: posts card + clear question, clears pendingAction", asy
   assert.equal(persisted, 1);
   const texts = out.calls.map((c) => c.text).filter(Boolean) as string[];
   assert.equal(texts.length, 2);
-  assert.ok(texts[0].startsWith("📌"));
+  assert.ok(texts[0].startsWith("📌")); // the STATUS card (not the old session card)
+  assert.ok(texts[0].includes("📨 messages:"));
   assert.ok(texts[1].includes("Clear chat history?"));
   const markup = out.calls[out.calls.length - 1].opts?.replyMarkup as { inline_keyboard: { text: string; callback_data: string }[][] };
   assert.equal(markup.inline_keyboard[0][0].text, "🧹 Clear");

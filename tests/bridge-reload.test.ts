@@ -37,7 +37,7 @@ test("/reload: busy → refuse, no pendingAction, no pi.reload call", async () =
   assert.equal(deps.cfg.pendingAction, undefined);
 });
 
-test("onSessionReplaced: reload pending → card posted, NO clear question (session unchanged)", async () => {
+test("onSessionReplaced: reload pending → NO card, no clear question (reload is not session-related); pendingAction cleared", async () => {
   const pi = new FakePi();
   const out = new FakeOut();
   const deps = makeDeps(pi.build(), out); // askClearOnSwitch defaults to true
@@ -48,9 +48,7 @@ test("onSessionReplaced: reload pending → card posted, NO clear question (sess
   await bridge.onSessionReplaced(7);
   assert.equal(deps.cfg.pendingAction, undefined);
   assert.equal(persisted, 1);
-  const texts = out.calls.map((c) => c.text).filter(Boolean) as string[];
-  assert.equal(texts.length, 1); // card only — no "Clear chat history?"
-  assert.ok(texts[0].startsWith("📌"));
+  assert.equal(out.calls.length, 0); // no card, no "Clear chat history?" — the ✔️ stamp is the confirmation
 });
 
 test("reload onDone(true) → stamps the 'Reloading…' message with ✔️ (best effort)", async () => {
@@ -84,7 +82,7 @@ test("reload onDone(false, detail) → ⚠️ message; onDone(true) → no extra
   pi.reloadDone!(true);
   await new Promise((r) => setTimeout(r, 10));
   const sendsAfterFire = out.calls.filter((c) => c.kind === "send").length;
-  assert.equal(sendsAfterFire, 1); // only the 'Reloading…' one — the card comes from the replacement
+  assert.equal(sendsAfterFire, 1); // only the 'Reloading…' one — the replacement posts nothing (B)
   pi.reloadDone!(false, "extension load failed: syntax error");
   assert.ok(lastSend(out).includes("Reload failed"));
   assert.ok(lastSend(out).includes("extension load failed: syntax error"));

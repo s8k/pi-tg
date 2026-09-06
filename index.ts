@@ -389,8 +389,9 @@ export default function piTelega(pi: ExtensionAPI): void {
       // startPolling's sync setup (client/out/bridge) is done by the time this
       // line runs — only its long-poll loop is still pending.
       const loop = startPolling();
-      // Card + clear question AT arrival (design §8: "the NEW instance's
-      // session_start calls onSessionReplaced").
+      // Card + clear question AT arrival for /new and session switches (design
+      // §8: "the NEW instance's session_start calls onSessionReplaced"). A
+      // /reload posts nothing — the old instance's ✔️ stamp is the confirmation.
       const pa = cfg.pendingAction;
       if (pa && bridge) await bridge.onSessionReplaced(pa.chatId);
       await loop; // pollPromise lives for the loop's lifetime

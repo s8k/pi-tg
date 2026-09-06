@@ -74,3 +74,22 @@ extension runtime is alive.
 - `npm test` (full suite) green; `tsc --noEmit` clean (repo script if present).
 - Manual (optional, live bot): `/reload` while idle → "🔄…" + new card; `/reload`
   while busy → refusal; breaking an extension file → "⚠️ Reload failed" or TUI error.
+
+## Addendum 2026-09-06: no card after /reload (decision B)
+
+The replacement instance no longer posts the (status) card after `/reload`.
+`onSessionReplaced` now skips the card AND the clear question for
+`pendingAction.type === "reload"` — it only clears/persists the pending
+action. The old instance's ✔️ stamp ("🔄 Reloading extensions… ✔️") is the
+sole success signal; `⚠️ Reload failed: …` covers failures.
+
+Rationale: reload is not session-related, so a session status card there is
+noise. Accepted risk: if the NEW instance's `session_start` wiring fails
+AFTER `ctx.reload()` resolved (e.g. `startPolling()`'s sync setup throws —
+bad token, our own regression in the handler), the old instance has already
+stamped ✔️ (false positive) and the bot goes silently deaf until the next
+TUI interaction (restart / TUI `/reload`). The card was the only signal that
+could only be produced by a live new poller; the TUI notice
+(`telega: <err>` on the session_start IIFE) is the only remaining trace.
+Rejected alternative: a small "✅ Extensions reloaded" ack from the
+replacement (kept the end-to-end proof without session noise).

@@ -45,9 +45,10 @@ export interface TelegaPi {
   /**
    * Hot-reload pi's extensions/skills/prompts/themes/context files (pi's
    * ctx.reload()). Fire-and-forget: pi replaces the extension runtime, so this
-   * call is terminal — onDone(true) means "the replacement instance took over"
-   * (it posts the card); onDone(false, detail) means the old instance is still
-   * alive and must tell the user what failed.
+   * call is terminal — onDone(true) means the reload resolved; the old
+   * instance stamps its ack with ✔️ (the confirmation — the replacement posts
+   * nothing); onDone(false, detail) means the old instance is still alive and
+   * must tell the user what failed.
    */
   reload(onDone: (ok: boolean, detail?: string) => void): void;
   getSessionName(): string | undefined;
@@ -345,36 +346,19 @@ export class SessionBridge {
     if (pa.type === "new" && pa.ackMsgId !== undefined) {
       await out.edit(chatId, pa.ackMsgId, "🔄 Creating new session… ✔️").catch(() => {}); // message gone → best effort
     }
-    await out.send(chatId, this.sessionCardText());
-    // A /reload keeps the same session — nothing new posted, no clear question.
-    if (pa.type !== "reload" && cfg.askClearOnSwitch) {
-      await out.send(chatId, "Clear chat history?", {
-        replyMarkup: {
-          inline_keyboard: [[{ text: "🧹 Clear", callback_data: CB.clear(true) }, { text: "Keep", callback_data: CB.clear(false) }]],
-        },
-      });
+    // A /reload keeps the same session and is not session-related — nothing
+    // new posted, no clear question (design B: the old instance's ✔️ stamp is
+    // the reload's confirmation). /new and session switches post the card.
+    if (pa.type !== "reload") {
+      await out.send(chatId, await this.statusText());
+      if (cfg.askClearOnSwitch) {
+        await out.send(chatId, "Clear chat history?", {
+          replyMarkup: {
+            inline_keyboard: [[{ text: "🧹 Clear", callback_data: CB.clear(true) }, { text: "Keep", callback_data: CB.clear(false) }]],
+          },
+        });
+      }
     }
-  }
-
-  private sessionCardText(): string {
-    const { pi } = this.deps;
-    const model = pi.currentModel();
-    const usage = pi.contextUsage();
-    const name = pi.getSessionName() ?? "Untitled session";
-    // The session's cumulative tokens (the same ` ↑<in> ↓<out>` display the
-    // mirror's bottom line uses); omitted until the first usage arrives.
-    const tokens = pi.sessionUsage();
-    // The tokens line (🪙, same format as /status) sits ABOVE the messages
-    // line; omitted while the session has no usage yet (the card stays
-    // minimal — /status shows zeros, the card does not).
-    const hasTokens = tokens.input > 0 || tokens.output > 0;
-    return [
-      `📌 <b>${escapeHtml(name)}</b>`,
-      `<code>${escapeHtml(pi.cwd)}</code>`,
-      `${model ? escapeHtml(model.name) : "no model"} · thinking: ${pi.currentThinking() ?? "default"}`,
-      ...(hasTokens ? [`🪙 tokens: ↑${fmtTokens(tokens.input)} ↓${fmtTokens(tokens.output)}`] : []),
-      `${pi.messageCount()} messages${usage?.percent != null ? ` · context ${usage.percent}%` : ""}`,
-    ].join("\n");
   }
 
   /** Best-effort in-place stamp: a deleted/uneditable message is silently
@@ -401,12 +385,13 @@ export class SessionBridge {
     const name = pi.getSessionName() ?? "Untitled session";
     const tokens = pi.sessionUsage();
     const lines = [
-      `🆔 ${escapeHtml(name)} — ${pi.isIdle() ? "idle" : "busy"}${cfg.muted ? " · 🔇 muted" : ""}`,
+      `📌 ${escapeHtml(name)} — ${pi.isIdle() ? "idle" : "busy"}${cfg.muted ? " · 🔇 muted" : ""}`,
       `📁 dir: <code>${escapeHtml(pi.cwd)}</code>`,
       `🤖 model: ${model ? escapeHtml(model.name) : "n/a"} · 🧠 thinking: ${pi.currentThinking() ?? "default"}`,
       `📖 context: ${usage?.percent != null ? `${Math.round(usage.percent)}%` : "n/a"}${usage?.tokens != null ? ` (${usage.tokens}/${usage.contextWindow})` : ""}`,
-      // The session's cumulative tokens (same source as the card) sit ABOVE
-      // the messages line. ALWAYS shown — `↑0 ↓0` proves the wiring is live.
+      // The session's cumulative tokens (same ` ↑<in> ↓<out>` display the
+      // mirror's bottom line uses) sit ABOVE the messages line. ALWAYS shown
+      // — `↑0 ↓0` proves the wiring is live.
       `🪙 tokens: ↑${fmtTokens(tokens.input)} ↓${fmtTokens(tokens.output)}`,
       `📨 messages: ${pi.messageCount()}`,
     ];
@@ -417,7 +402,7 @@ export class SessionBridge {
   }
 
   private async sendCardAndHelp(chatId: number): Promise<void> {
-    await this.deps.out.send(chatId, this.sessionCardText());
+    await this.deps.out.send(chatId, await this.statusText());
     await this.deps.out.send(chatId, helpText());
   }
 

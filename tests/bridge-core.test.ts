@@ -62,7 +62,7 @@ test("stop: waitForIdle rejects (context gone) → no stamp, no crash", async ()
   assert.ok(!out.calls.some((c) => c.kind === "edit"), "no stamp when the wait fails");
 });
 
-test("status: card format 🆔/📁/🤖/📖/📨/🪙, plain session name, rounded context percent, session tokens", async () => {
+test("status: card format 📌/📁/🤖/📖/📨/🪙, plain session name, rounded context percent, session tokens", async () => {
   const pi = new FakePi({
     cwd: "/proj",
     model: { id: "m1", name: "Model One", provider: "p", reasoning: false },
@@ -75,7 +75,7 @@ test("status: card format 🆔/📁/🤖/📖/📨/🪙, plain session name, rou
   await new SessionBridge(makeDeps(pi.build(), out)).dispatch({ kind: "status", chatId: 7 });
   const lines = lastSend(out).split("\n");
   assert.deepEqual(lines, [
-    "🆔 Untitled session — idle", // plain name (no <b>), unmuted → no 🔇 suffix
+    "📌 Untitled session — idle", // plain name (no <b>), unmuted → no 🔇 suffix
     "📁 dir: <code>/proj</code>",
     "🤖 model: Model One · 🧠 thinking: high",
     "📖 context: 76% (90720/120000)",
@@ -88,7 +88,7 @@ test("status: card format 🆔/📁/🤖/📖/📨/🪙, plain session name, rou
   const out2 = new FakeOut();
   await new SessionBridge(makeDeps(pi2.build(), out2, { muted: true })).dispatch({ kind: "status", chatId: 7 });
   const lines2 = lastSend(out2).split("\n");
-  assert.equal(lines2[0], "🆔 My &lt;sess&gt; — busy · 🔇 muted");
+  assert.equal(lines2[0], "📌 My &lt;sess&gt; — busy · 🔇 muted");
   assert.equal(lines2[2], "🤖 model: n/a · 🧠 thinking: default");
   assert.equal(lines2[3], "📖 context: n/a");
   assert.equal(lines2[4], "🪙 tokens: ↑0 ↓0"); // no usage yet → zeros, still shown, above the messages line
@@ -108,7 +108,7 @@ test("status: 🔥 GPU line from probeGpu (single + multi); omitted when probe u
   const out0 = new FakeOut();
   await new SessionBridge(makeDeps(new FakePi(base).build(), out0)).dispatch({ kind: "status", chatId: 7 });
   const l0 = lastSend(out0).split("\n");
-  assert.equal(l0.length, 6); // 🆔 📁 🤖 📖 🪙 📨
+  assert.equal(l0.length, 6); // 📌 📁 🤖 📖 🪙 📨
   assert.equal(l0[4], "🪙 tokens: ↑0 ↓0");
   assert.ok(l0[5].startsWith("📨 messages: "));
 
@@ -137,7 +137,8 @@ test("pair: sets ownerId, sends welcome + card + help", async () => {
   const texts = out.calls.map((c) => c.text).filter(Boolean) as string[];
   assert.equal(texts.length, 3);
   assert.ok(texts[0].includes("ID 42"));
-  assert.ok(texts[1].startsWith("📌"));
+  assert.ok(texts[1].startsWith("📌 Untitled session — idle")); // the STATUS card (not the old session card)
+  assert.ok(texts[1].includes("📨 messages:"));
   assert.ok(texts[2].includes("/help"));
 });
 
