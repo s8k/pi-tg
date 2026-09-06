@@ -56,7 +56,7 @@
  */
 import type { Out } from "./session-bridge.ts";
 import type { TelegaState } from "./state.ts";
-import type { TelegaConfig } from "./config.ts";
+import type { OutputLevel, TelegaConfig } from "./config.ts";
 import { RICH_CAP, tailView, escapeHtml, renderToolBlock, toolArgsJson, extractWhy, foldLongFences, chunkRich, chunkMarkdown, chunkText, toPlainText, type ToolState } from "./markdown.ts";
 import { TgError } from "./telegram-client.ts";
 
@@ -236,6 +236,18 @@ export function bottomLineText(bottom: BottomLine): string {
     case "aborted":
       return "⚠️ Request was aborted";
   }
+}
+
+/**
+ * The level's render filter over the work log: `full` → all blocks (the SAME
+ * array — no copy); `minimal` → visible text only (narration blocks, the TUI
+ * white text; tool / prompt / agentError lines are dropped); `mute` → nothing
+ * (the pipeline is gated before rendering — this is the defensive total).
+ */
+export function blocksForLevel(level: OutputLevel, blocks: LogBlock[]): LogBlock[] {
+  if (level === "full") return blocks;
+  if (level === "minimal") return blocks.filter((b) => b.type === "narration");
+  return [];
 }
 
 /**
@@ -906,9 +918,10 @@ export class Mirror {
 
   // ─────────────────────────── content builders ───────────────────────────
 
-  /** The single draft's full content: [log] [tail] [bottom line]. */
+  /** The single draft's full content: [log] [tail] [bottom line] — the log filtered by the level. */
   private content(bottom?: BottomLine): string {
-    return blocksToMd(this.log, {
+    const log = blocksForLevel(this.deps.cfg.level, this.log);
+    return blocksToMd(log, {
       tail: this.tail,
       bottom: bottom ?? this.currentBottom(),
       tokens: this.runTokens(),
