@@ -56,6 +56,13 @@ One agent run produces **exactly 1 live rich draft** for the whole run, and
   `agent_settled` (the grace timer demoted to backstop), and while the
   stream is open the draft shows ⚠️ line → `---` divider → spinner (the
   spinner no longer disappears for the retry's backoff). See §5.4.
+- [x] Revision 2026-09-05 (token display): the live bottom-line spinner and
+  the finalized `Completed ✔️` line now carry the run's cumulative token
+  usage — ` ↑<input> ↓<output>` (e.g. `Thinking… ↑567 ↓12.5k`,
+  `Completed ✔️ ↑567 ↓12.5k`); the session card and `/status` carry the
+  session's cumulative usage on a `🪙 tokens: …` line above the messages
+  line. See the 2026-09-04 message-framework design (bottom-line rule +
+  change log).
 
 ## 1. Goal & final look
 

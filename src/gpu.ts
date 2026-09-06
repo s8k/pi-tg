@@ -91,8 +91,13 @@ export function probeGpu(opts: ProbeOptions = {}): Promise<GpuStats[] | undefine
       }
     });
     if (stdout === undefined) return attempt(i + 1); // missing binary → try next candidate
-    const stats = parseGpuCsv(stdout); // ran fine but no devices → unavailable (no fallback)
-    return stats.length > 0 ? stats : undefined;
+    // Rows whose fields are ALL null (nvidia-smi present but the driver
+    // reports nothing — e.g. [N/A] values) carry no data: drop them, and if
+    // nothing usable is left the probe is unavailable (no GPU line at all).
+    const usable = parseGpuCsv(stdout).filter(
+      (s) => s.tempC !== null || s.utilPct !== null || s.memUsedGb !== null || s.memTotalGb !== null,
+    );
+    return usable.length > 0 ? usable : undefined; // no devices / no data → unavailable (no fallback)
   };
   // execFile's `timeout` kills the child; the race is defense in depth so a
   // stuck/uncooperative execFile can never delay /status past timeoutMs.

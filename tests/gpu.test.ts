@@ -84,6 +84,19 @@ test("probeGpu: empty stdout (no devices) → undefined", async () => {
   assert.equal(await probeGpu({ execFile: fake, platform: "linux" }), undefined);
 });
 
+test("probeGpu: all fields [N/A] (driver not loaded) → undefined — no GPU line at all", async () => {
+  const fake: FakeExecFile = (_c, _a, cb) =>
+    setTimeout(() => cb(null, "[N/A], [N/A], [N/A], [N/A]\n"), 5);
+  assert.equal(await probeGpu({ execFile: fake, platform: "linux" }), undefined);
+});
+
+test("probeGpu: mixed — one usable GPU + one all-N/A → only the usable one", async () => {
+  const fake: FakeExecFile = (_c, _a, cb) =>
+    setTimeout(() => cb(null, "67, 96, 14532, 24576\n[N/A], [N/A], [N/A], [N/A]\n"), 5);
+  const stats = await probeGpu({ execFile: fake, platform: "linux" });
+  assert.ok(stats && stats.length === 1 && stats[0].tempC === 67, `got ${JSON.stringify(stats)}`);
+});
+
 test("probeGpu: hanging child → timeoutMs caps the wait (defense in depth)", async () => {
   const fake: FakeExecFile = () => { /* never settles */ };
   const t0 = Date.now();

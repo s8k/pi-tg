@@ -65,6 +65,8 @@ export interface MirrorMessage {
   content?: unknown;
   stopReason?: string;
   errorMessage?: string;
+  /** The message's token usage (pi's Usage, projected — input/output only). */
+  usage?: { input?: number; output?: number };
 }
 
 
@@ -100,8 +102,12 @@ export type BottomLine =
  * Render the single mirror message: committed blocks + the in-flight tail
  * (the current message's text) + the bottom line, each separated by one
  * blank line. Layout by bottom kind:
- *  - thinking / compact (while working): [blocks] [tail] [blank line] <tg-thinking>…</tg-thinking>
- *    — the spinner (or the auto-compact status) stays LAST, below the
+ *  - thinking / compact (while working): [blocks] [tail] [blank line]
+ *    <tg-thinking>… ↑<in> ↓<out></tg-thinking> — the spinner (or the
+ *    auto-compact status) stays LAST, below the; the run's token usage sits
+ *    INSIDE the tag (the rich renderer treats the tag as its own line —
+ *    text after the closing tag wraps to the next line, observed live — so
+ *    inside is the only same-line placement), below
  *    streaming text; whenever there is any text above it (blocks and/or the
  *    tail), an extra blank line (an NBSP paragraph — a bare `---` right
  *    above the spinner was tried and rejected: it collides with the
@@ -126,11 +132,30 @@ export type BottomLine =
  * The SAME builder renders live drafts and the final persistent send, so
  * the finalize transition cannot drift from what the draft showed.
  */
-export function blocksToMd(log: LogBlock[], opts: { tail?: string; bottom: BottomLine }): string {
+/**
+ * Human-readable token count for the usage display: raw below 1k, one-decimal
+ * k/m above (trailing .0 dropped) — `567`, `12.5k`, `1.5m`.
+ */
+export function fmtTokens(n: number): string {
+  const f = (x: number): string => (Number.isInteger(x) ? String(x) : x.toFixed(1));
+  if (n < 1_000) return String(n);
+  if (n < 999_500) return `${f(Math.round((n / 1_000) * 10) / 10)}k`;
+  return `${f(Math.round((n / 1_000_000) * 10) / 10)}m`;
+}
+
+/** The run's usage suffix for a bottom line — ` ↑<in> ↓<out>` — or "" until the first usage arrives. */
+function tokensSuffix(t?: { input: number; output: number }): string {
+  const i = t?.input ?? 0;
+  const o = t?.output ?? 0;
+  return i > 0 || o > 0 ? ` ↑${fmtTokens(i)} ↓${fmtTokens(o)}` : "";
+}
+
+export function blocksToMd(log: LogBlock[], opts: { tail?: string; bottom: BottomLine; tokens?: { input: number; output: number } }): string {
+  const suffix = tokensSuffix(opts.tokens);
   const parts = log.map((b) => (b.type === "tool" ? renderToolBlock(b) : b.text));
   const tail = opts.tail && opts.tail.trim() ? opts.tail : undefined;
   if (opts.bottom.kind === "done") {
-    parts.push("Completed ✔️");
+    parts.push(`Completed ✔️${suffix}`);
     if (tail) parts.push(tail); // no divider — the answer is its own message
     return parts.join("\n\n");
   }
@@ -141,14 +166,20 @@ export function blocksToMd(log: LogBlock[], opts: { tail?: string; bottom: Botto
     const err = bottomLineText(opts.bottom);
     if (err) parts.push(err);
     if (parts.length > 0) parts.push(err ? "---" : "\u00a0"); // divider after the ⚠️ line; classic gap without one
-    parts.push(`<tg-thinking>${opts.bottom.word ?? "Working"}…</tg-thinking>`);
+    parts.push(`<tg-thinking>${opts.bottom.word ?? "Working"}…${suffix}</tg-thinking>`);
+    return parts.join("\n\n");
+  }
+  if (opts.bottom.kind === "thinking" || opts.bottom.kind === "compact") {
+    if (parts.length > 0) parts.push("\u00a0"); // text above the spinner → an extra blank line
+    // The run's tokens go INSIDE the tag (same line — the renderer wraps
+    // trailing text below the tag); the label's shimmer covers the numbers
+    // too, which is fine: they're live telemetry, not body text.
+    const label = opts.bottom.kind === "thinking" ? `${opts.bottom.word}…` : opts.bottom.status;
+    parts.push(`<tg-thinking>${label}${suffix}</tg-thinking>`);
     return parts.join("\n\n");
   }
   const bottom = bottomLineText(opts.bottom);
-  if (bottom) {
-    if (parts.length > 0 && (opts.bottom.kind === "thinking" || opts.bottom.kind === "compact")) parts.push("\u00a0"); // text above the spinner → an extra blank line
-    parts.push(bottom);
-  }
+  if (bottom) parts.push(bottom);
   return parts.join("\n\n");
 }
 
@@ -312,6 +343,26 @@ export class Mirror {
   private endError: string | undefined;
   /** Lane-2 auto-compact in flight (C1): the bottom line is the status. */
   private autoCompacting = false;
+  // Token usage of the CURRENT run (the user's "request"): the committed
+  // messages' usage (doneUsage) plus the in-flight message's latest usage
+  // (liveUsage). Rendered on the bottom line as ` ↑<in> ↓<out>` (spinner and
+  // `Completed ✔️`). Accumulates across pi's auto-retries (a retry carries
+  // the run over); reset when a NEW run starts.
+  private doneUsage = { input: 0, output: 0 };
+  private liveUsage = { input: 0, output: 0 };
+
+  private resetRunUsage(): void {
+    this.doneUsage = { input: 0, output: 0 };
+    this.liveUsage = { input: 0, output: 0 };
+  }
+
+  /** The run's total usage so far (committed + in-flight). */
+  private runTokens(): { input: number; output: number } {
+    return {
+      input: this.doneUsage.input + this.liveUsage.input,
+      output: this.doneUsage.output + this.liveUsage.output,
+    };
+  }
   // pacing
   private nextDraftAt = 0; // earliest time a new draft attempt is allowed (throttle + failure cooldown)
   private forceNext = false; // one-shot: the first send of a new message breaks through the window
@@ -388,6 +439,7 @@ export class Mirror {
       // log holds the auto-compact narration of THIS pending run, already
       // visible in the draft the user has been watching.
       this.log = [];
+      this.resetRunUsage();
     }
     this.tail = "";
     this.endKind = undefined;
@@ -433,6 +485,7 @@ export class Mirror {
   onPromptAccepted(): void {
     if (this.phase === "work") return; // steer: the live run already owns its draft
     this.log = [];
+    this.resetRunUsage();
     this.tail = "";
     this.endKind = undefined;
     this.endError = undefined;
@@ -459,6 +512,7 @@ export class Mirror {
   onAssistantStart(msg: MirrorMessage): void {
     if (msg.role !== "assistant" || this.phase !== "work") return;
     this.tail = ""; // a new message's text accumulates from its parts
+    this.liveUsage = { input: 0, output: 0 }; // a new message's usage starts over
     // The first send of a new message is not throttled (the throttled-at-t=0
     // case only applies to the very first message right after the draft spawn).
     // A flag, not a nextDraftAt reset: a reset would be stomped by an
@@ -477,7 +531,16 @@ export class Mirror {
     // commit at message_end is what moves the text into the log — a toolCall
     // chunk mid-stream must NOT wipe the tail (that was the old flicker).
     this.tail = text;
-    if (text.trim()) this.requestUpdate(); // textless candidates never trigger an update
+    // The in-flight message's usage (grows with the stream): the bottom
+    // line's ` ↑<in> ↓<out>` refreshes on every change — INCLUDING textless
+    // updates (pure thinking streams report tokens without visible text).
+    let usageChanged = false;
+    const u = msg.usage;
+    if (u && (u.input !== this.liveUsage.input || u.output !== this.liveUsage.output)) {
+      this.liveUsage = { input: u.input ?? 0, output: u.output ?? 0 };
+      usageChanged = true;
+    }
+    if (text.trim() || usageChanged) this.requestUpdate();
   }
 
   /**
@@ -488,6 +551,14 @@ export class Mirror {
    */
   async onAssistantEnd(msg: MirrorMessage): Promise<void> {
     if (msg.role !== "assistant" || this.phase !== "work") return;
+    // Commit this message's FINAL usage to the run's total (the in-flight
+    // counter restarts with the next message). A message that died mid-stream
+    // contributes its partial usage — the best number we have.
+    const u = msg.usage;
+    if (u) {
+      this.doneUsage = { input: this.doneUsage.input + (u.input ?? 0), output: this.doneUsage.output + (u.output ?? 0) };
+      this.liveUsage = { input: 0, output: 0 };
+    }
     const parts = partsOf(msg);
     let thinkingSoFar: string[] = [];
     let narration: string[] = [];
@@ -719,13 +790,13 @@ export class Mirror {
           await this.runDraftOnce(this.draftId, this.draftContent(bottom), false /* no Stop button — the run is over */);
         // step 2 — m1: the work log + the Completed marker (the answer is cut).
         // SILENT: the notification belongs to the final answer (m2) only.
-        await this.sendPersistent(chatId, blocksToMd(this.log, { bottom }), { disableNotification: true });
+        await this.sendPersistent(chatId, blocksToMd(this.log, { bottom, tokens: this.runTokens() }), { disableNotification: true });
         // step 3 — m2: the final answer, its own message — the only send that notifies.
         await this.sendPersistent(chatId, this.tail);
         return;
       }
       const tail = this.endKind === "error" && this.tail.trim() ? `${this.tail.trimEnd()}\n\n⚠ incomplete` : this.tail;
-      const md = blocksToMd(this.log, { tail, bottom }); // full content — chunked, never tailView-capped
+      const md = blocksToMd(this.log, { tail, bottom, tokens: this.runTokens() }); // full content — chunked, never tailView-capped
       if (md.trim())
         // D4: a stop end's message is SILENT (no notification) — an error end
         // notifies (the error is the final word the user must see).
@@ -800,6 +871,7 @@ export class Mirror {
     return blocksToMd(this.log, {
       tail: this.tail,
       bottom: bottom ?? this.currentBottom(),
+      tokens: this.runTokens(),
     });
   }
 

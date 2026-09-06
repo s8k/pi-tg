@@ -62,13 +62,14 @@ test("stop: waitForIdle rejects (context gone) → no stamp, no crash", async ()
   assert.ok(!out.calls.some((c) => c.kind === "edit"), "no stamp when the wait fails");
 });
 
-test("status: card format 🆔/📁/🤖/📖/📨, plain session name, rounded context percent", async () => {
+test("status: card format 🆔/📁/🤖/📖/📨/🪙, plain session name, rounded context percent, session tokens", async () => {
   const pi = new FakePi({
     cwd: "/proj",
     model: { id: "m1", name: "Model One", provider: "p", reasoning: false },
     thinking: "high",
     contextUsage: { tokens: 90720, contextWindow: 120000, percent: 75.6 }, // → rounds to 76%
     messageCount: 171,
+    sessionUsage: { input: 12500, output: 128000 }, // → human-formatted ↑12.5k ↓128k
   });
   const out = new FakeOut();
   await new SessionBridge(makeDeps(pi.build(), out)).dispatch({ kind: "status", chatId: 7 });
@@ -78,7 +79,8 @@ test("status: card format 🆔/📁/🤖/📖/📨, plain session name, rounded 
     "📁 dir: <code>/proj</code>",
     "🤖 model: Model One · 🧠 thinking: high",
     "📖 context: 76% (90720/120000)",
-    "📨 messages: 171",
+    "🪙 tokens: ↑12.5k ↓128k", // session cumulative, ALWAYS shown (↑0 ↓0 proves the wiring is live)
+    "📨 messages: 171", // tokens sit ABOVE the messages line
   ]);
 
   // busy + muted + no model + no context usage
@@ -89,6 +91,7 @@ test("status: card format 🆔/📁/🤖/📖/📨, plain session name, rounded 
   assert.equal(lines2[0], "🆔 My &lt;sess&gt; — busy · 🔇 muted");
   assert.equal(lines2[2], "🤖 model: n/a · 🧠 thinking: default");
   assert.equal(lines2[3], "📖 context: n/a");
+  assert.equal(lines2[4], "🪙 tokens: ↑0 ↓0"); // no usage yet → zeros, still shown, above the messages line
 });
 
 test("status: 🔥 GPU line from probeGpu (single + multi); omitted when probe unavailable", async () => {
@@ -101,24 +104,27 @@ test("status: 🔥 GPU line from probeGpu (single + multi); omitted when probe u
   };
   const gpu = { tempC: 67, utilPct: 96, memUsedGb: 14.19140625, memTotalGb: 24 };
 
-  // makeDeps default: probe unavailable → no GPU line
+  // makeDeps default: probe unavailable → no GPU line (base has no sessionUsage → ↑0 ↓0)
   const out0 = new FakeOut();
   await new SessionBridge(makeDeps(new FakePi(base).build(), out0)).dispatch({ kind: "status", chatId: 7 });
-  assert.equal(lastSend(out0).split("\n").length, 5);
+  const l0 = lastSend(out0).split("\n");
+  assert.equal(l0.length, 6); // 🆔 📁 🤖 📖 🪙 📨
+  assert.equal(l0[4], "🪙 tokens: ↑0 ↓0");
+  assert.ok(l0[5].startsWith("📨 messages: "));
 
   const out1 = new FakeOut();
   const deps1 = makeDeps(new FakePi(base).build(), out1);
   deps1.probeGpu = async () => [gpu];
   await new SessionBridge(deps1).dispatch({ kind: "status", chatId: 7 });
-  assert.equal(lastSend(out1).split("\n")[5], "🔥 GPU: 67°C · 96% · 14.2/24.0 GB");
+  assert.equal(lastSend(out1).split("\n")[6], "🔥 GPU: 67°C · 96% · 14.2/24.0 GB");
 
   const out2 = new FakeOut();
   const deps2 = makeDeps(new FakePi(base).build(), out2);
   deps2.probeGpu = async () => [gpu, { tempC: 72, utilPct: 50, memUsedGb: 8, memTotalGb: 24 }];
   await new SessionBridge(deps2).dispatch({ kind: "status", chatId: 7 });
   const lines = lastSend(out2).split("\n");
-  assert.ok(lines[5].startsWith("🔥 GPU 0: 67°C"));
-  assert.ok(lines[6].startsWith("🔥 GPU 1: 72°C"));
+  assert.ok(lines[6].startsWith("🔥 GPU 0: 67°C"));
+  assert.ok(lines[7].startsWith("🔥 GPU 1: 72°C"));
 });
 
 test("pair: sets ownerId, sends welcome + card + help", async () => {

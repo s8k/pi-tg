@@ -112,10 +112,10 @@ test("compact: spinner draft (canStop, keepOnStop) + stamped persistent result",
   await new Promise((r) => setTimeout(r, 0));
   const stamp = out.calls[out.calls.length - 2]!;
   assert.equal(stamp.kind, "sendDraft", "the draft is stamped with the final state first");
-  assert.equal(stamp.text, "🗜 Context compacted ✔️ — 12,345 → 1,024 tokens");
+  assert.equal(stamp.text, "🗜 Context compacted ✔️ 12,345 → 1,024 tokens");
   const last = out.calls[out.calls.length - 1]!;
   assert.equal(last.kind, "send"); // "stamp and save": a normal persistent message (also clears the draft)
-  assert.equal(last.text, "🗜 Context compacted ✔️ — 12,345 → 1,024 tokens");
+  assert.equal(last.text, "🗜 Context compacted ✔️ 12,345 → 1,024 tokens");
   assert.equal(last.opts?.parseMode, null); // detail is free text — no HTML parse
 });
 

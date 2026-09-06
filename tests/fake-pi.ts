@@ -12,6 +12,7 @@ export interface FakePiOptions {
   sessionPath?: string;
   messageCount?: number;
   contextUsage?: PiContextUsage;
+  sessionUsage?: { input: number; output: number };
   sessions?: PiSessionInfo[];
   modelSetResult?: boolean;
 }
@@ -77,6 +78,7 @@ export class FakePi {
       setThinkingLevel: (level) => self.setThinkings.push(level),
       contextUsage: () => self.opts.contextUsage,
       messageCount: () => self.opts.messageCount ?? 0,
+      sessionUsage: () => self.opts.sessionUsage ?? { input: 0, output: 0 },
       listSessions: async () => self.opts.sessions ?? [],
       currentSessionPath: () => self.opts.sessionPath ?? "/proj/current.jsonl",
       notifyUi: (text, level) => self.uiNotices.push({ text, level }),

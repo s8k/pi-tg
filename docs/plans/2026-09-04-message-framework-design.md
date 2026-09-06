@@ -124,8 +124,9 @@ The run's own end; the live draft becomes the persistent message(s).
 revised on 2026-09-05: the error end finalizes AT `agent_settled`, the
 grace timer is the backstop for a lost settled.)
 
-- **D1/D2 — clean end:** m1 = log + `Completed ✔️` (silent) → m2 = the answer
-  (notifies).
+- **D1/D2 — clean end:** m1 = log + `Completed ✔️ ↑<in> ↓<out>` (silent) →
+  m2 = the answer (notifies). The token suffix is the run's cumulative usage
+  (see the bottom-line rule).
 - **D3 — error end** (provider error; the stream is over —
   `agent_settled`): single message = log + bottom line
   `⚠️ error: <msg>` (+ `⚠ incomplete` trailer if the answer is partial) —
@@ -140,6 +141,32 @@ grace timer is the backstop for a lost settled.)
   `⚠️ Request was aborted`. The ⚠️ marker appears **only** in the bottom-line
   slot — never duplicated as a line inside the log area. (This changes D3 vs
   today, where the error is also written into the log area.)
+- **Token usage on the bottom line (2026-09-05):** the spinner/status line —
+  the `<tg-thinking>` working spinner, the auto-compact C1 status and the
+  error-end spinner — carries the run's cumulative usage INSIDE the tag, on
+  the label's own line: `<tg-thinking>Thinking… ↑567 ↓12.5k</tg-thinking>`.
+  Placement is inside (not after) the tag because the rich renderer treats
+  the tag as its own line — text after the closing tag wraps to the next
+  line (observed live on the auto-compact status); inside is the only
+  same-line placement (the numbers shimmer with the label — accepted: they
+  are live telemetry, not body text). The finalized `Completed ✔️` carries
+  the run's final total as plain text (no tag — same line, static):
+  `Completed ✔️ ↑567 ↓12.5k` — the token position matches the live line
+  (right of the status word). Format: raw below 1k, one-decimal k/m above,
+  trailing `.0` dropped (`567`, `12.5k`, `1.5m`); no suffix until the first
+  usage arrives. Usage = the sum of the run's assistant-message usages (pi's
+  `Usage.input` = prompt tokens `↑`, `Usage.output` = completion tokens
+  `↓` — reasoning tokens are already inside `output`), committed at each
+  `message_end`; the in-flight message's latest usage comes from
+  `message_update` (a textless usage-only update still refreshes the draft).
+  Cumulative across pi's auto-retries (a retry carries the run over); reset
+  when a NEW run starts. The ⚠️ outcome lines (error / aborted) carry no
+  suffix. The session card + `/status` show the session's CUMULATIVE usage
+  (all of the session's assistant messages, compaction-aware-free —
+  `TelegaPi.sessionUsage` over `sessionManager.getBranch()`) as a `🪙
+  tokens: ↑<in> ↓<out>` line ABOVE the messages line — `/status` always
+  shows it (`↑0 ↓0` proves the wiring is live); the card omits it while
+  zero.
 
 ### E — System
 
@@ -177,7 +204,7 @@ Documented exceptions (confirmed with user):
 | Stamp kind | Pattern | Mechanism | Example |
 |---|---|---|---|
 | edit-stamp | A | same message text + ` ✔️` (editMessageText / draft re-send) | `⏹️ Stopping…` → `⏹️ Stopping… ✔️` |
-| draft-stamp | B | draft status text **replaced** by the success message, then draft finalized | `🗜 Compacting context…` → `🗜 Context compacted ✔️ — <detail>` |
+| draft-stamp | B | draft status text **replaced** by the success message, then draft finalized | `🗜 Compacting context…` → `🗜 Context compacted ✔️ <detail>` |
 | log-stamp | C | stamped line appended to the log area as a regular line; spinner restored | log += `🗜 Context auto-compacted ✔️ — <detail>` |
 | bottom-line stamp | D | live-spinner slot becomes the outcome | `⋯ Thinking…` → `Completed ✔️` |
 
@@ -206,7 +233,7 @@ file in the same change (and note it under "Change log" at the bottom).
 
 | # | Trigger | Message | Notify |
 |---|---|---|---|
-| D1 | clean end | m1: log + `Completed ✔️` | ❌ |
+| D1 | clean end | m1: log + `Completed ✔️ ↑<in> ↓<out>` | ❌ |
 | D2 | clean end | m2: the answer, verbatim | 🔔 |
 | D3 | provider error (retry window expired) | log + bottom line `⚠️ error: <msg>` (+ `⚠ incomplete` if partial answer) | 🔔 |
 | D4 | aborted (`/stop`, `/compact`-mid-run, `/new`-mid-run) | log + bottom line `⚠️ Request was aborted` (bottom line **only**) | ❌ |
@@ -239,7 +266,7 @@ file in the same change (and note it under "Change log" at the bottom).
 
 | # | Trigger | Lifecycle | Notify |
 |---|---|---|---|
-| B1 | `/compact` (idle) | draft `🗜 Compacting context…` → draft-stamp `🗜 Context compacted ✔️ — <detail>` → persist | 🔔 (final) |
+| B1 | `/compact` (idle) | draft `🗜 Compacting context…` → draft-stamp `🗜 Context compacted ✔️ <detail>` → persist | 🔔 (final) |
 | B2 | `/compact` (busy) | **D4 (silent)** → B1 | 🔔 (B1 final) |
 | B3 | `/compact` (already running) | `🗜 Compaction already in progress — use the Stop button to abort` | 🔔 |
 | B4 | compact cancelled (Stop) | `⚠️ Compaction cancelled` | 🔔 |
@@ -320,7 +347,7 @@ Per-command changes. "Today" = working tree at 2026-09-04.
 - **B1:** lifecycle change — today: the compact draft stays
   `<tg-thinking>🗜 Compacting context…</tg-thinking>` until `finishCompact`
   sends a **new** persistent message and clears the draft. Target: the draft
-  is **updated to the stamped text** `🗜 Context compacted ✔️ — <detail>`
+  is **updated to the stamped text** `🗜 Context compacted ✔️ <detail>`
   first, then finalized (persistent send of that text, draft cleared). The
   persistent message therefore shows the stamped state (today it shows it
   too, but the draft preview never showed the stamp — now it does, briefly).
@@ -486,7 +513,7 @@ Order matters: T1 before T6 (lane 2 renders into the same bottom line).
   2. run + `/stop` → silent final with `⚠️ Request was aborted` bottom line,
      `⏹️ Stopping…` ping → edit-stamped `✔️`;
   3. `/compact` idle → draft `🗜 Compacting context…` → draft-stamped
-     `🗜 Context compacted ✔️ — <detail>` → persistent ping;
+     `🗜 Context compacted ✔️ <detail>` → persistent ping;
   4. `/compact` busy → silent D4, then lane-1 compact;
   5. big prompt after a full-ish context (triggers pre-run auto-compact) →
      early draft shows `🗜 Auto-compacting…` → stamped line visible in the
@@ -585,3 +612,38 @@ Order matters: T1 before T6 (lane 2 renders into the same bottom line).
   with the B6 message. Deliberately NOT gated: in-run auto-compact (see the
   C-section note — the prompt is steer-queued and delivered after the
   compact). Tests: 3 new (`bridge-compact`).
+- 2026-09-05 — string change (user request): the MANUAL compact success
+  drops the ` — ` separator before the detail: `🗜 Context compacted ✔️
+  <detail>` (draft-stamp and persistent final, B1). The AUTO string keeps
+  the separator (`🗜 Context auto-compacted ✔️ — <detail>`). Tests:
+  expectations updated in `bridge-compact` / `bridge-misc`.
+- 2026-09-05 — token usage display (user request): the run's cumulative
+  token usage — ` ↑<input> ↓<output>`, human-formatted (raw below 1k,
+  one-decimal k/m above, trailing `.0` dropped: `567`, `12.5k`, `1.5m`) —
+  is shown on (a) the live draft's bottom line while working: the
+  `<tg-thinking>` spinner, the auto-compact C1 status and the error-end
+  spinner — INSIDE the tag, on the label's own line (`<tg-thinking>
+  Thinking… ↑567 ↓12.5k</tg-thinking>`; the rich renderer treats the tag as
+  its own line — text after the closing tag wraps below, observed live —
+  so inside is the only same-line placement; the numbers shimmer with the
+  label), and (b) the finalized `Completed ✔️` line (m1) — `Completed ✔️
+  ↑567 ↓12.5k` (plain text, no tag — same line, static). Data: the sum of the run's assistant-message usages (pi's
+  `Usage.input`/`Usage.output`; reasoning is already inside `output`),
+  committed at each `message_end`, the in-flight message's latest usage
+  taken from `message_update` (a textless usage-only update still refreshes
+  the draft). Cumulative across pi's auto-retries; reset when a new run
+  starts. Provider caveat (verified in the pi-ai dist): OpenAI-compatible
+  providers (`stream_options: {include_usage: true}`) report usage only in
+  the stream's FINAL chunk — the in-flight message is 0/0 until the message
+  completes, so the suffix appears at the first message end (late for a
+  single-shot answer, early for multi-turn/tool runs); Anthropic reports
+  input at `message_start`, output growing per `message_delta`. The ⚠️
+  outcome lines (error / aborted) carry no suffix. Session card + `/status` (user request: tokens ABOVE the
+  messages line in any session card): both get a `🪙 tokens: ↑<in> ↓<out>`
+  line (session cumulative — `TelegaPi.sessionUsage()`, full branch,
+  assistant messages only, wired over `sessionManager.getBranch()`, the
+  same non-compaction-aware source as `messageCount`) ABOVE the messages
+  line — `/status` ALWAYS shows it (`↑0 ↓0` proves the wiring is live);
+  the card omits it while zero. `fmtTokens` exported from `mirror.ts` (shared by the mirror and the
+  bridge). Tests: 12 new (`mirror-tokens` ×8, `bridge-card-tokens` ×3,
+  `wiring` ×1) + the two `bridge-core` /status tests extended.

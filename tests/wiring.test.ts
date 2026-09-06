@@ -295,3 +295,21 @@ test("makeOut: sendDraft → passthrough (draftId + canStop + keepOnStop), no ad
   assert.deepEqual(calls[0], ["draft", 7, 3, { markdown: "working" }, true, true]);
   assert.deepEqual(state.sentIds(), []);
 });
+
+test("makeTelegaPi: sessionUsage sums assistant usage across the session branch", () => {
+  const ctx = makeFakeCtx({
+    sessionManager: {
+      getSessionFile: () => "/proj/s.jsonl",
+      getSessionName: () => undefined,
+      getBranch: () => [
+        { type: "message", message: { role: "user", content: "hi" } },
+        { type: "message", message: { role: "assistant", usage: { input: 100, output: 200 } } },
+        { type: "message", message: { role: "assistant", usage: { input: 50, output: 75 } } },
+        { type: "message", message: { role: "assistant" } }, // pending — no usage yet
+        { type: "compaction" },
+      ],
+    },
+  });
+  const t = makeTelegaPi({ pi: {} as PiLike, getCmdCtx: () => ctx, getSessionCtx: () => undefined, listSessions: async () => [] });
+  assert.deepEqual(t.sessionUsage(), { input: 150, output: 275 });
+});

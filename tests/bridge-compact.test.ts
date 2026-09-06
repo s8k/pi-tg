@@ -30,10 +30,10 @@ test("compact (idle): spinner draft first, then the stamped persistent result", 
   const stamp = out.calls[out.calls.length - 2]!;
   assert.equal(stamp.kind, "sendDraft", "the draft is stamped before the send");
   assert.equal(stamp.draftId, 1_000_001);
-  assert.equal(stamp.text, "🗜 Context compacted ✔️ — 12,345 → 1,024 tokens");
+  assert.equal(stamp.text, "🗜 Context compacted ✔️ 12,345 → 1,024 tokens");
   const last = out.calls[out.calls.length - 1]!;
   assert.equal(last.kind, "send");
-  assert.equal(last.text, "🗜 Context compacted ✔️ — 12,345 → 1,024 tokens");
+  assert.equal(last.text, "🗜 Context compacted ✔️ 12,345 → 1,024 tokens");
   assert.equal(last.opts?.parseMode, null);
 
   // the state is cleared — a new /compact starts fresh (next draft id)
@@ -74,9 +74,9 @@ test("compact (busy): compact is triggered FIRST, the draft waits for waitForIdl
   await tick();
   const stamp = out.calls[out.calls.length - 2]!;
   assert.equal(stamp.kind, "sendDraft", "the draft is stamped before the send");
-  assert.equal(stamp.text, "🗜 Context compacted ✔️ — 9,000 → 800 tokens");
+  assert.equal(stamp.text, "🗜 Context compacted ✔️ 9,000 → 800 tokens");
   assert.equal(out.calls[out.calls.length - 1]?.kind, "send");
-  assert.equal(out.calls[out.calls.length - 1]?.text, "🗜 Context compacted ✔️ — 9,000 → 800 tokens");
+  assert.equal(out.calls[out.calls.length - 1]?.text, "🗜 Context compacted ✔️ 9,000 → 800 tokens");
 });
 
 test("compact (busy) → Stop while waiting for the run to settle: no draft, plain cancellation stamp", async () => {
@@ -166,7 +166,7 @@ test("compact: a failed draft send does not block the compaction (no draft, resu
   // the draft never went up (draftId 0) — no stamp, only the persistent send
   const sends = out.calls.filter((c) => c.kind === "send");
   assert.equal(sends.length, 1);
-  assert.equal(sends[0]!.text, "🗜 Context compacted ✔️ — 1,000 → 100 tokens");
+  assert.equal(sends[0]!.text, "🗜 Context compacted ✔️ 1,000 → 100 tokens");
 });
 
 test("compact: fast onDone during the draft send — no crash, result still stamped once", async () => {
@@ -183,7 +183,7 @@ test("compact: fast onDone during the draft send — no crash, result still stam
   await tick(); // finishCompact (async) completes its stamp+send chain
   const sends = out.calls.filter((c) => c.kind === "send");
   assert.equal(sends.length, 1, "exactly one stamped result");
-  assert.equal(sends[0]!.text, "🗜 Context compacted ✔️ — 500 → 50 tokens");
+  assert.equal(sends[0]!.text, "🗜 Context compacted ✔️ 500 → 50 tokens");
   // a later duplicate callback must be a no-op
   pi.compactDone?.(true, "again");
   await tick();

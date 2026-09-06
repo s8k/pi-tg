@@ -28,7 +28,7 @@ export interface CtxLike {
   sessionManager: {
     getSessionFile(): string | undefined;
     getSessionName(): string | undefined;
-    getBranch(): { type: string }[];
+    getBranch(): { type: string; message?: unknown }[];
   };
   ui: { notify(message: string, level?: "info" | "warning" | "error"): void };
   // command-context-only (absent on the plain session context):
@@ -203,6 +203,21 @@ export function makeTelegaPi(deps: TelegaPiDeps): TelegaPi {
       return { tokens: u.tokens, contextWindow: u.contextWindow, percent: u.percent };
     },
     messageCount: () => (ctx()?.sessionManager.getBranch() ?? []).filter((e) => e.type === "message").length,
+    // The session's cumulative tokens (the card's ` ↑<in> ↓<out>`): the FULL
+    // branch (getBranch is not compaction-aware — every assistant message of
+    // the session's life counts, like messageCount), assistant role only.
+    sessionUsage: () => {
+      let input = 0;
+      let output = 0;
+      for (const e of ctx()?.sessionManager.getBranch() ?? []) {
+        if (e.type !== "message") continue;
+        const m = e.message as { role?: string; usage?: { input?: number; output?: number } } | undefined;
+        if (m?.role !== "assistant") continue;
+        input += m.usage?.input ?? 0;
+        output += m.usage?.output ?? 0;
+      }
+      return { input, output };
+    },
     listSessions: () => deps.listSessions(ctx()?.cwd ?? ""),
     currentSessionPath: () => ctx()?.sessionManager.getSessionFile() ?? "",
     notifyUi(text, level) {

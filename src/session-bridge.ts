@@ -8,7 +8,7 @@ import { pairWelcome, notAuthorizedText } from "./onboarding.ts";
 import { escapeHtml } from "./markdown.ts";
 import { formatGpuLines, type GpuStats } from "./gpu.ts";
 import { COMPACT_CANCELLED_MSG } from "./compact.ts";
-import { AUTO_COMPACT_STATUS, AUTO_COMPACT_DONE_TEXT } from "./mirror.ts";
+import { AUTO_COMPACT_STATUS, AUTO_COMPACT_DONE_TEXT, fmtTokens } from "./mirror.ts";
 
 export interface PiModelInfo {
   model: PiModel;
@@ -60,6 +60,8 @@ export interface TelegaPi {
   setThinkingLevel(level: PiThinkingLevel): void;
   contextUsage(): PiContextUsage | undefined;
   messageCount(): number;
+  /** The session's cumulative token usage (sum over its assistant messages). */
+  sessionUsage(): { input: number; output: number };
   listSessions(): Promise<PiSessionInfo[]>;
   currentSessionPath(): string;
   notifyUi(text: string, level?: "info" | "warning" | "error"): void;
@@ -197,7 +199,7 @@ export class SessionBridge {
     this.clearCompactHeartbeat();
     const cancelled = !ok && detail === COMPACT_CANCELLED_MSG;
     const text = ok
-      ? `🗜 Context compacted ✔️${detail ? ` — ${detail}` : ""}`
+      ? `🗜 Context compacted ✔️${detail ? ` ${detail}` : ""}`
       : cancelled
         ? "⚠️ Compaction cancelled"
         : `⚠️ Compaction Failed${detail ? `: ${detail}` : "."}`;
@@ -359,10 +361,18 @@ export class SessionBridge {
     const model = pi.currentModel();
     const usage = pi.contextUsage();
     const name = pi.getSessionName() ?? "Untitled session";
+    // The session's cumulative tokens (the same ` ↑<in> ↓<out>` display the
+    // mirror's bottom line uses); omitted until the first usage arrives.
+    const tokens = pi.sessionUsage();
+    // The tokens line (🪙, same format as /status) sits ABOVE the messages
+    // line; omitted while the session has no usage yet (the card stays
+    // minimal — /status shows zeros, the card does not).
+    const hasTokens = tokens.input > 0 || tokens.output > 0;
     return [
       `📌 <b>${escapeHtml(name)}</b>`,
       `<code>${escapeHtml(pi.cwd)}</code>`,
       `${model ? escapeHtml(model.name) : "no model"} · thinking: ${pi.currentThinking() ?? "default"}`,
+      ...(hasTokens ? [`🪙 tokens: ↑${fmtTokens(tokens.input)} ↓${fmtTokens(tokens.output)}`] : []),
       `${pi.messageCount()} messages${usage?.percent != null ? ` · context ${usage.percent}%` : ""}`,
     ].join("\n");
   }
@@ -389,11 +399,15 @@ export class SessionBridge {
     const model = pi.currentModel();
     const usage = pi.contextUsage();
     const name = pi.getSessionName() ?? "Untitled session";
+    const tokens = pi.sessionUsage();
     const lines = [
       `🆔 ${escapeHtml(name)} — ${pi.isIdle() ? "idle" : "busy"}${cfg.muted ? " · 🔇 muted" : ""}`,
       `📁 dir: <code>${escapeHtml(pi.cwd)}</code>`,
       `🤖 model: ${model ? escapeHtml(model.name) : "n/a"} · 🧠 thinking: ${pi.currentThinking() ?? "default"}`,
       `📖 context: ${usage?.percent != null ? `${Math.round(usage.percent)}%` : "n/a"}${usage?.tokens != null ? ` (${usage.tokens}/${usage.contextWindow})` : ""}`,
+      // The session's cumulative tokens (same source as the card) sit ABOVE
+      // the messages line. ALWAYS shown — `↑0 ↓0` proves the wiring is live.
+      `🪙 tokens: ↑${fmtTokens(tokens.input)} ↓${fmtTokens(tokens.output)}`,
       `📨 messages: ${pi.messageCount()}`,
     ];
     // Bounded by the probe's own short timeout; unavailable → line omitted.
