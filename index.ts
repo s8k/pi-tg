@@ -80,7 +80,7 @@ export default function piTelega(pi: ExtensionAPI): void {
   let currentMirror: Mirror | undefined;
   // T6 auto-compact lane, chosen at session_before_compact (auto): where the
   // result events land — the live run's draft (mirror) or the bridge's
-  // standalone draft (bridge). Undefined = nothing to report (muted /
+  // standalone draft (bridge). Undefined = nothing to report (mute level /
   // unpaired / manual / no result yet).
   let autoCompactLane: "mirror" | "bridge" | undefined;
 

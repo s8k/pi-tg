@@ -52,7 +52,10 @@
  *  - notifications are state-change only: first failure, one re-note per 5
  *    min while failing, one recovery note.
  *
- * Mute = fully silent: no drafts, no final messages.
+ * Mute level = fully silent: no drafts, no final messages.
+ * Minimal = visible text only: the draft streams narration + answer (no tool
+ * or thinking lines), and a clean end finalizes as ONE persistent message
+ * instead of the m1/m2 split (see finalize).
  */
 import type { Out } from "./session-bridge.ts";
 import type { TelegaState } from "./state.ts";
@@ -449,7 +452,7 @@ export class Mirror {
   /**
    * Resolves once the current run has fully settled: its finalization has
    * run to completion, i.e. every persistent send of the finalized message
-   * has been delivered (muted / no chat / already finalized → immediately).
+   * has been delivered (mute level / no chat / already finalized → immediately).
    * Needed because pi's extension runner does NOT await this mirror's
    * fire-and-forget handlers, so `ctx.waitForIdle()` alone resolves before
    * the finalized message has reached Telegram (a /compact draft sent in
@@ -515,7 +518,7 @@ export class Mirror {
 
   /**
    * Spawn the run's draft (spinner) — or no-op when there is nothing to
-   * spawn: muted / not paired yet / a draft is ALREADY live. That last case
+   * spawn: mute level / not paired yet / a draft is ALREADY live. That last case
    * is the early draft (onPromptAccepted) being taken over by agent_start
    * (same draft id, no second spawn) — or the retry continuation taking over
    * the live error-end draft.
@@ -860,7 +863,7 @@ export class Mirror {
         // notifies (the error is the final word the user must see).
         await this.sendPersistent(chatId, md, { disableNotification: this.endKind === "stop" });
     } finally {
-      // Every exit path (muted, no chat, sends done, sends threw after all
+      // Every exit path (mute level, no chat, sends done, sends threw after all
       // retries) releases the settlement waiters — a hung promise would hang
       // the bridge's poll loop forever.
       settle?.();

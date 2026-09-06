@@ -54,8 +54,9 @@ phone (Telegram) ⇄ Bot API long polling ⇄ pi-telega (in-process) ⇄ pi TUI 
 | `/thinking` | available thinking levels with buttons |
 | `/status` | session, dir, model, thinking, context usage, message count, busy state, GPU temp/util/memory (NVIDIA, if available) |
 | `/stop` | abort the current turn |
-| `/mute` | stop agent output (draft, tools, answers); commands still work |
-| `/unmute` | resume agent output |
+| `/level_mute` | output level: mute — no agent output (commands still work) |
+| `/level_minimal` | output level: minimal — visible text only (no tools, no thinking) |
+| `/level_full` | output level: full — tool log + final answer (default) |
 | `/compact` | compact context (result reported when done) |
 | `/reload` | hot-reload extensions, skills, prompts, themes, context files (idle only; ✔️ stamp + card = success) |
 | `/name <text>` | rename the session |
@@ -89,7 +90,7 @@ Env `PI_TELEGA_BOT_TOKEN` overrides the stored token.
 | `ownerId` | — | Telegram user ID allowed to drive the bot |
 | `streamEditMs` | `1500` | throttle for rich-draft updates |
 | `askClearOnSwitch` | `true` | ask “clear?” when switching sessions |
-| `muted` | `false` | agent output suppressed (`/mute`/`/unmute` from the phone) |
+| `level` | `"full"` | agent output level: `mute` / `minimal` / `full` (set from the phone; legacy `muted` still migrates: true → `mute`, false → `full`) |
 | `maxSessionList` | `20` | `/sessions` list cap |
 | `draftHeartbeatMs` | `17000` | rich-draft re-send cadence in ms (keeps the ephemeral draft alive; out-of-range 5000..25000 → default) |
 | `codeFoldLines` | `25` | code fences whose body has more than N lines collapse into a closed `<details>` (out-of-range 5..500 → default) |
