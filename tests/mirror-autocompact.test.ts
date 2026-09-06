@@ -133,6 +133,8 @@ test("lane 2 (overflow-with-retry): the grace is suspended during the compact; t
   const o4 = m1.indexOf("⚙ bash ✖");
   const o5 = m1.indexOf("Completed ✔️");
   assert.ok(o1 < o2 && o2 < o3 && o3 < o4 && o4 < o5, `wrong order in m1: ${m1}`);
+  const oDiv = m1.indexOf("---", o3);
+  assert.ok(oDiv > o3 && oDiv < o4, `the --- separates the carried error from the retried block: ${m1}`);
 });
 
 test("lane 2: failed → the draft reverts to the error state; the grace is re-armed", async () => {

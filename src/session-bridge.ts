@@ -458,6 +458,15 @@ export class SessionBridge {
             action.chatId,
             "🗜 Compaction already in progress — resend your prompt after it finishes"
           );
+          // A plain send dismisses the pending rich draft (Bot API behavior —
+          // field report: the "Compacting context…" draft vanished until the
+          // next heartbeat tick). Re-raise the SAME draft immediately so it
+          // comes back right after the rejection. Re-read the state: compact
+          // may have finished during the awaited send (then there is no
+          // draft to restore).
+          const c = this.compactState;
+          if (c && c.draftId !== 0)
+            void out.sendDraft(c.chatId, c.draftId, COMPACT_DRAFT_MD, true, true).catch(() => {});
           return;
         }
         // T6 early draft: the spinner goes out as soon as the prompt is
@@ -466,7 +475,7 @@ export class SessionBridge {
         this.deps.onPromptAccepted?.();
         const busy = !pi.isIdle();
         pi.sendPrompt(action.text, busy ? "steer" : "now");
-        if (busy) await out.send(action.chatId, "⚡ queued (applies after current tool step)");
+        if (busy) await out.send(action.chatId, "⚡️ Message queued");
         return;
       }
       case "status":

@@ -127,8 +127,12 @@ export type BottomLine =
  *  - error / aborted (finalized end states, D3/D4): [blocks]
  *    [tail (+ ⚠ incomplete)] [⚠️ line] — the ⚠️ line is the BOTTOM line
  *    (LAST), never a log-area block: `⚠️ error: <msg>` for error ends,
- *    `⚠️ Request was aborted` for stop ends. (On a pi retry the carried
- *    error becomes a log block — see Mirror.onAgentStart.)
+ *    `⚠️ Request was aborted` for stop ends. The PERSISTENT error message
+ *    ends with a `---` when it has content beyond the bare ⚠️ line (the
+ *    aborted bottom never gets one). (On a pi retry the carried error
+ *    becomes a log block — see Mirror.onAgentStart — and it keeps a `---`
+ *    AFTER it whenever content follows, so the retry-window divider does
+ *    not vanish when the retry's first block lands.)
  * The SAME builder renders live drafts and the final persistent send, so
  * the finalize transition cannot drift from what the draft showed.
  */
@@ -152,8 +156,20 @@ function tokensSuffix(t?: { input: number; output: number }): string {
 
 export function blocksToMd(log: LogBlock[], opts: { tail?: string; bottom: BottomLine; tokens?: { input: number; output: number } }): string {
   const suffix = tokensSuffix(opts.tokens);
-  const parts = log.map((b) => (b.type === "tool" ? renderToolBlock(b) : b.text));
   const tail = opts.tail && opts.tail.trim() ? opts.tail : undefined;
+  const bottomText = bottomLineText(opts.bottom);
+  const parts: string[] = [];
+  log.forEach((b, i) => {
+    parts.push(b.type === "tool" ? renderToolBlock(b) : b.text);
+    // A carried-over ⚠️ error entry (Mirror.onAgentStart moves the failed
+    // run's bottom line into the log on a pi retry) keeps the full-width
+    // divider AFTER it whenever content follows — new tool blocks, the
+    // answer, the spinner, or a bottom line. Without this, the divider the
+    // retry window showed (⚠️ → --- → spinner) would vanish the moment the
+    // retry's first block lands. The last entry only gets one when something
+    // actually renders after it.
+    if (b.type === "agentError" && (i < log.length - 1 || Boolean(tail) || bottomText !== "")) parts.push("---");
+  });
   if (opts.bottom.kind === "done") {
     parts.push(`Completed ✔️${suffix}`);
     if (tail) parts.push(tail); // no divider — the answer is its own message
@@ -170,7 +186,10 @@ export function blocksToMd(log: LogBlock[], opts: { tail?: string; bottom: Botto
     return parts.join("\n\n");
   }
   if (opts.bottom.kind === "thinking" || opts.bottom.kind === "compact") {
-    if (parts.length > 0) parts.push("\u00a0"); // text above the spinner → an extra blank line
+    // text above the spinner → an extra blank line (skipped after a divider —
+    // the --- already separates, so the spinner sits directly under it, the
+    // same layout as the retry window)
+    if (parts.length > 0 && parts[parts.length - 1] !== "---") parts.push("\u00a0");
     // The run's tokens go INSIDE the tag (same line — the renderer wraps
     // trailing text below the tag); the label's shimmer covers the numbers
     // too, which is fine: they're live telemetry, not body text.
@@ -180,6 +199,12 @@ export function blocksToMd(log: LogBlock[], opts: { tail?: string; bottom: Botto
   }
   const bottom = bottomLineText(opts.bottom);
   if (bottom) parts.push(bottom);
+  // The PERSISTENT error message ends with a full-width divider — but only
+  // when the message has content beyond the bare ⚠️ line (user request: a
+  // tool log / partial answer above the error gets closed off from whatever
+  // follows in the chat; a bare error stays bare). The ⚠️-aborted bottom
+  // never gets one, and a divider without the ⚠️ line would be a stray rule.
+  if (opts.bottom.kind === "error" && bottom && parts.length > 1) parts.push("---");
   return parts.join("\n\n");
 }
 

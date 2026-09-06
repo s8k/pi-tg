@@ -257,7 +257,7 @@ file in the same change (and note it under "Change log" at the bottom).
 | A12 | expired lists | `⚠️ List expired — send /sessions again.` / `⚠️ List expired — send /models again.` | 🔔 |
 | A13 | model set | `✓ Model set to <name>.` / `⚠️ Unknown model: <id>` | 🔔 |
 | A14 | thinking set / `/name` | ack / `📌 Renamed to <name>.` / `Usage: /name <text>` | 🔔 |
-| A15 | prompt while busy (steer) | `⚡ queued (applies after current tool step)` | 🔔 |
+| A15 | prompt while busy (steer) | `⚡️ Message queued` | 🔔 |
 | A16 | `/mute` / `/unmute` | `🔇 Muted — I won't post agent output for this chat until you send /unmute. Commands still work.` / `🔊 Unmuted — agent output is back on.` | 🔔 |
 | A17 | `/shutdown` | `⚠️ This terminates the pi process — the bot goes silent until pi restarts. Sure?` → `OK — pi keeps running.` / `👋 Shutting down pi… (bot goes silent)` | 🔔 |
 | A18 | `/help` / `/status` / unknown | help text / status text / `Unknown command /<x> — see /help` | 🔔 |
@@ -576,8 +576,13 @@ Order matters: T1 before T6 (lane 2 renders into the same bottom line).
     markdown horizontal line; safe here because the ⚠️ line sits between
     the tool blocks and the line — the old rejection was a bare `---`
     directly above the spinner, colliding with the `<details>` handle),
-    then the `<tg-thinking>` spinner. The divider + spinner are live-draft
-    only: the persistent message is unchanged (⚠️ line last, no divider).
+    then the `<tg-thinking>` spinner. The spinner is live-draft only; the
+    divider ALSO closes the persistent error message (2026-09-05, user
+    request — see change log): the persistent m1 ends with a `---` line
+    whenever the message has content beyond the bare ⚠️ line (tool blocks,
+    narration, partial answer — or a carried-over ⚠️ entry); a bare error
+    message (⚠️ line only) stays bare, and the ⚠️-aborted bottom never
+    gets one.
   - `currentBottom`: the C1 status (`autoCompacting`) now also takes
     precedence over a live error end (the overflow-recovery compact runs
     while the error end is open; the draft shows the compact, not the error
@@ -612,11 +617,50 @@ Order matters: T1 before T6 (lane 2 renders into the same bottom line).
   with the B6 message. Deliberately NOT gated: in-run auto-compact (see the
   C-section note — the prompt is steer-queued and delivered after the
   compact). Tests: 3 new (`bridge-compact`).
+- 2026-09-05 — B6 draft re-raise (field report): a plain send (such as the
+  B6 rejection message) dismisses the pending rich draft on the Bot API
+  side — after the rejection the "🗜 Compacting context…" draft vanished
+  until the next heartbeat tick (~5 s at the minimum
+  `draftHeartbeatMs`). Fix: the B6 gate re-raises the SAME compact draft
+  (same draftId, `COMPACT_DRAFT_MD`) immediately after the rejection send;
+  nothing is re-raised if the compact finished during the awaited send
+  (state gone / no draft yet). Tests: 1 new + the existing B6 test
+  extended (`bridge-compact`).
 - 2026-09-05 — string change (user request): the MANUAL compact success
   drops the ` — ` separator before the detail: `🗜 Context compacted ✔️
   <detail>` (draft-stamp and persistent final, B1). The AUTO string keeps
   the separator (`🗜 Context auto-compacted ✔️ — <detail>`). Tests:
   expectations updated in `bridge-compact` / `bridge-misc`.
+- 2026-09-05 — string change (user request): the steer acknowledgement
+  (A15, prompt while busy) is renamed `⚡ queued (applies after current
+  tool step)` → `⚡️ Message queued`. Test: expectation updated in
+  `bridge-core`.
+- 2026-09-05 — persistent error divider (user request): the persistent
+  error message (m1, error bottom) now ENDS with a full-width `---`
+  divider line — but only when the message has content beyond the bare
+  ⚠️ line (tool blocks / narration / partial answer above the error, or a
+  carried-over ⚠️ entry from a failed attempt). A bare error (⚠️ line
+  only) stays bare; the ⚠️-aborted bottom never gets a divider; the live
+  draft's retry-window divider (⚠️ → `---` → spinner) is unchanged. In
+  `blocksToMd`'s finalized-bottom branch: push `"---"` after the ⚠️ line
+  when `parts.length > 1`. Tests: `mirror-end` ×2 updated + bare-error
+  assertion added, `mirror-tools` ×2 updated (incl. the bare-error case),
+  `mirror-end` double-error carry-over updated.
+- 2026-09-05 — carried-over error divider (user field report: the `---`
+  under the ⚠️ line vanished the moment the retry started and new log
+  lines appeared — it only existed while the `<tg-thinking>` spinner sat
+  below the line): a CARRIED-OVER `⚠️ error: …` log entry (the failed
+  run's bottom line moved into the log by `Mirror.onAgentStart`) now
+  keeps a `---` AFTER it whenever content follows — new tool blocks, a
+  partial answer, the spinner, or a bottom line. In `blocksToMd`: after
+  pushing each `agentError` log block, push `"---"` when
+  `i < log.length - 1 || tail || bottomText !== ""`. The spinner's classic
+  NBSP gap is skipped when the divider is the last part (the spinner sits
+  directly under the `---`, the same layout as the retry window — no jump
+  when the retry begins). Tests: new unit test in `mirror-tools` (4
+  cases), `mirror-end` retryable-502 extended (draft + m1 order),
+  `mirror-autocompact` lane-2 extended (divider between carried error and
+  retried block), `mirror-tools` multi-block order updated.
 - 2026-09-05 — token usage display (user request): the run's cumulative
   token usage — ` ↑<input> ↓<output>`, human-formatted (raw below 1k,
   one-decimal k/m above, trailing `.0` dropped: `567`, `12.5k`, `1.5m`) —

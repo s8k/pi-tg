@@ -9,6 +9,10 @@
 //    the answer is split into its own message anyway)
 //  - error:          [blocks] [answer]  — NO marker (the `⚠️ error: …` log
 //    block already carries the signal)
+//  - a carried-over agentError log entry (`⚠️ error: …` moved into the log on
+//    a pi retry) keeps a `---` AFTER it whenever content follows (new tool
+//    blocks, the answer, the spinner, another bottom line) — the divider must
+//    not vanish when the retry begins
 //  - none:           [blocks] [tail]
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -47,14 +51,43 @@ test("blocksToMd: blocks are separated by exactly one blank line, in order", () 
     "⚠️ terminal prompt: pick a model — answer there",
     "⚠️ error: overloaded",
   ];
-  assert.equal(blocksToMd(log, { bottom: aborted }), `${rendered.join("\n\n")}\n\n⚠️ Request was aborted`);
+  // the agentError entry (log[3]) keeps a --- after it once content (the aborted line) follows
+  assert.equal(
+    blocksToMd(log, { bottom: aborted }),
+    `${rendered.slice(0, 3).join("\n\n")}\n\n${rendered[3]}\n\n---\n\n⚠️ Request was aborted`,
+  );
+});
+
+test("blocksToMd: a carried-over ⚠️ error log entry keeps the --- after it once content follows", () => {
+  const errEntry: LogBlock = { type: "agentError", text: "⚠️ error: 502 status code (no body)" };
+  // a new tool block after the carried error (retry in flight): the divider stays between them
+  const out = blocksToMd([errEntry, toolBlock], { bottom: thinking() });
+  assert.equal(
+    out,
+    `⚠️ error: 502 status code (no body)\n\n---\n\n${renderToolBlock(toolBlock)}\n\n\u00a0\n\n<tg-thinking>Pondering…</tg-thinking>`,
+  );
+  // the retry just started — nothing after the error yet: the divider sits between the line and the
+  // spinner (the SAME layout as the retry window, so it does not jump when the retry begins)
+  assert.equal(
+    blocksToMd([errEntry], { bottom: thinking() }),
+    `⚠️ error: 502 status code (no body)\n\n---\n\n<tg-thinking>Pondering…</tg-thinking>`,
+  );
+  // a clean retried run: divider in the log, marker after the block (no trailing divider — `done` bottom)
+  assert.equal(
+    blocksToMd([errEntry, toolBlock], { bottom: done }),
+    `⚠️ error: 502 status code (no body)\n\n---\n\n${renderToolBlock(toolBlock)}\n\nCompleted ✔️`,
+  );
+  // nothing after the entry (no tail, the bottom renders no line) → no divider
+  assert.equal(blocksToMd([errEntry], { bottom: error("") }), "⚠️ error: 502 status code (no body)");
 });
 
 test("blocksToMd: done/error/aborted WITHOUT an answer — done has the marker, error/aborted their bottom line", () => {
   const log: LogBlock[] = [{ type: "narration", text: "A" }];
   assert.equal(blocksToMd(log, { bottom: done }), "A\n\nCompleted ✔️");
-  assert.equal(blocksToMd(log, { bottom: error("Provider timeout") }), "A\n\n⚠️ error: Provider timeout");
-  assert.equal(blocksToMd(log, { bottom: aborted }), "A\n\n⚠️ Request was aborted");
+  // the error bottom ENDS with a divider when content sits above the ⚠️ line
+  assert.equal(blocksToMd(log, { bottom: error("Provider timeout") }), "A\n\n⚠️ error: Provider timeout\n\n---");
+  assert.equal(blocksToMd(log, { bottom: aborted }), "A\n\n⚠️ Request was aborted"); // aborted: never
+  assert.equal(blocksToMd([], { bottom: error("boom") }), "⚠️ error: boom"); // bare error: no divider
 });
 
 test("blocksToMd: done — marker at the end of the log, then the answer (NO divider)", () => {
@@ -66,7 +99,7 @@ test("blocksToMd: done — marker at the end of the log, then the answer (NO div
 test("blocksToMd: error — log, then the (partial) answer, then the ⚠️ line LAST (bottom-line slot)", () => {
   const log: LogBlock[] = [{ type: "narration", text: "A" }];
   const out = blocksToMd(log, { tail: "Partial…", bottom: error("Provider timeout") });
-  assert.equal(out, "A\n\nPartial…\n\n⚠️ error: Provider timeout");
+  assert.equal(out, "A\n\nPartial…\n\n⚠️ error: Provider timeout\n\n---");
 });
 
 test("blocksToMd: done with an empty log — marker + answer only", () => {

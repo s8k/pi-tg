@@ -11,9 +11,11 @@
 //          continuations done) and persists ONE message:
 //          [log blocks] [partial tail + ⚠ incomplete] ⚠️ error: <msg>
 //          (the ⚠️ line is the BOTTOM line, NOTIFIES, no `⚠ Error` marker,
-//          no spinner, no divider in the persistent message). Only if
-//          agent_settled is lost does the grace timer (cfg errorSettleMs)
-//          backstop persist the log.
+//          no spinner) — and the message ENDS WITH A `---` divider when it
+//          has content beyond the bare ⚠️ line (a tool log / partial answer
+//          above the error gets closed off; a bare error stays bare; the
+//          ⚠️-aborted bottom never gets one). Only if agent_settled is lost
+//          does the grace timer (cfg errorSettleMs) backstop persist the log.
 //  - muted:  nothing at all.
 // On a pi retry (agent_start again) the carried error moves INTO the log as
 // a ⚠️ error: block, so the retried run's m1 carries the whole story.
@@ -181,14 +183,15 @@ test("error end: agent_end does NOT finalize (pi may retry); agent_settled persi
   const text = rich[0]?.text ?? "";
   assert.ok(text.includes("⚠️ error: Provider timeout"), "the errorMessage is in the message");
   assert.ok(!text.includes("⚠ Error"), "no legacy error marker");
-  assert.ok(!text.includes("---"), "no divider");
   assert.ok(text.includes("The answer is 42."), "the partial answer is preserved");
   assert.ok(text.includes("⚠ incomplete"), "the incomplete trailer is present");
-  // strict order: log → partial answer → ⚠ incomplete → ⚠️ line (LAST)
+  // strict order: log → partial answer → ⚠ incomplete → ⚠️ line → divider (LAST)
   const order = [text.indexOf("⚙ read ✔"), text.indexOf("The answer is 42."), text.indexOf("⚠ incomplete"), text.lastIndexOf("⚠️ error:")];
   assert.ok(order.every((i) => i >= 0), `all parts present, got: ${JSON.stringify(text)}`);
   assert.ok(order[0]! < order[1]! && order[1]! < order[2]! && order[2]! < order[3]!, `wrong order: ${order}`);
-  assert.equal(lastBlock(text), "⚠️ error: Provider timeout", "the ⚠️ line is the BOTTOM line (last), not a log line");
+  const blocks = text.trimEnd().split(/\n\n+/);
+  assert.equal(blocks[blocks.length - 2], "⚠️ error: Provider timeout", "the ⚠️ line is the bottom line, not a log line");
+  assert.equal(blocks[blocks.length - 1], "---", "the persistent error message ENDS with the divider (content beyond the bare ⚠️ line)");
   assert.ok(!rich[0]?.opts?.disableNotification, "D3 NOTIFIES — the error is the final word");
 });
 
@@ -230,6 +233,7 @@ test("error end, no partial answer: agent_settled persists log + error block onl
   const text = rich[0]?.text ?? "";
   assert.ok(text.includes("⚠️ error: boom"), "error line");
   assert.equal(lastBlock(text), "⚠️ error: boom", "the ⚠️ line is the bottom line");
+  assert.ok(!text.includes("---"), "a BARE error (nothing beyond the ⚠️ line) ends with NO divider");
   assert.ok(!text.includes("⚠ Error"), "no legacy error marker");
 });
 
@@ -249,6 +253,11 @@ test("retryable error (502): nothing is persisted, the draft stays alive, and th
   // pi retries: a fresh run streams and confirms cleanly
   m.onAgentStart();
   await tick();
+  // the carried ⚠️ line moves INTO the log — it must KEEP the --- after it once the retry starts
+  const draftsAfterRetry = h.out.calls.filter((c) => c.kind === "sendDraft");
+  const retryDraft = draftsAfterRetry[draftsAfterRetry.length - 1]?.text ?? "";
+  assert.ok(retryDraft.includes("⚠️ error: 502 status code (no body)"), "the carried error line is in the retry draft");
+  assert.ok(retryDraft.indexOf("---") > retryDraft.indexOf("⚠️ error: 502"), `the divider follows the carried error in the retry draft: ${retryDraft}`);
   m.onAssistantStart(textMsg(""));
   m.onAssistantUpdate(textMsg("The retried answer."));
   await tick();
@@ -258,6 +267,11 @@ test("retryable error (502): nothing is persisted, the draft stays alive, and th
   const rich = richCalls(h);
   assert.equal(rich.length, 2, `the retried run finalizes normally (m1 + m2), got ${rich.length}`);
   assert.equal(rich[1]?.text, "The retried answer.", "m2 is the retried answer");
+  const m1 = rich[0]?.text ?? "";
+  const b1 = m1.indexOf("⚠️ error: 502");
+  const b2 = m1.indexOf("---");
+  const b3 = m1.indexOf("Completed ✔️");
+  assert.ok(b1 >= 0 && b1 < b2 && b2 < b3, `m1: carried error → divider → marker, got: ${m1}`);
   assert.ok(rich[0]?.text?.includes("⚠️ error: 502 status code (no body)"), "the failed attempt's error block is CARRIED INTO the retried run's m1 (no wipe of the live log)");
 
   await m.onAgentSettled(); // after the successful retry — a no-op (already finalized)
@@ -294,7 +308,9 @@ test("error → retry → error again: the CARRIED log persists exactly once, at
   const text = rich[0]?.text ?? "";
   assert.equal(text.match(/⚠️ error: 502 status code \(no body\)/g)!.length, 2, "both failed attempts' error blocks are in the one message");
   assert.ok(!text.includes("<tg-thinking>"), "no spinner in the persistent message");
-  assert.ok(!text.includes("---"), "no divider in the persistent message");
+  const blocks = text.trimEnd().split(/\n\n+/);
+  assert.equal(blocks[blocks.length - 2], "⚠️ error: 502 status code (no body)", "the bottom ⚠️ line is second-to-last");
+  assert.equal(blocks[blocks.length - 1], "---", "ends with the divider (content beyond the bare ⚠️ line)");
 });
 
 test("muted run: nothing at all — no drafts, no persistent sends", async () => {

@@ -265,9 +265,30 @@ test("prompt while manual compact in progress → rejected (B6); nothing sent to
   await bridge.dispatch({ kind: "prompt", chatId: 7, text: "hello" });
   assert.equal(accepted, 0, "no early draft: onPromptAccepted not called");
   assert.equal(pi.sentPrompts.length, 0, "prompt NOT sent to pi");
-  const last = out.calls[out.calls.length - 1]!;
-  assert.equal(last.kind, "send", "plain persistent send (notifies), not a draft");
-  assert.equal(last.text, "🗜 Compaction already in progress — resend your prompt after it finishes");
+  const calls = out.calls.slice(-2);
+  assert.equal(calls[0]!.kind, "send", "the rejection is a plain persistent send (notifies)");
+  assert.equal(calls[0]!.text, "🗜 Compaction already in progress — resend your prompt after it finishes");
+  assert.equal(calls[1]!.kind, "sendDraft", "…then the compact draft is re-raised immediately");
+  assert.equal(calls[1]!.text, COMPACT_DRAFT_MD);
+});
+
+test("B6 rejection re-raises the compact draft IMMEDIATELY (the plain send dismisses the pending draft)", async () => {
+  const pi = new FakePi();
+  const out = new FakeOut();
+  const bridge = new SessionBridge(makeDeps(pi.build(), out));
+  await bridge.dispatch({ kind: "compact", chatId: 7 });
+  const draftIdx = out.calls.findIndex((c) => c.kind === "sendDraft" && c.text === COMPACT_DRAFT_MD);
+  assert.ok(draftIdx >= 0, "the compact draft went up");
+  const draftId = out.calls[draftIdx]!.draftId!;
+  await bridge.dispatch({ kind: "prompt", chatId: 7, text: "hello" });
+  // A plain send dismisses the pending rich draft (Bot API behavior, field
+  // report) — the bridge must re-raise the SAME draft right after the
+  // rejection, not wait for the next heartbeat tick (~5 s).
+  const calls = out.calls.slice(draftIdx + 1);
+  assert.deepEqual(calls.map((c) => c.kind), ["send", "sendDraft"]);
+  assert.equal(calls[0]!.text, "🗜 Compaction already in progress — resend your prompt after it finishes");
+  assert.equal(calls[1]!.text, COMPACT_DRAFT_MD);
+  assert.equal(calls[1]!.draftId, draftId, "the SAME draft id is re-raised");
 });
 
 test("prompt while busy-compact (post-abort) in progress → rejected (B6) too", async () => {

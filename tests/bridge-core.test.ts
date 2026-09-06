@@ -19,7 +19,7 @@ test("prompt: busy → 'steer' + queued ack", async () => {
   const bridge = new SessionBridge(makeDeps(pi.build(), out));
   await bridge.dispatch({ kind: "prompt", chatId: 7, text: "next" });
   assert.deepEqual(pi.sentPrompts, [{ text: "next", deliverAs: "steer" }]);
-  assert.equal(lastSend(out), "⚡ queued (applies after current tool step)");
+  assert.equal(lastSend(out), "⚡️ Message queued");
 });
 
 test("stop: idle → note only; busy → abort + note", async () => {
