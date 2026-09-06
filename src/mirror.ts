@@ -812,7 +812,9 @@ export class Mirror {
    * End state: the tool log is the previous message, the answer is the new
    * one. Stop/error ends stay a single message. Every persistent send gets
    * chunking, the rich → HTML → plain fallback, and 3 attempts with backoff.
-   * Mute = fully silent: nothing at all.
+   * Levels: mute = fully silent (nothing at all); minimal = the 3-step split
+   * never runs — ONE persistent message (filtered blocks + tail + bottom
+   * line), same notification rules; full = the 3-step split above.
    */
   private async finalize(): Promise<void> {
     if (this.phase === "finalized") return;
@@ -834,7 +836,7 @@ export class Mirror {
           : this.endKind === "error"
             ? { kind: "error", text: this.endError ?? "" }
             : { kind: "aborted" };
-      if (this.endKind === "clean" && this.tail.trim()) {
+      if (this.endKind === "clean" && this.tail.trim() && this.deps.cfg.level === "full") {
         // step 1 — the completed state in the draft. Awaited so the client sees
         // it before step 2 replaces the draft. Best effort: runDraftOnce
         // swallows failures (429/400) — the persistent messages still go out.
@@ -847,8 +849,12 @@ export class Mirror {
         await this.sendPersistent(chatId, this.tail);
         return;
       }
+      // minimal (or a clean end with no answer) = ONE persistent message:
+      // filtered blocks + tail + the end's bottom line. Same mechanics and
+      // notification rules as full — only the block filter changes by level.
+      const log = blocksForLevel(this.deps.cfg.level, this.log);
       const tail = this.endKind === "error" && this.tail.trim() ? `${this.tail.trimEnd()}\n\n⚠ incomplete` : this.tail;
-      const md = blocksToMd(this.log, { tail, bottom, tokens: this.runTokens() }); // full content — chunked, never tailView-capped
+      const md = blocksToMd(log, { tail, bottom, tokens: this.runTokens() }); // full content — chunked, never tailView-capped
       if (md.trim())
         // D4: a stop end's message is SILENT (no notification) — an error end
         // notifies (the error is the final word the user must see).
