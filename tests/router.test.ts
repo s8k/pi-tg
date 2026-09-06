@@ -43,8 +43,11 @@ test("paired: non-owner rejected; owner commands map", () => {
   assert.deepEqual(route(msgUpdate(10, owner, "/compact"), owner), { kind: "compact", chatId: 7 });
   assert.deepEqual(route(msgUpdate(11, owner, "/name My Project"), owner), { kind: "nameSet", chatId: 7, name: "My Project" });
   assert.deepEqual(route(msgUpdate(12, owner, "/kill"), owner), { kind: "killAsk", chatId: 7 });
-  assert.deepEqual(route(msgUpdate(15, owner, "/mute"), owner), { kind: "mute", chatId: 7 });
-  assert.deepEqual(route(msgUpdate(16, owner, "/unmute"), owner), { kind: "unmute", chatId: 7 });
+  assert.deepEqual(route(msgUpdate(15, owner, "/level_mute"), owner), { kind: "level_mute", chatId: 7 });
+  assert.deepEqual(route(msgUpdate(16, owner, "/level_minimal"), owner), { kind: "level_minimal", chatId: 7 });
+  assert.deepEqual(route(msgUpdate(19, owner, "/level_full"), owner), { kind: "level_full", chatId: 7 });
+  assert.deepEqual(route(msgUpdate(20, owner, "/mute"), owner), { kind: "unknown", chatId: 7, text: "/mute" });
+  assert.deepEqual(route(msgUpdate(21, owner, "/unmute"), owner), { kind: "unknown", chatId: 7, text: "/unmute" });
   assert.deepEqual(route(msgUpdate(17, owner, "/reload"), owner), { kind: "reload", chatId: 7 });
   assert.deepEqual(route(msgUpdate(18, owner, "/reload@MyBot"), owner), { kind: "reload", chatId: 7 });
   assert.deepEqual(route(msgUpdate(13, owner, "/bogus"), owner), { kind: "unknown", chatId: 7, text: "/bogus" });

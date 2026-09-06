@@ -1,6 +1,6 @@
 import type { TgAction } from "./router.ts";
 import { CB } from "./router.ts";
-import type { TelegaConfig } from "./config.ts";
+import type { OutputLevel, TelegaConfig } from "./config.ts";
 import type { TelegaState, SessionListItem } from "./state.ts";
 import type { PiModel, PiThinkingLevel } from "./thinking.ts";
 import { supportedThinkingLevels } from "./thinking.ts";
@@ -120,6 +120,13 @@ export function timeAgo(ms: number, now = Date.now()): string {
   return new Date(ms).toISOString().slice(0, 10);
 }
 
+/** The status card's always-on level suffix (and the ack emoji scale). */
+const LEVEL_BADGES: Record<OutputLevel, string> = {
+  mute: "🔇 mute",
+  minimal: "🔉 minimal",
+  full: "🔊 full",
+};
+
 export function helpText(): string {
   return [
     "<b>pi-telega</b> — drive this pi session from Telegram",
@@ -130,8 +137,9 @@ export function helpText(): string {
     "<b>/thinking</b> — pick the thinking level",
     "<b>/status</b> — session info",
     "<b>/stop</b> — Esc (abort the current turn)",
-    "<b>/mute</b> — stop agent output (commands still work)",
-    "<b>/unmute</b> — resume agent output",
+    "<b>/level_mute</b> — no agent output (commands still work)",
+    "<b>/level_minimal</b> — visible text only (no tools, no thinking)",
+    "<b>/level_full</b> — tool log + final answer (default)",
     "<b>/compact</b> — compact the context (stoppable via the Stop button)",
     "<b>/reload</b> — hot-reload extensions & resources (idle only)",
     "<b>/name &lt;text&gt;</b> — rename this session",
@@ -385,7 +393,7 @@ export class SessionBridge {
     const name = pi.getSessionName() ?? "Untitled session";
     const tokens = pi.sessionUsage();
     const lines = [
-      `📌 ${escapeHtml(name)} — ${pi.isIdle() ? "idle" : "busy"}${cfg.level === "mute" ? " · 🔇 muted" : ""}`,
+      `📌 ${escapeHtml(name)} — ${pi.isIdle() ? "idle" : "busy"} · ${LEVEL_BADGES[cfg.level]}`,
       `📁 dir: <code>${escapeHtml(pi.cwd)}</code>`,
       `🤖 model: ${model ? escapeHtml(model.name) : "n/a"} · 🧠 thinking: ${pi.currentThinking() ?? "default"}`,
       `📖 context: ${usage?.percent != null ? `${Math.round(usage.percent)}%` : "n/a"}${usage?.tokens != null ? ` (${usage.tokens}/${usage.contextWindow})` : ""}`,
@@ -491,15 +499,20 @@ export class SessionBridge {
         }
         return;
       }
-      case "mute":
+      case "level_mute":
         cfg.level = "mute";
         await this.deps.persist();
-        await out.send(action.chatId, "🔇 Muted — I won’t post agent output (progress, tools, answers) until you send /unmute. Commands still work.");
+        await out.send(action.chatId, "🔇 Level: mute — no agent output (commands still work).");
         return;
-      case "unmute":
+      case "level_minimal":
+        cfg.level = "minimal";
+        await this.deps.persist();
+        await out.send(action.chatId, "🔉 Level: minimal — visible text only (no tools, no thinking).");
+        return;
+      case "level_full":
         cfg.level = "full";
         await this.deps.persist();
-        await out.send(action.chatId, "🔊 Unmuted — agent output is back on.");
+        await out.send(action.chatId, "🔊 Level: full — tool log + final answer (default).");
         return;
       case "compact": {
         if (this.compactState) {

@@ -75,7 +75,7 @@ test("status: card format 📌/📁/🤖/📖/📨/🪙, plain session name, rou
   await new SessionBridge(makeDeps(pi.build(), out)).dispatch({ kind: "status", chatId: 7 });
   const lines = lastSend(out).split("\n");
   assert.deepEqual(lines, [
-    "📌 Untitled session — idle", // plain name (no <b>), unmuted → no 🔇 suffix
+    "📌 Untitled session — idle · 🔊 full", // plain name (no <b>), always-on level suffix
     "📁 dir: <code>/proj</code>",
     "🤖 model: Model One · 🧠 thinking: high",
     "📖 context: 76% (90720/120000)",
@@ -88,7 +88,7 @@ test("status: card format 📌/📁/🤖/📖/📨/🪙, plain session name, rou
   const out2 = new FakeOut();
   await new SessionBridge(makeDeps(pi2.build(), out2, { level: "mute" })).dispatch({ kind: "status", chatId: 7 });
   const lines2 = lastSend(out2).split("\n");
-  assert.equal(lines2[0], "📌 My &lt;sess&gt; — busy · 🔇 muted");
+  assert.equal(lines2[0], "📌 My &lt;sess&gt; — busy · 🔇 mute");
   assert.equal(lines2[2], "🤖 model: n/a · 🧠 thinking: default");
   assert.equal(lines2[3], "📖 context: n/a");
   assert.equal(lines2[4], "🪙 tokens: ↑0 ↓0"); // no usage yet → zeros, still shown, above the messages line

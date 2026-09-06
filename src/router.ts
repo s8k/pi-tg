@@ -25,8 +25,9 @@ export type TgAction =
   | { kind: "thinkingSet"; chatId: number; index: number }
   | { kind: "status"; chatId: number }
   | { kind: "stop"; chatId: number }
-  | { kind: "mute"; chatId: number }
-  | { kind: "unmute"; chatId: number }
+  | { kind: "level_mute"; chatId: number }
+  | { kind: "level_minimal"; chatId: number }
+  | { kind: "level_full"; chatId: number }
   | { kind: "compact"; chatId: number }
   | { kind: "reload"; chatId: number }
   | { kind: "nameSet"; chatId: number; name: string }
@@ -92,8 +93,9 @@ export function route(update: TgUpdate, ownerId: number | undefined): TgAction {
       case "thinking": return { kind: "thinkingList", chatId };
       case "status": return { kind: "status", chatId };
       case "stop": return { kind: "stop", chatId };
-      case "mute": return { kind: "mute", chatId };
-      case "unmute": return { kind: "unmute", chatId };
+      case "level_mute": return { kind: "level_mute", chatId };
+      case "level_minimal": return { kind: "level_minimal", chatId };
+      case "level_full": return { kind: "level_full", chatId };
       case "compact": return { kind: "compact", chatId };
       case "reload": return { kind: "reload", chatId };
       case "name": return { kind: "nameSet", chatId, name: rest };
