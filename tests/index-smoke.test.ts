@@ -98,12 +98,80 @@ function fakeWire(calls: WireCall[]): { restore: () => void; ownerLearned: () =>
           }),
           { status: 200 },
         );
-      return new Promise<Response>(() => {}); // long poll: never resolves
+      // long poll: hangs forever — unless the request is aborted (generation
+      // replaced), in which case reject like real fetch does on AbortSignal.
+      return new Promise<Response>((_resolve, reject) => {
+        const sig = init?.signal;
+        const onAbort = () => reject(new DOMException("Aborted", "AbortError"));
+        if (sig) {
+          if (sig.aborted) onAbort();
+          else sig.addEventListener("abort", onAbort, { once: true });
+        }
+      });
     }
     return new Response(JSON.stringify({ ok: true, result: true }), { status: 200 });
   }) as typeof fetch;
   return { restore: () => (globalThis.fetch = realFetch), ownerLearned: () => getUpdatesCount >= 2 };
 }
+
+test("poller liveness: double session_start → old long-poll aborted, new poller keeps polling (no 409 death)", async (t) => {
+  // Emulates Telegram's getUpdates concurrency rule: while one long poll is in
+  // flight, a second concurrent getUpdates gets 409 Conflict. The first
+  // session_start boots the poller; the second (resume/swap/reload) must abort
+  // the old long poll BEFORE its new getUpdates goes out — otherwise the new
+  // poll 409s and (on pre-fix code) dies, leaving the bot deaf.
+  const calls: WireCall[] = [];
+  const getUpdatesOffsets: number[] = [];
+  const conflicts: number[] = [];
+  const realFetch = globalThis.fetch;
+  t.after(() => (globalThis.fetch = realFetch));
+  globalThis.fetch = (async (url: string, init?: RequestInit): Promise<Response> => {
+    const method = String(url).split("/").pop() ?? "";
+    const body = (init?.body ? JSON.parse(String(init.body)) : {}) as Record<string, unknown>;
+    calls.push({ method, body, markdown: "" });
+    if (method === "getMe")
+      return new Response(JSON.stringify({ ok: true, result: { id: 1, is_bot: true, first_name: "Tg", username: "tgb" } }), { status: 200 });
+    if (method === "getUpdates") {
+      getUpdatesOffsets.push(body.offset as number);
+      if (inFlight) {
+        // a second getUpdates while one is in flight → 409 (the incident)
+        conflicts.push(body.offset as number);
+        return new Response(
+          JSON.stringify({ ok: false, error_code: 409, description: "Conflict: terminated by other getUpdates request; make sure that only one bot client is running" }),
+          { status: 409 },
+        );
+      }
+      return new Promise<Response>((resolve, reject) => {
+        const sig = init?.signal;
+        const onAbort = () => {
+          inFlight = undefined; // an aborted request frees the in-flight slot
+          reject(new DOMException("Aborted", "AbortError"));
+        };
+        if (sig) {
+          if (sig.aborted) onAbort();
+          else sig.addEventListener("abort", onAbort, { once: true });
+        }
+        inFlight = () => {
+          inFlight = undefined;
+          resolve(new Response(JSON.stringify({ ok: true, result: [] }), { status: 200 }));
+        };
+      });
+    }
+    return new Response(JSON.stringify({ ok: true, result: true }), { status: 200 });
+  }) as typeof fetch;
+  let inFlight: (() => void) | undefined;
+
+  handlers.get("session_start")!({}, fakeCtx);
+  await waitFor(() => getUpdatesOffsets.length >= 1, "first generation starts polling");
+  // session resume/swap/reload → a second session_start while the first long poll is in flight
+  handlers.get("session_start")!({}, fakeCtx);
+  await waitFor(() => getUpdatesOffsets.length >= 2, "new generation started polling");
+  assert.equal(conflicts.length, 0, "no concurrent getUpdates ever — the old long poll is aborted before the new one starts");
+  // Prove the new loop is ALIVE (not 409-dead): resolve its long poll and it
+  // must issue the next one.
+  inFlight?.();
+  await waitFor(() => getUpdatesOffsets.length >= 3, "surviving poller issued its next poll after the double session_start");
+});
 
 test("index.ts wiring: events → mirror → client wire (full clean run)", async (t) => {
   const calls: WireCall[] = [];

@@ -110,29 +110,49 @@ export interface PollerDeps {
   getOffset(): number;
   setOffset(n: number): void;
   onUpdates(updates: TgUpdate[]): Promise<void>;
+  /** Network/other errors (red toast, backoff + retry). */
   onError(err: unknown): void;
+  /** 409 Conflict — another poller is active (warning toast, backoff + retry). */
+  onConflict(err: unknown): void;
   shouldStop(): boolean;
   sleep(ms: number): Promise<void>;
+  /** Generation signal: aborting it rejects the in-flight long poll, so a
+   * dying generation exits in milliseconds (not at the 50 s long-poll edge)
+   * and can never overlap a replacement poller's first getUpdates. */
+  signal?: AbortSignal;
 }
 
 const BACKOFF_START_MS = 1000;
 const BACKOFF_CAP_MS = 30_000;
 
+/**
+ * Long-poll loop. 409 ("terminated by other getUpdates request") means
+ * another poller is active — warn and retry with backoff; NEVER die on it:
+ * a single conflict (including our own dying twin during a restart) must not
+ * deafen the bot. Other errors back off 1s→30s and retry. Aborting `signal`
+ * rejects the in-flight long poll → quiet exit (not an error, no toast).
+ * `shouldStop` is checked between iterations.
+ */
 export async function pollLoop(deps: PollerDeps): Promise<void> {
   let backoff = BACKOFF_START_MS;
   for (;;) {
     if (deps.shouldStop()) return;
     try {
-      const updates = await deps.client.getUpdates(deps.getOffset(), 50);
+      const updates = await deps.client.getUpdates(deps.getOffset(), 50, deps.signal);
       if (updates.length > 0) {
         await deps.onUpdates(updates);
         deps.setOffset(updates[updates.length - 1].update_id + 1);
       }
       backoff = BACKOFF_START_MS;
     } catch (err) {
-      if (deps.shouldStop()) return;
-      deps.onError(err);
-      if (err instanceof TgError && err.code === 409) return; // another poller owns the token
+      // Generation died (restart/shutdown) — the in-flight long poll was
+      // aborted or the loop is otherwise superseded: exit quietly.
+      if (deps.shouldStop() || deps.signal?.aborted) return;
+      if (err instanceof TgError && err.code === 409) {
+        deps.onConflict(err);
+      } else {
+        deps.onError(err);
+      }
       await deps.sleep(backoff);
       backoff = Math.min(backoff * 2, BACKOFF_CAP_MS);
     }
@@ -159,8 +179,9 @@ export class TelegramClient {
     this.sleep = opts.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
   }
 
-  /** One Bot API call: JSON POST, ok:false → TgError, 429 → sleep retry_after & retry (max 3). */
-  async call(method: string, params: Record<string, unknown> = {}): Promise<unknown> {
+  /** One Bot API call: JSON POST, ok:false → TgError, 429 → sleep retry_after & retry (max 3).
+   *  `opts.signal` (optional): aborting it rejects the in-flight request (used by the poller). */
+  async call(method: string, params: Record<string, unknown> = {}, opts?: { signal?: AbortSignal }): Promise<unknown> {
     const url = `https://api.telegram.org/bot${this.token}/${method}`;
     const max429 = NO_429_RETRY.has(method) ? 0 : MAX_429_RETRIES;
     let attempt = 0;
@@ -171,6 +192,7 @@ export class TelegramClient {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify(params),
+          signal: opts?.signal,
         });
       } catch (err) {
         throw new TgNetworkError(method, err);
@@ -285,7 +307,7 @@ export class TelegramClient {
     return this.call("sendRichMessageDraft", p) as Promise<boolean>;
   }
 
-  getUpdates(offset: number, timeoutSec = 50): Promise<TgUpdate[]> {
-    return this.call("getUpdates", { offset, timeout: timeoutSec, allowed_updates: ["message", "callback_query", "edited_message", "stopped_message_generation"] }) as Promise<TgUpdate[]>;
+  getUpdates(offset: number, timeoutSec = 50, signal?: AbortSignal): Promise<TgUpdate[]> {
+    return this.call("getUpdates", { offset, timeout: timeoutSec, allowed_updates: ["message", "callback_query", "edited_message", "stopped_message_generation"] }, { signal }) as Promise<TgUpdate[]>;
   }
 }

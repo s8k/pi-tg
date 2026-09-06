@@ -728,3 +728,49 @@ Order matters: T1 before T6 (lane 2 renders into the same bottom line).
   `index-smoke` end-to-end: fake ctx exposes `buildSessionContext` → the
   wire carries `128,432 → 2 tokens` (the exact re-derived number) in both
   lanes.
+- 2026-09-05 — poller 409 fix (field incident: after a session
+  resume/swap the red TUI toast `pi-telega poll error: getUpdates: 409
+  Conflict: terminated by other getUpdates request; make sure that only
+  one bot client is running` appeared and the bot went deaf — Telegram
+  updates sat in the queue unfetched). Root cause: the `session_start`
+  restart path launched a NEW poller while the OLD one's 50 s long-poll
+  was still in flight; Telegram allows one in-flight `getUpdates` per
+  token, so the NEW poll's first `getUpdates` got 409 — and the
+  pre-fix rule (08-29 design: "409 → report and STOP polling") killed
+  the NEW loop, while the old one died on its generation check: no
+  poller left. SUPERSEDED on three fronts:
+  - **409 no longer kills the loop.** `PollerDeps` gains a required
+    `onConflict(err)` (distinct from `onError`): 409 → TUI **warning**
+    `pi-telega: another client is polling this bot token (409 Conflict)
+    — backing off and retrying`, then the same 1 s→30 s backoff + retry
+    as any error. A single conflict — even a genuine external
+    double-poller — can no longer deafen the bot permanently; if the
+    other side stops, we win the next round.
+  - **Per-generation `AbortController` (`pollAbort`)** in index.ts:
+    `session_start`, `session_shutdown` and `/tg:config` all abort the
+    in-flight long poll (abort() is synchronous; the fetch rejects and
+    the generation's `shouldStop` flag is set), so a dying generation
+    exits in milliseconds and can never overlap its replacement on the
+    wire. `TelegramClient.call` / `getUpdates` take an optional
+    `AbortSignal` (passed to fetch; abort → AbortError → TgNetworkError,
+    swallowed quietly by the loop's `shouldStop || signal.aborted` check
+    — no toast).
+  - **`session_start` stops the previous generation FIRST** (`stopping
+    = true` + abort, then `startPolling()`). Deliberately does NOT await
+    the old generation's IIFE: it may be mid-update-batch (minutes
+    after an outage), and the abort+flag already guarantee it never
+    issues another `getUpdates`; a late 409 (server still seeing the
+    dying connection) is now survivable anyway.
+  - Bonus (same code path, design §8 conformance): the replacement
+    session's card + clear-question (`bridge.onSessionReplaced`) now
+    runs **at arrival** — pre-fix it ran after `await startPolling()`
+    (which blocks until the poller DIES), so the card was hours late or
+    never. The IIFE now: abort old → `startPolling()` (sync setup done
+    by call time) → `onSessionReplaced` → `await loop`.
+  Tests: the old "409 → stop" unit replaced by "409 → onConflict
+  (not onError), backoff, retry — never dies"; new `pollLoop` abort
+  unit (in-flight long poll dies at once, quiet exit) and `call`
+  abort unit; new `index-smoke` end-to-end liveness test (fake wire
+  emulates the concurrency rule: a concurrent second `getUpdates` gets
+  409; double `session_start` must still leave a live poller that
+  issues its next poll). 335/335, tsc clean.

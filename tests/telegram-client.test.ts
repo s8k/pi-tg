@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { TelegramClient, TgError, TgNetworkError, pollLoop } from "../src/telegram-client.ts";
+import type { FetchLike } from "../src/telegram-client.ts";
 import { BOT_COMMANDS } from "../src/bot-commands.ts";
 import { makeFakeFetch } from "./fake-fetch.ts";
 
@@ -145,6 +146,7 @@ test("pollLoop: delivers batches, advances offset, stops on flag", async () => {
     setOffset: (n) => (offset = n),
     onUpdates: async (u) => { delivered.push(u.map((x) => x.update_id)); },
     onError: () => {},
+    onConflict: () => {},
     shouldStop: () => stop,
     // real (short) timer: a no-op sleep would spin in microtasks and starve the event loop
     sleep: (ms) => new Promise((r) => setTimeout(r, Math.min(ms, 5))),
@@ -180,6 +182,7 @@ test("pollLoop: network error → backoff(1s) then retry succeeds", async () => 
     setOffset: (m) => (offset = m),
     onUpdates: async (u) => { delivered.push(u.map((x) => x.update_id)); },
     onError: (e) => errors.push(e),
+    onConflict: (e) => { throw new Error("no conflicts expected"); },
     shouldStop: () => stop,
     // real (short) timer so the error path yields to the event loop; records the backoff ms
     sleep: (ms) => { sleeps.push(ms); return new Promise((r) => setTimeout(r, Math.min(ms, 5))); },
@@ -193,23 +196,101 @@ test("pollLoop: network error → backoff(1s) then retry succeeds", async () => 
   assert.ok(sleeps.includes(1000));
 });
 
-test("pollLoop: 409 conflict → reports and stops (no retry)", async () => {
-  const ff = makeFakeFetch(() => ({ status: 409, body: { ok: false, error_code: 409, description: "Conflict: terminated by other getUpdates request" } }));
-  const client = new TelegramClient("T", { fetchImpl: ff.fetchImpl, sleep: async () => {} });
+test("pollLoop: 409 conflict → onConflict (not onError), backoff, retry — never dies", async () => {
+  // Two 409s (another poller active), then one update, then empty polls.
+  let n = 0;
+  const conflicts: unknown[] = [];
   const errors: unknown[] = [];
+  const sleeps: number[] = [];
+  const ff = makeFakeFetch(async () => {
+    n++;
+    if (n <= 2)
+      return { status: 409, body: { ok: false, error_code: 409, description: "Conflict: terminated by other getUpdates request; make sure that only one bot client is running" } };
+    if (n > 3) await new Promise((r) => setTimeout(r, 5)); // yield like a real long poll
+    const updates = n === 3
+      ? [{ update_id: 4, message: { message_id: 4, chat: { id: 7, type: "private" }, date: 4 } }]
+      : [];
+    return { status: 200, body: { ok: true, result: updates } };
+  });
+  const client = new TelegramClient("T", { fetchImpl: ff.fetchImpl, sleep: async () => {} });
+  let offset = 0;
+  let stop = false;
+  const delivered: number[][] = [];
+  const p = pollLoop({
+    client,
+    getOffset: () => offset,
+    setOffset: (m) => (offset = m),
+    onUpdates: async (u) => { delivered.push(u.map((x) => x.update_id)); },
+    onError: (e) => errors.push(e),
+    onConflict: (e) => conflicts.push(e),
+    shouldStop: () => stop,
+    sleep: (ms) => { sleeps.push(ms); return new Promise((r) => setTimeout(r, Math.min(ms, 5))); },
+  });
+  await waitFor(() => delivered.length === 1);
+  stop = true;
+  await p;
+  assert.deepEqual(delivered, [[4]], "the loop survives the conflicts and delivers the later update");
+  assert.equal(offset, 5);
+  assert.equal(conflicts.length, 2);
+  assert.ok(conflicts[0] instanceof TgError && (conflicts[0] as TgError).code === 409);
+  assert.equal(errors.length, 0, "a conflict is a warning, not a hard error");
+  assert.ok(sleeps.includes(1000) && sleeps.includes(2000), "conflicts back off like any error");
+});
+
+test("pollLoop: generation signal aborted → in-flight long-poll dies at once, quiet exit", async () => {
+  const ac = new AbortController();
+  let calls = 0;
+  // Emulates a 50 s long poll that hangs until the signal aborts it.
+  const fetchImpl = (async (_url: string, init?: RequestInit) =>
+    await new Promise<never>((resolve, reject) => {
+      calls++;
+      const onAbort = () => {
+        clearTimeout(timer);
+        reject(new DOMException("Aborted", "AbortError"));
+      };
+      const timer = setTimeout(() => reject(new Error("test: long poll should have been aborted first")), 2000);
+      if (init?.signal) {
+        if (init.signal.aborted) onAbort();
+        else init.signal.addEventListener("abort", onAbort, { once: true });
+      }
+    })) as FetchLike;
+  const client = new TelegramClient("T", { fetchImpl, sleep: async () => {} });
+  const errors: unknown[] = [];
+  const conflicts: unknown[] = [];
   const p = pollLoop({
     client,
     getOffset: () => 0,
     setOffset: () => {},
     onUpdates: async () => {},
     onError: (e) => errors.push(e),
-    shouldStop: () => false,
+    onConflict: (e) => conflicts.push(e),
+    shouldStop: () => false, // the ONLY stop path here is the signal
     sleep: async () => {},
+    signal: ac.signal,
   });
+  await waitFor(() => calls >= 1);
+  const t0 = Date.now();
+  ac.abort();
   await p;
-  assert.equal(ff.calls.length, 1);
-  assert.equal(errors.length, 1);
-  assert.ok(errors[0] instanceof TgError && (errors[0] as TgError).code === 409);
+  assert.ok(Date.now() - t0 < 500, "exits promptly on abort, not at the long-poll timeout");
+  assert.equal(errors.length, 0, "an abort is not an error — no toast");
+  assert.equal(conflicts.length, 0);
+});
+
+test("call: aborted signal → rejects (AbortError → TgNetworkError), no retry", async () => {
+  const ac = new AbortController();
+  const fetchImpl = (async (_url: string, init?: RequestInit) =>
+    new Promise<Response>((_resolve, reject) => {
+      const onAbort = () => reject(new DOMException("Aborted", "AbortError"));
+      if (init?.signal) {
+        if (init.signal.aborted) onAbort();
+        else init.signal.addEventListener("abort", onAbort, { once: true });
+      }
+    })) as FetchLike;
+  const c = new TelegramClient("T", { fetchImpl });
+  const p = c.call("getUpdates", {}, { signal: ac.signal });
+  ac.abort();
+  await assert.rejects(p, (e: unknown) => e instanceof TgNetworkError && /abort/i.test(String(e)));
 });
 
 test("pollLoop: already stopping → returns without any call", async () => {
@@ -221,6 +302,7 @@ test("pollLoop: already stopping → returns without any call", async () => {
     setOffset: () => {},
     onUpdates: async () => {},
     onError: () => {},
+    onConflict: () => {},
     shouldStop: () => true,
     sleep: async () => {},
   });

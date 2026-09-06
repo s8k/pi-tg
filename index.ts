@@ -72,7 +72,11 @@ export default function piTelega(pi: ExtensionAPI): void {
   let sessionCtx: ExtensionContext | undefined;
   let stopping = false;
   let pollGen = 0;
-  let pollPromise: Promise<void> | undefined;
+  /** One AbortController per polling generation: aborting it rejects the
+   * in-flight long poll so the dying generation exits in milliseconds and
+   * can never overlap a replacement poller on the wire. */
+  let pollAbort: AbortController | undefined;
+  let pollPromise: Promise<unknown> | undefined;
   let currentMirror: Mirror | undefined;
   // T6 auto-compact lane, chosen at session_before_compact (auto): where the
   // result events land — the live run's draft (mirror) or the bridge's
@@ -106,10 +110,12 @@ export default function piTelega(pi: ExtensionAPI): void {
     }
   };
 
-  async function startPolling(): Promise<void> {
+  async function startPolling(): Promise<number> {
     const gen = ++pollGen;
     stopping = false;
-    if (!state) return;
+    const aborter = new AbortController();
+    pollAbort = aborter;
+    if (!state) return gen;
     const token = getBotToken(cfg, CFG);
     client = new TelegramClient(token ?? "", {});
     const outAdapter = makeOut(client, state, persist);
@@ -136,14 +142,14 @@ export default function piTelega(pi: ExtensionAPI): void {
     bridge = new SessionBridge(deps);
     if (!token) {
       ui("pi-telega: no bot token — run /tg:config <bot_token>", "warning");
-      return;
+      return gen;
     }
     let username: string | undefined;
     try {
       username = (await client.getMe()).username;
     } catch (err) {
       ui(`pi-telega: getMe failed: ${String(err)}`, "error");
-      return;
+      return gen;
     }
     deps.botUsername = username;
     // Set the bot menu (self-healing: runs on every poller start). Best-effort:
@@ -183,9 +189,12 @@ export default function piTelega(pi: ExtensionAPI): void {
         for (const u of updates) await handleUpdate(u);
       },
       onError: (err) => ui(`pi-telega poll error: ${String(err)}`, "error"),
+      onConflict: () => ui("pi-telega: another client is polling this bot token (409 Conflict) — backing off and retrying", "warning"),
       shouldStop: () => stopping || gen !== pollGen,
       sleep,
+      signal: aborter.signal,
     });
+    return gen;
   }
 
   async function handleUpdate(update: TgUpdate): Promise<void> {
@@ -266,6 +275,7 @@ export default function piTelega(pi: ExtensionAPI): void {
     await persist();
     const old = pollPromise;
     stopping = true;
+    pollAbort?.abort(); // end the old in-flight long poll at once
     if (old) await old.catch(() => {});
     // A session replacement can happen while we were waiting above — in that
     // case this handler's ctx is stale and must not be used any more.
@@ -364,15 +374,33 @@ export default function piTelega(pi: ExtensionAPI): void {
     // A failure here (e.g. in onSessionReplaced) must surface as a TUI notice,
     // never as an unhandled rejection that kills the pi process.
     pollPromise = (async () => {
-      await startPolling();
+      // Stop the previous generation BEFORE starting the new one. With its
+      // long poll still in flight, the new poller's first getUpdates would
+      // 409 (one poller per token) — and on pre-fix code that killed the NEW
+      // loop while the old one died on its generation check: no poller left,
+      // bot deaf. abort() is synchronous (the in-flight fetch rejects and the
+      // old loop's shouldStop flag is set), so the old loop can never issue
+      // ANOTHER getUpdates — no overlap on the wire. We deliberately do NOT
+      // await the old generation: it may be mid-update-batch (minutes), and
+      // a late 409 (server still sees the dying connection) is survivable —
+      // the loop backs off and retries instead of dying.
+      stopping = true;
+      pollAbort?.abort();
+      // startPolling's sync setup (client/out/bridge) is done by the time this
+      // line runs — only its long-poll loop is still pending.
+      const loop = startPolling();
+      // Card + clear question AT arrival (design §8: "the NEW instance's
+      // session_start calls onSessionReplaced").
       const pa = cfg.pendingAction;
       if (pa && bridge) await bridge.onSessionReplaced(pa.chatId);
+      await loop; // pollPromise lives for the loop's lifetime
     })().catch((err) => ui(`pi-telega: ${String(err)}`, "error"));
     void pollPromise;
   });
 
   pi.on("session_shutdown", () => {
     stopping = true;
+    pollAbort?.abort(); // end the in-flight long poll at once (no 50 s wait)
   });
 
   // ── mirror events ──
