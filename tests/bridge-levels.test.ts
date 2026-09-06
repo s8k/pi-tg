@@ -44,6 +44,17 @@ test("old /mute /unmute are gone: they land on the unknown-command path", async 
   assert.equal(lastSend(out), "Unknown command /mute — see /help");
 });
 
+test("help: command order — status, stop, compact up top; name right after sessions", () => {
+  const cmds = helpText()
+    .split("\n")
+    .filter((l) => l.startsWith("<b>/"))
+    .map((l) => l.match(/^<b>\/(\w+)/)?.[1] ?? "");
+  assert.deepEqual(cmds, [
+    "status", "stop", "compact", "new", "sessions", "name", "models", "thinking",
+    "level_mute", "level_minimal", "level_full", "reload", "kill", "help",
+  ]);
+});
+
 test("help lists the three level commands, not /mute or /unmute", () => {
   const h = helpText();
   assert.ok(h.includes("/level_mute"), h);
