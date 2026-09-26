@@ -69,6 +69,17 @@ export interface TelegaPi {
   shutdown(): void;
 }
 
+/**
+ * Structural view of the dialog host (src/ui-dialogs.ts) — keeps the bridge
+ * pi-free & testable. Absent when mirrorDialogs is off.
+ */
+export interface DialogsPort {
+  /** Telegram side answered a pending dialog. false = stale (already answered / unknown id). */
+  tgAnswer(dialogId: number, input: { kind: "option"; index: number } | { kind: "text"; text: string } | { kind: "cancel" }): boolean;
+  /** The dialog id for a pending dialog's Telegram message (reply routing), or undefined. */
+  dialogIdForMessage(messageId: number): number | undefined;
+}
+
 /** Telegram send primitives (implemented by index.ts over TelegramClient). */
 export interface Out {
   send(
@@ -106,6 +117,8 @@ export interface BridgeDeps {
    * that don't exercise the early draft leave it unset).
    */
   onPromptAccepted?: () => void;
+  /** Dialog mirroring host (absent when mirrorDialogs is off or tests don't exercise it). */
+  dialogs?: DialogsPort;
 }
 
 export function timeAgo(ms: number, now = Date.now()): string {
@@ -641,6 +654,19 @@ export class SessionBridge {
       case "clear":
         await this.handleClear(action);
         return;
+      case "dialogAnswer":
+        // Stale taps (unknown/answered id) are silent: the stamp edit already
+        // removed the keyboard, so this is a same-batch double tap at worst.
+        this.deps.dialogs?.tgAnswer(action.dialogId, { kind: "option", index: action.index });
+        return;
+      case "dialogCancel":
+        this.deps.dialogs?.tgAnswer(action.dialogId, { kind: "cancel" });
+        return;
+      case "dialogText": {
+        const id = this.deps.dialogs?.dialogIdForMessage(action.replyToMessageId);
+        if (id !== undefined) this.deps.dialogs?.tgAnswer(id, { kind: "text", text: action.text });
+        return;
+      }
     }
   }
 
