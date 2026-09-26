@@ -25,6 +25,12 @@ export function encodeInternal(action: TgAction): string | null {
       return `internal kill ${action.chatId} ${action.yes ? 1 : 0}`;
     case "clear":
       return `internal clear ${action.chatId} ${action.doIt ? 1 : 0}`;
+    case "dialogAnswer":
+      return `internal dialogAnswer ${action.chatId} ${action.dialogId} ${action.index}`;
+    case "dialogCancel":
+      return `internal dialogCancel ${action.chatId} ${action.dialogId}`;
+    case "dialogText":
+      return `internal dialogText ${action.chatId} ${JSON.stringify({ r: action.replyToMessageId, t: action.text })}`;
     default: {
       const a = action as { kind: string; chatId: number; index?: number };
       return `internal ${a.kind} ${a.chatId}${INDEX.has(a.kind) ? ` ${a.index}` : ""}`;
@@ -58,6 +64,30 @@ export function parseInternal(args: string): TgAction | null {
     case "clear":
       if (rest !== "0" && rest !== "1") return null;
       return { kind: "clear", chatId, doIt: rest === "1" };
+    case "dialogAnswer": {
+      const partsRest = rest.split(/\s+/);
+      if (partsRest.length !== 2) return null;
+      const dialogId = Number(partsRest[0]);
+      const index = Number(partsRest[1]);
+      if (!Number.isInteger(dialogId) || dialogId <= 0 || !Number.isInteger(index) || index < 0) return null;
+      return { kind: "dialogAnswer", chatId, dialogId, index };
+    }
+    case "dialogCancel": {
+      const dialogId = Number(rest);
+      if (!Number.isInteger(dialogId) || dialogId <= 0) return null;
+      return { kind: "dialogCancel", chatId, dialogId };
+    }
+    case "dialogText": {
+      try {
+        const v: unknown = JSON.parse(rest);
+        if (!v || typeof v !== "object") return null;
+        const o = v as { r?: unknown; t?: unknown };
+        if (typeof o.r !== "number" || !Number.isInteger(o.r) || o.r <= 0 || typeof o.t !== "string") return null;
+        return { kind: "dialogText", chatId, replyToMessageId: o.r, text: o.t };
+      } catch {
+        return null;
+      }
+    }
     case "nameSet":
     case "prompt": {
       try {

@@ -56,3 +56,22 @@ test("parse: garbage → null (never throws)", () => {
   assert.equal(parseInternal("internal kill 7 maybe"), null);
   assert.equal(parseInternal("internal switchOk 7 2"), null); // the dead switchOk action
 });
+
+test("dialog actions round-trip", () => {
+  const a1: TgAction = { kind: "dialogAnswer", chatId: 42, dialogId: 3, index: 7 };
+  assert.deepEqual(parseInternal(encodeInternal(a1)!), a1);
+  const a2: TgAction = { kind: "dialogCancel", chatId: 42, dialogId: 3 };
+  assert.deepEqual(parseInternal(encodeInternal(a2)!), a2);
+  const a3: TgAction = { kind: "dialogText", chatId: 42, replyToMessageId: 100, text: 'it\'s a "reply" /stop' };
+  assert.deepEqual(parseInternal(encodeInternal(a3)!), a3);
+  // malformed → null (never crash)
+  assert.equal(parseInternal("internal dialogAnswer 42 x 1"), null);
+  assert.equal(parseInternal("internal dialogAnswer 42 3 -1"), null);
+  assert.equal(parseInternal("internal dialogAnswer 42 3"), null); // missing index
+  assert.equal(parseInternal("internal dialogAnswer 42 0 1"), null); // dialogId must be > 0
+  assert.equal(parseInternal("internal dialogCancel 42 x"), null);
+  assert.equal(parseInternal("internal dialogText 42 notjson"), null);
+  assert.equal(parseInternal("internal dialogText 42 {}"), null); // missing fields
+  assert.equal(parseInternal("internal dialogText 42 {\"r\":100}"), null); // missing text
+  assert.equal(parseInternal("internal dialogText 42 {\"r\":\"100\",\"t\":\"x\"}"), null); // r must be int
+});
