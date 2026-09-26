@@ -96,6 +96,33 @@ Env `PI_TELEGA_BOT_TOKEN` overrides the stored token.
 | `codeFoldLines` | `25` | code fences whose body has more than N lines collapse into a closed `<details>` (out-of-range 5..500 → default) |
 | `sentMessageIds` | `[]` | recent sent message ids (dedupe; capped at 500) |
 | `lastOffset` | `0` | long-poll offset (survives restarts) |
+| `mirrorDialogs` | `true` | mirror other extensions’ TUI dialogs to the chat (see below) |
+
+## Dialog mirroring
+
+When another extension asks you something in the terminal — `ctx.ui.select`,
+`ctx.ui.confirm`, `ctx.ui.input` or `ctx.ui.editor` — the question is mirrored
+to the chat at the same time:
+
+- **select / confirm** → inline buttons (one per option, plus ✖ Cancel);
+  more than 20 options → a numbered list, answer by replying with the number.
+- **input / editor** → “reply to this message with your answer”.
+
+**First answer wins:**
+
+- tap the phone → the terminal dialog dismisses itself and the message is
+  stamped `✔️ <title>: answered: …`;
+- press a key in the terminal → the message is stamped
+  `💻 <title>: answered in the terminal`.
+
+Caveats:
+
+- `ctx.ui.custom` (arbitrary terminal UI) is **not** mirrorable — it stays
+  terminal-only, with the usual “⚠️ terminal prompt” line in the work log.
+- `editor` has no programmatic dismiss in pi: if the phone answers first, the
+  terminal editor stays open until Esc (its late result is discarded).
+- Mirroring is independent of the output level — it follows `mirrorDialogs`
+  only. Set `"mirrorDialogs": false` in the config file to turn it off.
 
 ## Security model
 
