@@ -257,11 +257,14 @@ export function renderDialog(spec: DialogSpec, id: number, numbered: boolean): {
 }
 
 export class PendingDialogs {
+  private deps: PendingDialogsDeps;
   private nextId = 1;
   private byId = new Map<number, Pending>();
   private byMessageId = new Map<number, number>(); // Telegram message id → dialog id (reply routing)
 
-  constructor(private deps: PendingDialogsDeps) {}
+  constructor(deps: PendingDialogsDeps) {
+    this.deps = deps; // parameter properties are NOT erasable — Node type-stripping forbids them
+  }
 
   isDialogMessage(messageId: number): boolean {
     return this.byIdMessage(messageId) !== undefined;

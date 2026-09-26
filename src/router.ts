@@ -8,6 +8,9 @@ export const CB = {
   thinking: (i: number) => `t:${i}`,
   kill: (yes: boolean) => (yes ? "k:1" : "k:0"),
   clear: (doIt: boolean) => (doIt ? "c:1" : "c:0"),
+  /** Mirrored TUI dialogs: da:<dialogId>:<optionIndex> / dc:<dialogId> — always ≤ 64 bytes. */
+  dialogAnswer: (d: number, i: number) => `da:${d}:${i}`,
+  dialogCancel: (d: number) => `dc:${d}`,
 } as const;
 
 export type TgAction =
