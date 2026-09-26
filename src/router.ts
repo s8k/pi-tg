@@ -38,6 +38,9 @@ export type TgAction =
   | { kind: "kill"; chatId: number; yes: boolean }
   | { kind: "clear"; chatId: number; doIt: boolean }
   | { kind: "prompt"; chatId: number; text: string }
+  | { kind: "dialogAnswer"; chatId: number; dialogId: number; index: number }
+  | { kind: "dialogCancel"; chatId: number; dialogId: number }
+  | { kind: "dialogText"; chatId: number; replyToMessageId: number; text: string }
   | { kind: "unknown"; chatId: number; text: string };
 
 const CMD_RE = /^\/([a-zA-Z0-9_]+)(?:@[a-zA-Z0-9_]+)?\s*(.*)$/;
@@ -48,7 +51,11 @@ const CMD_RE = /^\/([a-zA-Z0-9_]+)(?:@[a-zA-Z0-9_]+)?\s*(.*)$/;
  * - paired: only ownerId; bots, edits, non-text → ignore
  * - unknown command names and stale buttons → ignore/unknown (never crash)
  */
-export function route(update: TgUpdate, ownerId: number | undefined): TgAction {
+export function route(
+  update: TgUpdate,
+  ownerId: number | undefined,
+  opts?: { isDialogMessage?: (messageId: number) => boolean },
+): TgAction {
   // The rich draft's native Stop button (Bot API 10.2). Reuses the existing
   // `stop` action: the bridge aborts the turn and mirrors a ⏹️ message.
   const stopped = update.stopped_message_generation;
@@ -67,6 +74,19 @@ export function route(update: TgUpdate, ownerId: number | undefined): TgAction {
     if (d.startsWith("t:")) return { kind: "thinkingSet", chatId, index: Number(d.slice(2)) };
     if (d === "k:1" || d === "k:0") return { kind: "kill", chatId, yes: d === "k:1" };
     if (d === "c:1" || d === "c:0") return { kind: "clear", chatId, doIt: d === "c:1" };
+    if (d.startsWith("da:")) {
+      const [ds, is] = d.slice(3).split(":");
+      const dialogId = Number(ds);
+      const index = Number(is);
+      if (Number.isInteger(dialogId) && dialogId > 0 && Number.isInteger(index) && index >= 0)
+        return { kind: "dialogAnswer", chatId, dialogId, index };
+      return { kind: "ignore" };
+    }
+    if (d.startsWith("dc:")) {
+      const dialogId = Number(d.slice(3));
+      if (Number.isInteger(dialogId) && dialogId > 0) return { kind: "dialogCancel", chatId, dialogId };
+      return { kind: "ignore" };
+    }
     return { kind: "ignore" };
   }
 
@@ -84,6 +104,11 @@ export function route(update: TgUpdate, ownerId: number | undefined): TgAction {
   if (fromId !== ownerId) return { kind: "notAuthorized", chatId, fromId };
 
   const text = msg.text.trim();
+  // A reply to a pending dialog message is the dialog's text answer — even when
+  // it looks like a command (the owner is answering, not commanding).
+  const replyTo = msg.reply_to_message?.message_id;
+  if (replyTo !== undefined && opts?.isDialogMessage?.(replyTo))
+    return { kind: "dialogText", chatId, replyToMessageId: replyTo, text };
   const cmd = CMD_RE.exec(text);
   if (cmd) {
     const rest = cmd[2].trim();

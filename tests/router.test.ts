@@ -85,3 +85,27 @@ test("stopped_message_generation → stop (the draft's native Stop button)", () 
   // user it was shown to (we only send drafts in the owner's private chat).
   assert.deepEqual(route(live, undefined), { kind: "stop", chatId: 55 });
 });
+
+test("dialog callbacks: da:<id>:<idx> → dialogAnswer, dc:<id> → dialogCancel, owner-gated, malformed → ignore", () => {
+  assert.deepEqual(route(cbUpdate(1, 5, "da:3:1"), 5), { kind: "dialogAnswer", chatId: 7, dialogId: 3, index: 1 });
+  assert.deepEqual(route(cbUpdate(2, 5, "dc:3"), 5), { kind: "dialogCancel", chatId: 7, dialogId: 3 });
+  assert.equal(route(cbUpdate(3, 9, "da:3:1"), 5).kind, "notAuthorized"); // non-owner
+  assert.equal(route(cbUpdate(4, 5, "da:x:1"), 5).kind, "ignore"); // malformed dialogId
+  assert.equal(route(cbUpdate(5, 5, "da:3:x"), 5).kind, "ignore"); // malformed index
+  assert.equal(route(cbUpdate(6, 5, "da:3"), 5).kind, "ignore"); // missing index
+  assert.equal(route(cbUpdate(7, 5, "dc:0"), 5).kind, "ignore"); // dialogId must be > 0
+  assert.equal(route(cbUpdate(8, 5, "da:0:1"), 5).kind, "ignore");
+});
+
+test("reply to a dialog message → dialogText (even command-looking); reply elsewhere / no mapper → prompt", () => {
+  const replyUpdate = (updateId: number, id: number, text: string, replyTo: number): TgUpdate => ({
+    update_id: updateId,
+    message: { message_id: 1, date: 1, chat, from: from(id), text, reply_to_message: { message_id: replyTo } },
+  });
+  const isDialog = (mid: number) => mid === 100;
+  assert.deepEqual(route(replyUpdate(1, 5, "hello", 100), 5, { isDialogMessage: isDialog }), { kind: "dialogText", chatId: 7, replyToMessageId: 100, text: "hello" });
+  assert.deepEqual(route(replyUpdate(2, 5, "/stop", 100), 5, { isDialogMessage: isDialog }), { kind: "dialogText", chatId: 7, replyToMessageId: 100, text: "/stop" });
+  assert.deepEqual(route(replyUpdate(3, 5, "hello", 101), 5, { isDialogMessage: isDialog }), { kind: "prompt", chatId: 7, text: "hello" });
+  assert.deepEqual(route(replyUpdate(4, 5, "hello", 100), 5), { kind: "prompt", chatId: 7, text: "hello" }); // no mapper → prompt
+  assert.equal(route(replyUpdate(5, 9, "hello", 100), 5, { isDialogMessage: isDialog }).kind, "notAuthorized"); // non-owner
+});
