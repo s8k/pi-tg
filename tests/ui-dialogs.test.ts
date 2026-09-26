@@ -79,3 +79,72 @@ test("tuiAnswered: releases the dialog, stamp says terminal, race resolves 'expi
   const lastEdit = out.calls.filter((c) => c.kind === "edit").pop();
   assert.ok(String(lastEdit?.text).includes("terminal"));
 });
+
+test("input: reply-based message with cancel button; tgAnswer(text) resolves {kind:'text'}", async () => {
+  const made = deps();
+  const p = new PendingDialogs(made.deps);
+  const out = made.out;
+  const id = await p.show({ kind: "input", title: "Name", placeholder: "e.g. alpha" });
+  assert.equal(id, 1);
+  const sent = out.calls.filter((c) => c.kind === "send").pop()!;
+  assert.ok(String(sent.text).includes("Reply to this message"));
+  assert.ok(String(sent.text).includes("e.g. alpha"));
+  const answer = new Promise<unknown>((res) => p.answer(1, res));
+  assert.equal(p.tgAnswer(1, { kind: "text", text: "hello" }), true);
+  assert.deepEqual(await answer, { kind: "text", text: "hello" });
+});
+
+test("numbered select (>20 options): numbered list, numeric reply → option, non-numeric ignored (stays open)", async () => {
+  const made = deps();
+  const p = new PendingDialogs(made.deps);
+  const out = made.out;
+  const opts = Array.from({ length: 25 }, (_, i) => `opt${i}`);
+  const id = await p.show({ kind: "select", title: "Many", options: opts });
+  const sent = out.calls.filter((c) => c.kind === "send").pop()!;
+  assert.ok(String(sent.text).includes("Reply with the option number"));
+  assert.ok(String(sent.text).includes("25. opt24"));
+  const answer = new Promise<unknown>((res) => p.answer(1, res));
+  assert.equal(p.tgAnswer(1, { kind: "text", text: "not a number" }), false, "ignored — dialog stays open");
+  assert.equal(p.size, 1);
+  assert.equal(p.tgAnswer(1, { kind: "text", text: " 25 " }), true, "whitespace-padded number accepted");
+  assert.deepEqual(await answer, { kind: "option", index: 24 });
+});
+
+test("reply routing: isDialogMessage / dialogIdForMessage track the SENT message id", async () => {
+  const made = deps();
+  const p = new PendingDialogs(made.deps);
+  await p.show({ kind: "input", title: "t" }); // FakeOut sends message id 100
+  assert.equal(p.isDialogMessage(100), true);
+  assert.equal(p.dialogIdForMessage(100), 1);
+  assert.equal(p.isDialogMessage(101), false);
+  p.tuiAnswered(1, undefined);
+  assert.equal(p.isDialogMessage(100), false, "released after TUI-side answer");
+});
+
+test("cancelAll: stamps every pending and releases with 'expired'", async () => {
+  const made = deps();
+  const p = new PendingDialogs(made.deps);
+  const out = made.out;
+  await p.show({ kind: "confirm", title: "A", message: "m" });
+  await p.show({ kind: "input", title: "B" });
+  const a1 = new Promise<unknown>((res) => p.answer(1, res));
+  const a2 = new Promise<unknown>((res) => p.answer(2, res));
+  p.cancelAll();
+  assert.deepEqual(await a1, { kind: "expired" });
+  assert.deepEqual(await a2, { kind: "expired" });
+  assert.equal(p.size, 0);
+  const edits = out.calls.filter((c) => c.kind === "edit");
+  assert.equal(edits.length, 2);
+  assert.ok(edits.every((e) => String(e.text).includes("expired")));
+});
+
+test("show: send failure → notify + undefined (TUI-only fallback)", async () => {
+  const out = new FakeOut();
+  out.sendFailsWith = new Error("network down");
+  const notes: string[] = [];
+  const d: PendingDialogsDeps = { out, getChatId: () => 42, enabled: () => true, notify: (m) => notes.push(m) };
+  const p = new PendingDialogs(d);
+  assert.equal(await p.show({ kind: "confirm", title: "t", message: "m" }), undefined);
+  assert.equal(p.size, 0);
+  assert.ok(notes.some((n) => n.includes("dialog send failed")));
+});
