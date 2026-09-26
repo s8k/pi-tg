@@ -43,6 +43,8 @@ export interface TelegaConfig {
   codeFoldLines: number;
   /** Agent output level (see `OutputLevel`). Legacy `muted` still parses: true → "mute", false → "full". */
   level: OutputLevel;
+  /** Mirror other extensions' TUI dialogs (select/confirm/input/editor) to Telegram as interactive messages. */
+  mirrorDialogs: boolean;
   /** IDs of bot-sent messages, for chat cleaning (capped at 500, newest last). */
   sentMessageIds: number[];
   /** Polling cursor, persisted so a restart/instance-swap resumes without re-read. */
@@ -60,7 +62,7 @@ export interface ConfigOptions {
 
 export const DEFAULTS: Pick<
   TelegaConfig,
-  "streamEditMs" | "askClearOnSwitch" | "maxSessionList" | "draftHeartbeatMs" | "errorSettleMs" | "codeFoldLines" | "level" | "sentMessageIds"
+  "streamEditMs" | "askClearOnSwitch" | "maxSessionList" | "draftHeartbeatMs" | "errorSettleMs" | "codeFoldLines" | "level" | "mirrorDialogs" | "sentMessageIds"
 > = {
   streamEditMs: 1500,
   askClearOnSwitch: true,
@@ -69,6 +71,7 @@ export const DEFAULTS: Pick<
   errorSettleMs: 5_000,
   codeFoldLines: 25,
   level: "full",
+  mirrorDialogs: true,
   sentMessageIds: [],
 };
 
@@ -133,6 +136,7 @@ export function sanitize(raw: unknown): TelegaConfig {
     errorSettleMs: clampInt(obj.errorSettleMs, DEFAULTS.errorSettleMs, 1_000, 30_000),
     codeFoldLines: clampInt(obj.codeFoldLines, DEFAULTS.codeFoldLines, 5, 500),
     level: parseLevel(obj),
+    mirrorDialogs: typeof obj.mirrorDialogs === "boolean" ? obj.mirrorDialogs : DEFAULTS.mirrorDialogs,
     sentMessageIds: capSentIds(obj.sentMessageIds),
     lastOffset: typeof obj.lastOffset === "number" && Number.isFinite(obj.lastOffset) ? obj.lastOffset : undefined,
     pendingAction: sanitizePending(obj.pendingAction),

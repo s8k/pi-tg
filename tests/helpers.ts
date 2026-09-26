@@ -18,6 +18,7 @@ export function makeDeps(pi: TelegaPi, out: FakeOut, cfg: Partial<TelegaConfig> 
       errorSettleMs: 5_000,
       codeFoldLines: 25,
       level: "full",
+      mirrorDialogs: true,
       sentMessageIds: [],
       ...cfg,
     },

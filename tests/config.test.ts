@@ -126,3 +126,10 @@ test("sanitize: codeFoldLines default 25, valid 5..500 kept, out-of-range → de
   assert.equal(sanitize({ codeFoldLines: 2 }).codeFoldLines, 25); // below min → default
   assert.equal(sanitize({ codeFoldLines: "x" }).codeFoldLines, 25); // not a number → default
 });
+
+test("sanitize: mirrorDialogs — default true, explicit false kept, garbage → default", () => {
+  assert.equal(sanitize({}).mirrorDialogs, true);
+  assert.equal(sanitize({ mirrorDialogs: false }).mirrorDialogs, false);
+  assert.equal(sanitize({ mirrorDialogs: "nope" }).mirrorDialogs, true);
+  assert.equal(DEFAULTS.mirrorDialogs, true);
+});
