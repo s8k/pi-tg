@@ -44,14 +44,47 @@ async function waitFor(pred: () => boolean, what: string, ms = 15000): Promise<v
 // against a fake pi; each test boots a fresh polling generation via
 // session_start.
 const handlers = new Map<string, (...a: unknown[]) => unknown>();
-piTelega({ registerCommand: () => {}, on: (name: string, fn: (...a: unknown[]) => unknown) => handlers.set(name, fn) } as never);
+// The fake pi replays `/tg …` sendUserMessage calls through the captured
+// command handler — exactly what real pi does (the poller's dispatch path).
+let tgCommand: { handler: (args: string, ctx: unknown) => Promise<void> } | undefined;
+piTelega({
+  registerCommand: (name: string, def: unknown) => {
+    if (name === "tg") tgCommand = def as typeof tgCommand;
+  },
+  on: (name: string, fn: (...a: unknown[]) => unknown) => handlers.set(name, fn),
+  sendUserMessage: (text: string, _opts?: unknown) => {
+    if (typeof text === "string" && text.startsWith("/tg ") && tgCommand)
+      void tgCommand.handler(text.slice(4), { ui: { notify: () => {} } });
+  },
+} as never);
 // The fake ctx exposes the post-compact session context so index.ts can
 // re-derive pi's "after" count exactly as pi does internally (Σ estimateTokens
 // over buildSessionContext().messages): user "hi" = ceil(2/4) = 1,
 // compactionSummary "s" = ceil(1/4) = 1 → after = 2.
+// `ui` mimics pi's shared ctx.ui object (mode tui + dialog methods) so
+// installUiProxy has something to patch, exactly like the real runner's.
+let selectPress: ((v?: string) => void) | undefined;
 const fakeCtx = {
   cwd: "/tmp",
-  ui: { notify: () => {} },
+  mode: "tui",
+  hasUI: true,
+  ui: {
+    notify: () => {},
+    // mimics pi's showExtensionSelector: resolves on keypress OR opts.signal abort
+    select: (_title: string, _options?: string[], opts?: { signal?: AbortSignal }) =>
+      new Promise<string | undefined>((resolve) => {
+        if (opts?.signal?.aborted) return resolve(undefined);
+        const onAbort = () => resolve(undefined);
+        opts?.signal?.addEventListener("abort", onAbort, { once: true });
+        selectPress = (v?: string) => {
+          opts?.signal?.removeEventListener("abort", onAbort);
+          resolve(v);
+        };
+      }),
+    confirm: () => Promise.resolve(false),
+    input: () => Promise.resolve(undefined),
+    editor: () => Promise.resolve(undefined),
+  },
   sessionManager: {
     buildSessionContext: () => ({
       messages: [
@@ -453,5 +486,117 @@ test("T6 lane 1: auto-compact with no live draft → standalone draft; finish st
   await waitFor(
     () => calls.some((c) => c.method === "sendMessage" && String(c.body.text ?? "") === "⚠️ Auto-compaction failed: disk on fire"),
     "the ⚠️ result",
+  );
+});
+
+// ── dialog mirroring E2E (Option A: the in-place ctx.ui proxy) ─────────────
+
+test("dialog mirroring E2E: extension select → TG buttons → owner tap wins (stamped); terminal key wins (stamped 'terminal')", async (t) => {
+  const calls: WireCall[] = [];
+  const realFetch = globalThis.fetch;
+  t.after(() => (globalThis.fetch = realFetch));
+  let batch = 0;
+  let msgId = 100;
+  let resolveLongPoll: ((updates: unknown[]) => void) | undefined;
+  globalThis.fetch = (async (url: string, init?: RequestInit): Promise<Response> => {
+    const method = String(url).split("/").pop() ?? "";
+    const body = (init?.body ? JSON.parse(String(init.body)) : {}) as Record<string, unknown>;
+    calls.push({ method, body, markdown: "" });
+    if (method === "getMe")
+      return new Response(JSON.stringify({ ok: true, result: { id: 1, is_bot: true, first_name: "Tg", username: "tgb" } }), { status: 200 });
+    if (method === "getUpdates") {
+      batch++;
+      if (batch === 1)
+        // teaches the owner chat (42)
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            result: [
+              { update_id: 1, message: { message_id: 1, date: 1, chat: { id: 42, type: "private" }, from: { id: 123456, is_bot: false, first_name: "O" }, text: "hi" } },
+            ],
+          }),
+          { status: 200 },
+        );
+      // every later poll hangs until the test resolves it with a batch
+      return new Promise<Response>((resolve, reject) => {
+        const sig = init?.signal;
+        const onAbort = () => reject(new DOMException("Aborted", "AbortError"));
+        if (sig) {
+          if (sig.aborted) onAbort();
+          else sig.addEventListener("abort", onAbort, { once: true });
+        }
+        resolveLongPoll = (updates) => resolve(new Response(JSON.stringify({ ok: true, result: updates }), { status: 200 }));
+      });
+    }
+    if (method === "sendMessage")
+      return new Response(JSON.stringify({ ok: true, result: { message_id: ++msgId } }), { status: 200 });
+    return new Response(JSON.stringify({ ok: true, result: true }), { status: 200 });
+  }) as typeof fetch;
+
+  // A FRESH ctx per generation is what pi does (each runner swap creates a
+  // new shared ui object) — the proxy must be (re)installed on it.
+  let e2ePress: ((v?: string) => void) | undefined;
+  let e2eOpened = 0; // how many times the TUI dialog actually opened (a key can only be pressed once it did)
+  const e2eCtx = {
+    cwd: "/tmp",
+    mode: "tui",
+    hasUI: true,
+    ui: {
+      notify: () => {},
+      select: (_title: string, _options?: string[], opts?: { signal?: AbortSignal }) =>
+        new Promise<string | undefined>((resolve) => {
+          if (opts?.signal?.aborted) return resolve(undefined);
+          const onAbort = () => resolve(undefined);
+          opts?.signal?.addEventListener("abort", onAbort, { once: true });
+          e2eOpened++;
+          e2ePress = (v?: string) => {
+            opts?.signal?.removeEventListener("abort", onAbort);
+            resolve(v);
+          };
+        }),
+      confirm: () => Promise.resolve(false),
+      input: () => Promise.resolve(undefined),
+      editor: () => Promise.resolve(undefined),
+    },
+    sessionManager: fakeCtx.sessionManager,
+  };
+
+  handlers.get("session_start")!({}, e2eCtx);
+  // wait until batch 1 was processed (the 2nd getUpdates went out = chat learned)
+  await waitFor(() => calls.filter((c) => c.method === "getUpdates").length >= 2, "owner chat learned");
+
+  // 1) TG tap wins: another extension asks via the shared ctx.ui
+  const p1 = e2eCtx.ui.select("Pick flavor", ["vanilla", "chocolate"]);
+  await waitFor(
+    () => calls.some((c) => c.method === "sendMessage" && JSON.stringify(c.body.reply_markup ?? "").includes("da:1:0")),
+    "TG dialog with buttons on the wire",
+  );
+  resolveLongPoll!([
+    {
+      update_id: 10,
+      callback_query: { id: "cb1", from: { id: 123456, is_bot: false }, data: "da:1:1", message: { message_id: 200, date: 1, chat: { id: 42, type: "private" } } },
+    },
+  ]);
+  assert.equal(await p1, "chocolate", "the extension got the TAPPED option");
+  await waitFor(
+    () => calls.some((c) => c.method === "editMessageText" && String(c.body.text ?? "").includes("chocolate")),
+    "✔️ stamp on the wire",
+  );
+
+  // 2) terminal key wins: the TUI answer resolves, the TG message is stamped 'terminal'
+  const p2 = e2eCtx.ui.select("Pick again", ["a", "b"]);
+  await waitFor(
+    () => calls.some((c) => c.method === "sendMessage" && JSON.stringify(c.body.reply_markup ?? "").includes("da:2:0")),
+    "second TG dialog on the wire",
+  );
+  // The TUI dialog opens only after the TG dialog's send settled — a key can
+  // not be pressed before that (the wrapper races the TUI dialog against the
+  // phone). Wait for the open, then press.
+  await waitFor(() => e2eOpened >= 2, "TUI dialog 2 opened (the press needs an open dialog)");
+  e2ePress!("b");
+  assert.equal(await p2, "b");
+  await waitFor(
+    () => calls.some((c) => c.method === "editMessageText" && String(c.body.text ?? "").includes("terminal")),
+    "💻 terminal stamp on the wire",
   );
 });

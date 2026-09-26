@@ -13,7 +13,8 @@ import type { Out, TelegaPi } from "./src/session-bridge.ts";
 import { Mirror, compactTokenDetail } from "./src/mirror.ts";
 import type { MirrorMessage } from "./src/mirror.ts";
 import { renderQr, qrWidgetFactory, tokenLooksValid, notAuthorizedText } from "./src/onboarding.ts";
-import { makeOut, makeTelegaPi, ctxIsAlive, wrapWaitForIdle } from "./src/wiring.ts";
+import { makeOut, makeTelegaPi, ctxIsAlive, wrapWaitForIdle, installUiProxy } from "./src/wiring.ts";
+import { PendingDialogs } from "./src/ui-dialogs.ts";
 import { runTgCompaction } from "./src/compact.ts";
 
 const CFG = { path: join(getAgentDir(), "pi-telega.json") };
@@ -78,6 +79,8 @@ export default function piTelega(pi: ExtensionAPI): void {
   let pollAbort: AbortController | undefined;
   let pollPromise: Promise<unknown> | undefined;
   let currentMirror: Mirror | undefined;
+  /** Mirrored TUI dialogs (one instance per polling generation). */
+  let dialogs: PendingDialogs | undefined;
   // T6 auto-compact lane, chosen at session_before_compact (auto): where the
   // result events land — the live run's draft (mirror) or the bridge's
   // standalone draft (bridge). Undefined = nothing to report (mute level /
@@ -120,6 +123,12 @@ export default function piTelega(pi: ExtensionAPI): void {
     client = new TelegramClient(token ?? "", {});
     const outAdapter = makeOut(client, state, persist);
     out = outAdapter;
+    dialogs = new PendingDialogs({
+      out: outAdapter,
+      getChatId: () => ownerChatId,
+      enabled: () => cfg.mirrorDialogs,
+      notify: (m, l) => ui(m, l),
+    });
     piAdapter = makeTelegaPi({
       pi,
       getCmdCtx: () => cmdCtx,
@@ -135,6 +144,7 @@ export default function piTelega(pi: ExtensionAPI): void {
       persist,
       sleep,
       probeGpu,
+      dialogs,
       // T6 early draft: the run's draft (spinner) goes out when the prompt is
       // dispatched, before pi's agent_start.
       onPromptAccepted: () => safeCall(() => currentMirror?.onPromptAccepted()),
@@ -199,7 +209,7 @@ export default function piTelega(pi: ExtensionAPI): void {
 
   async function handleUpdate(update: TgUpdate): Promise<void> {
     if (!bridge || !out || !state) return;
-    const action = route(update, cfg.ownerId);
+    const action = route(update, cfg.ownerId, { isDialogMessage: (id) => dialogs?.isDialogMessage(id) ?? false });
     if (action.kind === "ignore") return;
     const msg = update.message;
     if (msg && msg.from && cfg.ownerId !== undefined && msg.from.id === cfg.ownerId) {
@@ -389,6 +399,13 @@ export default function piTelega(pi: ExtensionAPI): void {
       // startPolling's sync setup (client/out/bridge) is done by the time this
       // line runs — only its long-poll loop is still pending.
       const loop = startPolling();
+      // TUI dialog mirroring (Option A): patch the NEW runner's shared ctx.ui
+      // object. Every runner swap (new session / reload) creates a fresh
+      // wrapped object, so this re-runs each session_start; the marker makes a
+      // repeat on the same object a no-op. Non-tui modes (rpc/print) have no
+      // TUI dialogs to mirror.
+      if (dialogs && ctx.mode === "tui" && ctx.hasUI)
+        installUiProxy(ctx.ui as unknown as Record<PropertyKey, unknown>, dialogs, (m) => ui(m, "warning"));
       // Card + clear question AT arrival for /new and session switches (design
       // §8: "the NEW instance's session_start calls onSessionReplaced"). A
       // /reload posts nothing — the old instance's ✔️ stamp is the confirmation.
@@ -402,6 +419,7 @@ export default function piTelega(pi: ExtensionAPI): void {
   pi.on("session_shutdown", () => {
     stopping = true;
     pollAbort?.abort(); // end the in-flight long poll at once (no 50 s wait)
+    dialogs?.cancelAll(); // stamp + release any pending dialogs (their TUI twins die with the runner)
   });
 
   // ── mirror events ──

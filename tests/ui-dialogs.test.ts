@@ -117,8 +117,12 @@ test("reply routing: isDialogMessage / dialogIdForMessage track the SENT message
   assert.equal(p.isDialogMessage(100), true);
   assert.equal(p.dialogIdForMessage(100), 1);
   assert.equal(p.isDialogMessage(101), false);
+  // The real wrapper always attaches the race resolver right after show() —
+  // do the same so tuiAnswered's release can deliver (and clear the routing).
+  const a = new Promise<unknown>((res) => p.answer(1, res));
   p.tuiAnswered(1, undefined);
   assert.equal(p.isDialogMessage(100), false, "released after TUI-side answer");
+  assert.deepEqual(await a, { kind: "expired" });
 });
 
 test("cancelAll: stamps every pending and releases with 'expired'", async () => {
@@ -147,4 +151,63 @@ test("show: send failure → notify + undefined (TUI-only fallback)", async () =
   assert.equal(await p.show({ kind: "confirm", title: "t", message: "m" }), undefined);
   assert.equal(p.size, 0);
   assert.ok(notes.some((n) => n.includes("dialog send failed")));
+});
+
+// ── in-flight race: a TG/TUI answer can arrive while the dialog's send is
+// still in flight (the callback round-trip beat the sendMessage response).
+// The stamp must use the real message id (not the -1 placeholder) and the
+// answer must not be lost. ──
+
+function slowOut() {
+  const out = new FakeOut();
+  let rel: () => void = () => {};
+  // stable function — `return { release }` would capture the initial ref
+  const release = () => rel();
+  const realSend = out.send;
+  out.send = async (chatId, text, opts) => {
+    await new Promise<void>((r) => {
+      rel = r;
+    });
+    return realSend(chatId, text, opts);
+  };
+  return { out, release };
+}
+
+test("in-flight: tgAnswer during the send is deferred — stamp uses the real id, answer reaches a late-attached resolver", async () => {
+  const { out, release } = slowOut();
+  const { deps: d } = deps({ out });
+  const p = new PendingDialogs(d);
+  const showP = p.show({ kind: "select", title: "Pick", options: ["a", "b"] });
+  assert.equal(p.size, 1);
+  assert.equal(p.tgAnswer(1, { kind: "option", index: 0 }), true, "accepted while in flight");
+  release();
+  assert.equal(await showP, 1, "show still resolves the id");
+  const edits = out.calls.filter((c) => c.kind === "edit");
+  assert.equal(edits.length, 1, "the stamp went out exactly once");
+  assert.equal(edits[0]!.messageId, 100, "the stamp used the real message id (not -1)");
+  // The wrapper attaches the race resolver only AFTER show() returns — the
+  // deferred answer must survive until then.
+  const got: unknown[] = [];
+  p.answer(1, (a) => got.push(a));
+  await new Promise((r) => setTimeout(r, 0));
+  assert.deepEqual(got, [{ kind: "option", index: 0 }], "the deferred answer was delivered");
+  assert.equal(p.size, 0);
+});
+
+test("in-flight: tuiAnswered during the send is deferred — stamp uses the real id, entry cleaned up", async () => {
+  const { out, release } = slowOut();
+  const { deps: d } = deps({ out });
+  const p = new PendingDialogs(d);
+  const showP = p.show({ kind: "select", title: "Pick", options: ["a", "b"] });
+  p.tuiAnswered(1, "a"); // the TUI side wins while the send is in flight
+  release();
+  await showP;
+  const edits = out.calls.filter((c) => c.kind === "edit");
+  assert.equal(edits.length, 1, "the 💻 stamp went out exactly once");
+  assert.equal(edits[0]!.messageId, 100, "the stamp used the real message id (not -1)");
+  assert.ok(String(edits[0]!.text).includes("terminal"));
+  const got: unknown[] = [];
+  p.answer(1, (a) => got.push(a));
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(p.size, 0, "no leaked entry");
 });

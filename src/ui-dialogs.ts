@@ -38,7 +38,13 @@ interface Pending {
   messageId: number;
   numbered: boolean;
   resolve: (a: DialogAnswer) => void;
+  /** (stamp, answer) waiting for the message id (the send is still in flight). */
+  deferred?: { stamp: string; answer: DialogAnswer };
+  /** Answer released before the race resolver was attached (see release/answer). */
+  pendingAnswer?: DialogAnswer;
 }
+
+const NOOP: (a: DialogAnswer) => void = () => {};
 
 /** select/confirm render as inline buttons up to this many options; beyond that the owner replies with a number. */
 export const MAX_BUTTON_OPTIONS = 20;
@@ -104,6 +110,11 @@ export class PendingDialogs {
     return this.byIdMessage(messageId) !== undefined;
   }
 
+  /** UiDialogHost contract: the cfg.mirrorDialogs master switch. */
+  enabled(): boolean {
+    return this.deps.enabled();
+  }
+
   dialogIdForMessage(messageId: number): number | undefined {
     return this.byIdMessage(messageId);
   }
@@ -127,31 +138,47 @@ export class PendingDialogs {
       spec,
       messageId: -1,
       numbered: spec.kind === "select" && (spec.options?.length ?? 0) > MAX_BUTTON_OPTIONS,
-      resolve: () => {}, // placeholder until answer() attaches the race resolver
+      resolve: NOOP, // placeholder until answer() attaches the race resolver
     };
     this.byId.set(id, p);
     const { text, buttons } = renderDialog(spec, id, p.numbered);
     let sent: number | undefined;
-    try {
-      sent = await this.deps.out.send(chatId, text, { replyMarkup: { inline_keyboard: buttons } });
+    try { sent = await this.deps.out.send(chatId, text, { replyMarkup: { inline_keyboard: buttons } });
     } catch (err) {
       this.deps.notify?.(`pi-telega: dialog send failed: ${String(err)}`, "error");
-      this.release(id, { kind: "expired" });
+      this.byId.delete(id); // the wrapper never attaches (show returned undefined) — nothing to resolve
       return undefined;
     }
     if (sent === undefined) {
-      this.release(id, { kind: "expired" });
+      this.byId.delete(id);
       return undefined;
     }
     p.messageId = sent;
     this.byMessageId.set(sent, id);
+    if (p.deferred) {
+      // A TG/TUI answer beat the sendMessage response — stamp with the now-known
+      // id and release (release may hold the answer until answer() attaches).
+      const d = p.deferred;
+      p.deferred = undefined;
+      void this.deps.out.edit(p.chatId, p.messageId, d.stamp, { parseMode: null }).catch(() => {});
+      this.release(id, d.answer);
+    }
     return id;
   }
 
   /** Attach the race resolver (wiring's installUiProxy). */
   answer(id: number, resolve: (a: DialogAnswer) => void): void {
     const p = this.byId.get(id);
-    if (p) p.resolve = resolve;
+    if (!p) return;
+    p.resolve = resolve;
+    if (p.pendingAnswer !== undefined) {
+      // An answer was released before the resolver existed — deliver it now.
+      const a = p.pendingAnswer;
+      p.pendingAnswer = undefined;
+      this.byId.delete(id);
+      this.byMessageId.delete(p.messageId);
+      resolve(a);
+    }
   }
 
   /** Telegram side answered (bridge dispatch). false = stale (already answered / unknown id). */
@@ -169,6 +196,11 @@ export class PendingDialogs {
         : input.kind === "text"
           ? `✔️ ${p.spec.title}: answered (see reply)`
           : `✖️ ${p.spec.title}: cancelled`;
+    if (p.messageId === -1) {
+      // The send is still in flight: stamp + release run once show() knows the id.
+      p.deferred = { stamp, answer: input };
+      return true;
+    }
     void this.deps.out.edit(p.chatId, p.messageId, stamp, { parseMode: null }).catch(() => {});
     this.release(dialogId, input);
     return true;
@@ -180,6 +212,10 @@ export class PendingDialogs {
     if (!p) return;
     const stamp =
       value === undefined ? `💻 ${p.spec.title}: cancelled in the terminal` : `💻 ${p.spec.title}: answered in the terminal`;
+    if (p.messageId === -1) {
+      p.deferred = { stamp, answer: { kind: "expired" } };
+      return;
+    }
     void this.deps.out.edit(p.chatId, p.messageId, stamp, { parseMode: null }).catch(() => {});
     this.release(dialogId, { kind: "expired" });
   }
@@ -188,6 +224,10 @@ export class PendingDialogs {
   cancelAll(): void {
     for (const id of [...this.byId.keys()]) {
       const p = this.byId.get(id)!;
+      if (p.messageId === -1) {
+        p.deferred = { stamp: `⚠️ ${p.spec.title}: expired`, answer: { kind: "expired" } };
+        continue;
+      }
       void this.deps.out.edit(p.chatId, p.messageId, `⚠️ ${p.spec.title}: expired`, { parseMode: null }).catch(() => {});
       this.release(id, { kind: "expired" });
     }
@@ -196,6 +236,12 @@ export class PendingDialogs {
   private release(dialogId: number, a: DialogAnswer): void {
     const p = this.byId.get(dialogId);
     if (!p) return;
+    if (p.resolve === NOOP) {
+      // The race resolver isn't attached yet (show() still in flight) — hold the
+      // answer; answer() delivers it the moment the wrapper attaches.
+      p.pendingAnswer = a;
+      return;
+    }
     this.byId.delete(dialogId);
     this.byMessageId.delete(p.messageId);
     p.resolve(a);
