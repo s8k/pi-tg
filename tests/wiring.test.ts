@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { makeOut, makeTelegaPi, ctxIsAlive, type CtxLike, type ClientLike, type PiLike } from "../src/wiring.ts";
+import { makeOut, makeTelegaPi, ctxIsAlive, installUiProxy, UI_PROXY_MARKER, type CtxLike, type ClientLike, type PiLike, type UiDialogHost, type UiDialogAnswer } from "../src/wiring.ts";
 import { TelegaState } from "../src/state.ts";
 
 test("makeOut: send → addSent + persist, default parseMode HTML", async () => {
@@ -312,4 +312,200 @@ test("makeTelegaPi: sessionUsage sums assistant usage across the session branch"
   });
   const t = makeTelegaPi({ pi: {} as PiLike, getCmdCtx: () => ctx, getSessionCtx: () => undefined, listSessions: async () => [] });
   assert.deepEqual(t.sessionUsage(), { input: 150, output: 275 });
+});
+
+// ── TUI dialog mirroring (Option A): installUiProxy ─────────────────────────
+
+function fakeTuiDialog<T = string | undefined>() {
+  let opened = 0;
+  let resolver: (v?: T) => void = () => {};
+  // stable function (the object literal below would capture the initial ref)
+  const press = (v?: T) => resolver(v);
+  const fn = (_title: string, _args?: unknown, opts?: { signal?: AbortSignal; timeout?: number }) =>
+    new Promise<T | undefined>((resolve) => {
+      opened++;
+      if (opts?.signal?.aborted) return resolve(undefined);
+      const onAbort = () => resolve(undefined);
+      opts?.signal?.addEventListener("abort", onAbort, { once: true });
+      resolver = (v) => {
+        opts?.signal?.removeEventListener("abort", onAbort);
+        resolve(v);
+      };
+    });
+  return { fn, press, opened: () => opened };
+}
+
+function fakeHost(over: { enabled?: () => boolean; showUndef?: boolean; showResult?: number } = {}) {
+  const calls = {
+    show: 0,
+    tuiAnswered: [] as [number, unknown][],
+    answers: new Map<number, (a: UiDialogAnswer) => void>(),
+  };
+  let nextId = 1; // like the real PendingDialogs: one id per shown dialog
+  const host: UiDialogHost = {
+    enabled: () => (over.enabled ? over.enabled() : true),
+    show: async () => {
+      calls.show++;
+      if (over.showUndef) return undefined;
+      if (over.showResult !== undefined) return over.showResult;
+      return nextId++;
+    },
+    answer: (id, resolve) => calls.answers.set(id, resolve),
+    tuiAnswered: (id, value) => calls.tuiAnswered.push([id, value]),
+  };
+  return { host, calls };
+}
+
+const uiTick = () => new Promise<void>((r) => setTimeout(r, 0));
+
+test("installUiProxy: patches all four methods, idempotent, returns true", () => {
+  const { host } = fakeHost();
+  const ui = { select: () => {}, confirm: () => {}, input: () => {}, editor: () => {} };
+  assert.equal(installUiProxy(ui as never, host), true);
+  assert.ok(ui[UI_PROXY_MARKER as never]);
+  assert.notEqual(ui.select, () => {});
+  const selectRef = ui.select;
+  assert.equal(installUiProxy(ui as never, host), true, "second install is a no-op");
+  assert.equal(ui.select, selectRef, "no re-wrap on repeat install");
+});
+
+test("installUiProxy: getter-only property → false + warn, no marker", () => {
+  const { host } = fakeHost();
+  const obj: Record<string, unknown> = {};
+  Object.defineProperty(obj, "select", { get: () => () => {} });
+  const warns: string[] = [];
+  assert.equal(installUiProxy(obj as never, host, (m) => warns.push(m)), false);
+  assert.ok(!obj[UI_PROXY_MARKER as never]);
+  assert.ok(warns.length >= 1);
+});
+
+test("installUiProxy: no dialog methods at all → false + warn", () => {
+  const { host } = fakeHost();
+  const warns: string[] = [];
+  assert.equal(installUiProxy({} as never, host, (m) => warns.push(m)), false);
+  assert.ok(warns.length >= 1);
+});
+
+test("wrapped select: TG tap wins → resolves the option; TUI dialog gets aborted; no tuiAnswered", async () => {
+  const sel = fakeTuiDialog();
+  const { host, calls } = fakeHost();
+  const ui = { select: sel.fn, confirm: () => {}, input: () => {}, editor: () => {} };
+  installUiProxy(ui as never, host);
+  const p = (ui.select as (t: string, o: string[]) => Promise<string | undefined>)("Pick", ["a", "b"]);
+  await uiTick(); // the wrapper awaits host.show before opening the TUI dialog
+  assert.equal(calls.show, 1);
+  assert.equal(sel.opened(), 1);
+  calls.answers.get(1)!({ kind: "option", index: 1 });
+  assert.equal(await p, "b");
+  assert.equal(calls.tuiAnswered.length, 0, "TG side won — no terminal stamp bookkeeping");
+  sel.press("a"); // the abort already resolved the fake with undefined — harmless
+});
+
+test("wrapped select: terminal key wins → resolves the TUI value; late TG tap ignored; tuiAnswered called", async () => {
+  const sel = fakeTuiDialog();
+  const { host, calls } = fakeHost();
+  const ui = { select: sel.fn, confirm: () => {}, input: () => {}, editor: () => {} };
+  installUiProxy(ui as never, host);
+  const p = (ui.select as (t: string, o: string[]) => Promise<string | undefined>)("Pick", ["a", "b"]);
+  await uiTick();
+  sel.press("a");
+  assert.equal(await p, "a");
+  assert.deepEqual(calls.tuiAnswered, [[1, "a"]]);
+  calls.answers.get(1)!({ kind: "option", index: 1 }); // stale TG tap after the TUI win
+  await uiTick();
+  assert.equal(calls.tuiAnswered.length, 1, "late TG answer ignored");
+});
+
+test("wrapped confirm: TG 'No' → false; TG cancel → false", async () => {
+  const sel = fakeTuiDialog<boolean>();
+  const { host, calls } = fakeHost();
+  const ui = { select: () => {}, confirm: sel.fn, input: () => {}, editor: () => {} };
+  installUiProxy(ui as never, host);
+  const p1 = (ui.confirm as (t: string, m: string) => Promise<boolean>)("Sure?", "m");
+  await uiTick();
+  calls.answers.get(1)!({ kind: "option", index: 1 });
+  assert.equal(await p1, false);
+  const p2 = (ui.confirm as (t: string, m: string) => Promise<boolean>)("Sure?", "m");
+  await uiTick();
+  calls.answers.get(2)!({ kind: "cancel" });
+  assert.equal(await p2, false);
+});
+
+test("wrapped confirm: TG 'Yes' → true; terminal 'Yes' → true (value passthrough)", async () => {
+  const sel = fakeTuiDialog<boolean>();
+  const { host, calls } = fakeHost();
+  const ui = { select: () => {}, confirm: sel.fn, input: () => {}, editor: () => {} };
+  installUiProxy(ui as never, host);
+  const p1 = (ui.confirm as (t: string, m: string) => Promise<boolean>)("Sure?", "m");
+  await uiTick();
+  calls.answers.get(1)!({ kind: "option", index: 0 });
+  assert.equal(await p1, true);
+  const p2 = (ui.confirm as (t: string, m: string) => Promise<boolean>)("Sure?", "m");
+  await uiTick();
+  sel.press(true);
+  assert.equal(await p2, true);
+  assert.deepEqual(calls.tuiAnswered, [[2, true]]);
+});
+
+test("wrapped input: TG text → resolves the text; cancel → undefined", async () => {
+  const inp = fakeTuiDialog();
+  const { host, calls } = fakeHost();
+  const ui = { select: () => {}, confirm: () => {}, input: inp.fn, editor: () => {} };
+  installUiProxy(ui as never, host);
+  const p = (ui.input as (t: string) => Promise<string | undefined>)("Name");
+  await uiTick();
+  calls.answers.get(1)!({ kind: "text", text: "hello" });
+  assert.equal(await p, "hello");
+  const p2 = (ui.input as (t: string) => Promise<string | undefined>)("Name");
+  await uiTick();
+  calls.answers.get(2)!({ kind: "cancel" });
+  assert.equal(await p2, undefined);
+});
+
+test("wrapped editor: no opts → TG text answer still resolves (TUI dialog can't be dismissed)", async () => {
+  const ed = fakeTuiDialog();
+  const { host, calls } = fakeHost();
+  const ui = { select: () => {}, confirm: () => {}, input: () => {}, editor: ed.fn };
+  installUiProxy(ui as never, host);
+  const p = (ui.editor as (t: string, prefill?: string) => Promise<string | undefined>)("Notes", "prefill");
+  await uiTick();
+  calls.answers.get(1)!({ kind: "text", text: "typed on phone" });
+  assert.equal(await p, "typed on phone");
+});
+
+test("wrapped select: host disabled → plain passthrough (no show, no race)", async () => {
+  const sel = fakeTuiDialog();
+  const { host, calls } = fakeHost({ enabled: () => false });
+  const ui = { select: sel.fn, confirm: () => {}, input: () => {}, editor: () => {} };
+  installUiProxy(ui as never, host);
+  const p = (ui.select as (t: string, o: string[]) => Promise<string | undefined>)("Pick", ["a"]);
+  sel.press("a");
+  assert.equal(await p, "a");
+  assert.equal(calls.show, 0);
+});
+
+test("wrapped select: show → undefined (unpaired) → TUI-only passthrough", async () => {
+  const sel = fakeTuiDialog();
+  const { host, calls } = fakeHost({ showUndef: true });
+  const ui = { select: sel.fn, confirm: () => {}, input: () => {}, editor: () => {} };
+  installUiProxy(ui as never, host);
+  const p = (ui.select as (t: string, o: string[]) => Promise<string | undefined>)("Pick", ["a"]);
+  await uiTick();
+  assert.equal(calls.show, 1);
+  sel.press("a");
+  assert.equal(await p, "a");
+  assert.equal(calls.answers.size, 0, "no race registered when the TG dialog never went out");
+});
+
+test("wrapped select: caller-provided signal is COMBINED (caller abort still dismisses the TUI dialog)", async () => {
+  const sel = fakeTuiDialog();
+  const { host, calls } = fakeHost();
+  const ui = { select: sel.fn, confirm: () => {}, input: () => {}, editor: () => {} };
+  installUiProxy(ui as never, host);
+  const ac = new AbortController();
+  const p = (ui.select as (t: string, o: string[], o3?: { signal?: AbortSignal }) => Promise<string | undefined>)("Pick", ["a"], { signal: ac.signal });
+  await uiTick();
+  ac.abort(); // the calling extension aborts its own dialog
+  assert.equal(await p, undefined);
+  assert.deepEqual(calls.tuiAnswered, [[1, undefined]]);
 });

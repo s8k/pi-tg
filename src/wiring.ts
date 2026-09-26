@@ -223,3 +223,170 @@ export function makeTelegaPi(deps: TelegaPiDeps): TelegaPi {
     shutdown: () => requireCtx().shutdown(),
   };
 }
+
+// ── TUI dialog mirroring (Option A) ─────────────────────────────────────────
+// pi's ctx.ui is ONE shared plain object (runner.uiContext, wrapped by pi's
+// wrapUIPromptContext) that EVERY extension's ctx resolves live. We patch its
+// dialog methods in place: the real TUI dialog opens as usual while a Telegram
+// twin goes out; the first resolution wins. TG win ⇒ the TUI dialog is
+// dismissed via the combined AbortSignal (pi's supported dismiss path); TUI
+// win ⇒ host.tuiAnswered stamps the Telegram message. custom() is NOT
+// mirrorable (arbitrary component) — it stays TUI-only with the existing
+// ui_prompt_start heads-up. Verified against pi 0.87.1: select/confirm/input
+// accept opts.signal (abort ⇒ resolve(undefined)); editor has NO opts (a TG-
+// first answer leaves the TUI editor open until Esc — its late resolution is
+// discarded harmlessly).
+
+export interface UiDialogSpec {
+  kind: "select" | "confirm" | "input" | "editor";
+  title: string;
+  options?: string[];
+  message?: string;
+  placeholder?: string;
+  prefill?: string;
+}
+
+export type UiDialogAnswer =
+  | { kind: "option"; index: number }
+  | { kind: "text"; text: string }
+  | { kind: "cancel" }
+  | { kind: "expired" };
+
+/** Implemented by PendingDialogs (src/ui-dialogs.ts). */
+export interface UiDialogHost {
+  /** cfg.mirrorDialogs master switch. */
+  enabled(): boolean;
+  /** Register + send the Telegram twin. undefined = cannot show (unpaired/disabled/send failed) → TUI-only. */
+  show(spec: UiDialogSpec): Promise<number | undefined>;
+  /** Attach the race resolver for a shown dialog. */
+  answer(id: number, resolve: (a: UiDialogAnswer) => void): void;
+  /** The TUI side resolved first (or timed out): stamp + release. */
+  tuiAnswered(id: number, value: unknown): void;
+}
+
+export const UI_PROXY_MARKER = Symbol.for("pi-telega.ui-proxy");
+
+function specFor(method: UiDialogSpec["kind"], args: unknown[]): UiDialogSpec {
+  const [title, a2] = args;
+  switch (method) {
+    case "select":
+      return { kind: "select", title: String(title), options: Array.isArray(a2) ? a2.map(String) : undefined };
+    case "confirm":
+      return { kind: "confirm", title: String(title), message: typeof a2 === "string" ? a2 : "" };
+    case "input":
+      return { kind: "input", title: String(title), placeholder: typeof a2 === "string" ? a2 : undefined };
+    case "editor":
+      return { kind: "editor", title: String(title), prefill: typeof a2 === "string" ? a2 : undefined };
+  }
+}
+
+function mapAnswer(method: UiDialogSpec["kind"], args: unknown[], a: UiDialogAnswer): unknown {
+  switch (method) {
+    case "select": {
+      const options = Array.isArray(args[1]) ? args[1] : [];
+      return a.kind === "option" ? options[a.index] : undefined;
+    }
+    case "confirm":
+      return a.kind === "option" ? a.index === 0 : false; // mirror pi: cancel ⇒ false
+    case "input":
+    case "editor":
+      return a.kind === "text" ? a.text : undefined;
+  }
+}
+
+/** select/confirm/input take opts LAST (maybe omitted); editor has no opts at all. */
+function withCombinedSignal(
+  method: UiDialogSpec["kind"],
+  orig: (...a: unknown[]) => unknown,
+  args: unknown[],
+  signal: AbortSignal,
+): unknown {
+  if (method === "editor") return orig(...args);
+  const next = [...args];
+  const last = next[next.length - 1];
+  if (last === undefined || (typeof last === "object" && !Array.isArray(last))) {
+    const opts = (typeof last === "object" && last !== null ? last : {}) as { signal?: AbortSignal };
+    next[next.length - 1] = { ...opts, signal: opts.signal ? AbortSignal.any([opts.signal, signal]) : signal };
+  } else {
+    next.push({ signal });
+  }
+  return orig(...next);
+}
+
+/**
+ * Install the in-place proxy on the shared ctx.ui object. Idempotent (marker);
+ * returns false (with a warn) when the object is not patchable or has no dialog
+ * methods — the caller degrades to heads-up-only (today's behavior). Must be
+ * re-called on every session_start: each runner swap creates a FRESH wrapped
+ * object, so a previous patch never carries over.
+ */
+export function installUiProxy(ui: Record<PropertyKey, unknown>, host: UiDialogHost, warn?: (msg: string) => void): boolean {
+  if (ui[UI_PROXY_MARKER]) return true;
+  const methods = ["select", "confirm", "input", "editor"] as const;
+  let patched = 0;
+  for (const m of methods) {
+    const orig = ui[m] as ((...a: unknown[]) => unknown) | undefined;
+    if (typeof orig !== "function") continue;
+    const wrapped = async (...args: unknown[]): Promise<unknown> => {
+      if (!host.enabled()) return (orig as (...a: unknown[]) => unknown)(...args);
+      const spec = specFor(m, args);
+      let id: number | undefined;
+      try {
+        id = await host.show(spec);
+      } catch {
+        id = undefined;
+      }
+      if (id === undefined) return (orig as (...a: unknown[]) => unknown)(...args); // TG unavailable → TUI-only
+      const ac = new AbortController();
+      let tuiPromise: Promise<unknown>;
+      try {
+        tuiPromise = Promise.resolve(withCombinedSignal(m, orig, args, ac.signal));
+      } catch (err) {
+        host.tuiAnswered(id, undefined); // release the already-sent Telegram twin
+        throw err; // propagate exactly as unmirrored pi would
+      }
+      const dialogId = id;
+      return new Promise<unknown>((resolve, reject) => {
+        let done = false;
+        tuiPromise.then(
+          (v) => {
+            if (done) return;
+            done = true;
+            host.tuiAnswered(dialogId, v);
+            resolve(v);
+          },
+          (err) => {
+            if (done) return;
+            done = true;
+            host.tuiAnswered(dialogId, undefined);
+            reject(err);
+          },
+        );
+        host.answer(dialogId, (a) => {
+          if (done || a.kind === "expired") return;
+          done = true;
+          ac.abort(); // dismiss the TUI dialog (select/confirm/input); editor has no signal — it stays open until Esc
+          resolve(mapAnswer(m, args, a));
+        });
+      });
+    };
+    try {
+      ui[m] = wrapped;
+    } catch {
+      // getter-only property (strict mode): the assignment throws — not patchable
+      warn?.("pi-telega: ctx.ui is not patchable — dialog mirroring disabled (heads-up only)");
+      return false;
+    }
+    if (ui[m] !== wrapped) {
+      warn?.("pi-telega: ctx.ui is not patchable — dialog mirroring disabled (heads-up only)");
+      return false;
+    }
+    patched++;
+  }
+  if (patched === 0) {
+    warn?.("pi-telega: no dialog methods on ctx.ui — dialog mirroring disabled");
+    return false;
+  }
+  ui[UI_PROXY_MARKER] = true;
+  return true;
+}
