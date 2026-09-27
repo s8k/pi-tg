@@ -509,3 +509,89 @@ test("wrapped select: caller-provided signal is COMBINED (caller abort still dis
   assert.equal(await p, undefined);
   assert.deepEqual(calls.tuiAnswered, [[1, undefined]]);
 });
+
+// ── Fault isolation: pi-telega's machinery must never break pi or the calling
+// plugin — every internal failure degrades to the plain TUI call ─────────────
+
+test("wrapper: a hostile title (throwing toString) → plain TUI call, no throw, no TG twin", async () => {
+  const sel = fakeTuiDialog<string | undefined>();
+  const { host, calls } = fakeHost();
+  const ui = { select: sel.fn, confirm: () => {}, input: () => {}, editor: () => {} };
+  installUiProxy(ui as never, host);
+  const hostile = { toString(): string { throw new Error("boom"); } };
+  const p = (ui.select as (t: unknown, o: string[]) => Promise<string | undefined>)(hostile, ["a", "b"]);
+  await uiTick();
+  sel.press("a");
+  assert.equal(await p, "a", "the caller gets the plain TUI result");
+  assert.equal(calls.show, 0, "specFor threw before show — no twin");
+});
+
+test("wrapper: a throwing host.enabled → plain TUI call, no throw", async () => {
+  const sel = fakeTuiDialog<string | undefined>();
+  const { host, calls } = fakeHost({ enabled: () => { throw new Error("boom"); } });
+  const ui = { select: sel.fn, confirm: () => {}, input: () => {}, editor: () => {} };
+  installUiProxy(ui as never, host);
+  const p = (ui.select as (t: string, o: string[]) => Promise<string | undefined>)("Pick", ["a"]);
+  await uiTick();
+  sel.press("a");
+  assert.equal(await p, "a");
+  assert.equal(calls.show, 0);
+});
+
+test("wrapper: a throwing tuiAnswered → the TUI answer still resolves (no unhandled rejection)", async () => {
+  const sel = fakeTuiDialog<string | undefined>();
+  const { host, calls } = fakeHost();
+  const origTui = host.tuiAnswered;
+  host.tuiAnswered = (id, v) => {
+    origTui(id, v);
+    throw new Error("boom");
+  };
+  const ui = { select: sel.fn, confirm: () => {}, input: () => {}, editor: () => {} };
+  installUiProxy(ui as never, host);
+  const p = (ui.select as (t: string, o: string[]) => Promise<string | undefined>)("Pick", ["a"]);
+  await uiTick();
+  sel.press("a");
+  assert.equal(await p, "a", "the TUI value wins despite the stamp failure");
+});
+
+test("wrapper: a throwing host.answer → the TUI answer still resolves", async () => {
+  const sel = fakeTuiDialog<string | undefined>();
+  const { host } = fakeHost();
+  host.answer = () => {
+    throw new Error("boom");
+  };
+  const ui = { select: sel.fn, confirm: () => {}, input: () => {}, editor: () => {} };
+  installUiProxy(ui as never, host);
+  const p = (ui.select as (t: string, o: string[]) => Promise<string | undefined>)("Pick", ["a"]);
+  await uiTick();
+  sel.press("a");
+  assert.equal(await p, "a", "the TUI dialog decides the outcome when the race cannot be attached");
+});
+
+test("installUiProxy never throws on hostile ui objects (throwing get / throwing symbol set)", () => {
+  const { host } = fakeHost();
+  const warns: string[] = [];
+  // every property read throws → the marker read must be guarded
+  const hostileGet = new Proxy(
+    {},
+    { get: () => { throw new Error("boom"); } },
+  );
+  assert.doesNotThrow(() => {
+    assert.equal(installUiProxy(hostileGet as never, host, (m) => warns.push(m)), false, "degrades to heads-up-only");
+  });
+  // string-key sets work but the symbol marker set throws → the patch is in
+  // place; the failure must not propagate
+  const markerHostile = new Proxy(
+    { select: () => "x" },
+    {
+      get: (t, k) => Reflect.get(t, k),
+      set: (t, k, v) => {
+        if (typeof k === "symbol") throw new Error("boom");
+        return Reflect.set(t, k, v);
+      },
+    },
+  );
+  assert.doesNotThrow(() => {
+    assert.equal(installUiProxy(markerHostile as never, host, (m) => warns.push(m)), true, "the patch is in place");
+  });
+});

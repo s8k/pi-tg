@@ -437,8 +437,16 @@ export default function piTelega(pi: ExtensionAPI): void {
       // wrapped object, so this re-runs each session_start; the marker makes a
       // repeat on the same object a no-op. Non-tui modes (rpc/print) have no
       // TUI dialogs to mirror.
-      if (dialogs && ctx.mode === "tui" && ctx.hasUI)
-        installUiProxy(ctx.ui as unknown as Record<PropertyKey, unknown>, dialogs, (m) => ui(m, "warning"));
+      if (dialogs && ctx.mode === "tui" && ctx.hasUI) {
+        try {
+          installUiProxy(ctx.ui as unknown as Record<PropertyKey, unknown>, dialogs, (m) => ui(m, "warning"));
+        } catch (err) {
+          // installUiProxy is defensive and should never throw — this is the
+          // final backstop: a hostile ctx.ui must not abort the rest of
+          // session_start (pendingAction card, the poll loop await).
+          ui(`pi-telega: dialog patch failed: ${String(err)}`, "warning");
+        }
+      }
       // Card + clear question AT arrival for /new and session switches (design
       // §8: "the NEW instance's session_start calls onSessionReplaced"). A
       // /reload posts nothing — the old instance's ✔️ stamp is the confirmation.

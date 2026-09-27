@@ -368,3 +368,31 @@ test("onShown is awaited BEFORE the dialog message is sent (the mirror's draft s
   assert.deepEqual(order, ["shown", "sent"], "onShown completes before the dialog send");
   assert.equal(out.calls.filter((c) => c.kind === "send").length, 1);
 });
+
+// ── Fault isolation: a dead generation or a failing pause must never mint
+// dialogs or leak pending state ─────────────────────────────────────────────
+
+test("show() after cancelAll → undefined, nothing sent (a dead generation cannot mint dialogs)", async () => {
+  const made = deps();
+  const p = new PendingDialogs(made.deps);
+  const id = await p.show({ kind: "input", title: "t" });
+  assert.ok(id !== undefined, "precondition: the first dialog shows");
+  p.cancelAll();
+  const before = made.out.calls.length;
+  const ghost = await p.show({ kind: "input", title: "ghost" });
+  assert.equal(ghost, undefined, "closed instance refuses to show");
+  assert.equal(made.out.calls.length, before, "nothing sent by a dead generation");
+});
+
+test("show(): a throwing onShown → undefined, no pending leak, nothing sent", async () => {
+  const made = deps();
+  made.deps.onShown = async () => {
+    throw new Error("boom");
+  };
+  const p = new PendingDialogs(made.deps);
+  const before = made.out.calls.length;
+  const id = await p.show({ kind: "input", title: "t" });
+  assert.equal(id, undefined, "the wrapper falls back to TUI-only");
+  assert.equal(made.out.calls.length, before, "no dialog send");
+  assert.equal(p.size, 0, "no leaked pending entry");
+});

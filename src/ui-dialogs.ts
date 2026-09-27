@@ -113,6 +113,7 @@ export class PendingDialogs {
   private nextId = 1;
   private byId = new Map<number, Pending>();
   private byMessageId = new Map<number, number>(); // Telegram message id → dialog id (reply routing)
+  private closed = false; // set by cancelAll (shutdown / generation swap) — a dead generation cannot mint dialogs
 
   constructor(deps: PendingDialogsDeps) {
     this.deps = deps;
@@ -179,6 +180,7 @@ export class PendingDialogs {
   /** Register + send the Telegram dialog. Resolves to the dialog id, or undefined when it
    *  cannot be shown (unpaired / disabled / send failed) — the caller then stays TUI-only. */
   async show(spec: DialogSpec): Promise<number | undefined> {
+    if (this.closed) return undefined; // cancelAll already ran (teardown) — TUI-only
     const chatId = this.deps.getChatId();
     if (!this.deps.enabled() || chatId === undefined) return undefined;
     const id = this.nextId++;
@@ -193,7 +195,15 @@ export class PendingDialogs {
       resolve: NOOP, // placeholder until answer() attaches the race resolver
     };
     this.byId.set(id, p);
-    await this.deps.onShown?.(); // the mirror's draft segment must land before the dialog message
+    try {
+      await this.deps.onShown?.(); // the mirror's draft segment must land before the dialog message
+    } catch (err) {
+      // A failing pause (mirror bug) must not leave a leaked pending entry or
+      // break the caller — degrade to TUI-only exactly like a failed send.
+      this.byId.delete(id);
+      this.deps.notify?.(`pi-telega: dialog pause failed: ${String(err)}`, "error");
+      return undefined;
+    }
     let sent: number | undefined;
     try { sent = await this.deps.out.send(chatId, text, { replyMarkup: { inline_keyboard: buttons } });
     } catch (err) {
@@ -288,6 +298,7 @@ export class PendingDialogs {
 
   /** Instance swap / shutdown: stamp + release everything (best effort, synchronous). */
   cancelAll(): void {
+    this.closed = true; // no further dialogs from this (dead) generation
     for (const id of [...this.byId.keys()]) {
       const p = this.byId.get(id)!;
       const stamp = `${p.text}\n⚠️ Expired`;

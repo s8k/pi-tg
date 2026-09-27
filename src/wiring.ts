@@ -321,20 +321,33 @@ function withCombinedSignal(
  * object, so a previous patch never carries over.
  */
 export function installUiProxy(ui: Record<PropertyKey, unknown>, host: UiDialogHost, warn?: (msg: string) => void): boolean {
-  if (ui[UI_PROXY_MARKER]) return true;
+  try {
+    if (ui[UI_PROXY_MARKER]) return true;
+  } catch {
+    return false; // a hostile ui object — never break the caller
+  }
   const methods = ["select", "confirm", "input", "editor"] as const;
   let patched = 0;
   for (const m of methods) {
-    const orig = ui[m] as ((...a: unknown[]) => unknown) | undefined;
+    let orig: ((...a: unknown[]) => unknown) | undefined;
+    try {
+      orig = ui[m] as ((...a: unknown[]) => unknown) | undefined;
+    } catch {
+      continue; // a hostile property read — skip this method, patch the rest
+    }
     if (typeof orig !== "function") continue;
     const wrapped = async (...args: unknown[]): Promise<unknown> => {
-      if (!host.enabled()) return (orig as (...a: unknown[]) => unknown)(...args);
-      const spec = specFor(m, args);
+      // Fault isolation: every pi-telega step below is guarded; ANY internal
+      // failure degrades to the plain TUI call, exactly as unpatched pi would
+      // behave. pi's own errors (from `orig`) always propagate untouched.
       let id: number | undefined;
       try {
-        id = await host.show(spec);
+        if (host.enabled()) {
+          const spec = specFor(m, args);
+          id = await host.show(spec);
+        }
       } catch {
-        id = undefined;
+        id = undefined; // enabled()/specFor()/show() threw — TUI-only
       }
       if (id === undefined) return (orig as (...a: unknown[]) => unknown)(...args); // TG unavailable → TUI-only
       const ac = new AbortController();
@@ -342,7 +355,11 @@ export function installUiProxy(ui: Record<PropertyKey, unknown>, host: UiDialogH
       try {
         tuiPromise = Promise.resolve(withCombinedSignal(m, orig, args, ac.signal));
       } catch (err) {
-        host.tuiAnswered(id, undefined); // release the already-sent Telegram twin
+        try {
+          host.tuiAnswered(id, undefined); // release the already-sent Telegram twin
+        } catch {
+          /* stamping is best effort — the error below propagates anyway */
+        }
         throw err; // propagate exactly as unmirrored pi would
       }
       const dialogId = id;
@@ -352,22 +369,39 @@ export function installUiProxy(ui: Record<PropertyKey, unknown>, host: UiDialogH
           (v) => {
             if (done) return;
             done = true;
-            host.tuiAnswered(dialogId, v);
+            try {
+              host.tuiAnswered(dialogId, v);
+            } catch {
+              /* stamping is best effort — the TUI answer wins regardless */
+            }
             resolve(v);
           },
           (err) => {
             if (done) return;
             done = true;
-            host.tuiAnswered(dialogId, undefined);
+            try {
+              host.tuiAnswered(dialogId, undefined);
+            } catch {
+              /* best effort */
+            }
             reject(err);
           },
         );
-        host.answer(dialogId, (a) => {
-          if (done || a.kind === "expired") return;
-          done = true;
-          ac.abort(); // dismiss the TUI dialog (select/confirm/input); editor has no signal — it stays open until Esc
-          resolve(mapAnswer(m, args, a));
-        });
+        try {
+          host.answer(dialogId, (a) => {
+            if (done || a.kind === "expired") return;
+            done = true;
+            try {
+              ac.abort(); // dismiss the TUI dialog (select/confirm/input); editor has no signal — it stays open until Esc
+            } catch {
+              /* the TUI dialog stays open; its answer still decides */
+            }
+            resolve(mapAnswer(m, args, a));
+          });
+        } catch {
+          // The race resolver could not be attached — the TUI dialog alone
+          // decides the outcome (its path stamps + resolves).
+        }
       });
     };
     try {
@@ -377,7 +411,12 @@ export function installUiProxy(ui: Record<PropertyKey, unknown>, host: UiDialogH
       warn?.("pi-telega: ctx.ui is not patchable — dialog mirroring disabled (heads-up only)");
       return false;
     }
-    if (ui[m] !== wrapped) {
+    try {
+      if (ui[m] !== wrapped) {
+        warn?.("pi-telega: ctx.ui is not patchable — dialog mirroring disabled (heads-up only)");
+        return false;
+      }
+    } catch {
       warn?.("pi-telega: ctx.ui is not patchable — dialog mirroring disabled (heads-up only)");
       return false;
     }
@@ -387,6 +426,13 @@ export function installUiProxy(ui: Record<PropertyKey, unknown>, host: UiDialogH
     warn?.("pi-telega: no dialog methods on ctx.ui — dialog mirroring disabled");
     return false;
   }
-  ui[UI_PROXY_MARKER] = true;
+  try {
+    ui[UI_PROXY_MARKER] = true;
+  } catch {
+    // The methods are patched but the marker cannot be set: a repeat install on
+    // the SAME object could double-wrap. pi creates a fresh ui object per runner
+    // swap, so in practice this only costs a heads-up.
+    warn?.("pi-telega: could not mark ctx.ui as patched (re-install may re-wrap)");
+  }
   return true;
 }
