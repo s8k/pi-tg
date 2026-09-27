@@ -391,3 +391,25 @@ test("onChatLearned is a no-op: no run in progress / a draft is already live", a
   await tick();
   assert.deepEqual(draftIds(h), [1]);
 });
+
+test("the run draft id is STABLE across runs (always 1) — clients follow one draft per chat", async () => {
+  const h = makeMirrorDeps({ streamEditMs: 0 });
+  const m = new Mirror(h.deps);
+  // run 1
+  m.onAgentStart();
+  m.onAssistantStart(textMsg(""));
+  m.onAssistantUpdate(textMsg("one"));
+  m.onAssistantEnd(textMsg("one", { stopReason: "stop" }));
+  m.onAgentEnd([]);
+  await tick();
+  // run 2 — same Mirror instance (same generation): the draft id must not advance
+  m.onAgentStart();
+  m.onAssistantStart(textMsg(""));
+  m.onAssistantUpdate(textMsg("two"));
+  await tick();
+  assert.deepEqual(
+    h.out.calls.filter((c) => c.kind === "sendDraft").map((c) => c.draftId),
+    [1, 1, 1, 1],
+    "every run streams into the same stable draft id 1",
+  );
+});

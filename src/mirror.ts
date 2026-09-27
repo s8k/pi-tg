@@ -423,7 +423,6 @@ export class Mirror {
   // pacing
   private nextDraftAt = 0; // earliest time a new draft attempt is allowed (throttle + failure cooldown)
   private forceNext = false; // one-shot: the first send of a new message breaks through the window
-  private draftSeq = 0;
   private pending = new Map<number, { content: string; canStop: boolean; run: number }>();
   private inflight: Promise<void> | undefined;
   private drainTimer: unknown;
@@ -534,7 +533,12 @@ export class Mirror {
       this.deps.debug?.(`startRunDraft SKIP (draft ${this.draftId} already live)`);
       return; // a draft is already live for this run — reuse it
     }
-    this.draftId = ++this.draftSeq;
+    // STABLE draft id (always 1): one draft stream per chat. Telegram clients
+    // follow a single draft per chat and do not reliably pick up a NEW draft
+    // id from a later run (live-verified: a per-run id 1..7 was invisible
+    // while a probe on a different id rendered). Reusing id 1 re-creates the
+    // draft each run — clients re-follow it (verified with a re-sent probe).
+    this.draftId = 1;
     this.deps.debug?.(`startRunDraft SPAWN draftId=${this.draftId} chat=${this.deps.getChatId()}`);
     this.requestUpdate();
     this.armHeartbeat();
