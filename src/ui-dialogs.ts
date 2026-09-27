@@ -37,6 +37,8 @@ interface Pending {
   spec: DialogSpec;
   messageId: number;
   numbered: boolean;
+  /** The original message HTML — stamps keep it and append a status line. */
+  text: string;
   resolve: (a: DialogAnswer) => void;
   /** (stamp, answer) waiting for the message id (the send is still in flight). */
   deferred?: { stamp: string; answer: DialogAnswer };
@@ -49,6 +51,9 @@ const NOOP: (a: DialogAnswer) => void = () => {};
 /** select/confirm render as inline buttons up to this many options; beyond that the owner replies with a number. */
 export const MAX_BUTTON_OPTIONS = 20;
 
+/** Clip long user text for stamp display. */
+const clip = (s: string, max = 120): string => (s.length > max ? `${s.slice(0, max - 1)}…` : s);
+
 /** Pure rendering of a dialog into Telegram HTML + inline keyboard rows (one testable unit). */
 export function renderDialog(
   spec: DialogSpec,
@@ -58,7 +63,7 @@ export function renderDialog(
   const t = escapeHtml(spec.title);
   if (spec.kind === "confirm") {
     return {
-      text: `🔔 <b>${t}</b>\n${escapeHtml(spec.message ?? "")}`,
+      text: `❓ <b>${t}</b>\n${escapeHtml(spec.message ?? "")}`,
       buttons: [
         [
           { text: "✅ Yes", callback_data: CB.dialogAnswer(id, 0) },
@@ -69,7 +74,7 @@ export function renderDialog(
   }
   if (spec.kind === "select" && !numbered && (spec.options?.length ?? 0) > 0) {
     return {
-      text: `🔔 <b>${t}</b>\nChoose an option:`,
+      text: `❓ <b>${t}</b>\nChoose an option:`,
       buttons: [
         ...(spec.options ?? []).map((o, i) => [{ text: `${i + 1}. ${escapeHtml(o.slice(0, 60))}`, callback_data: CB.dialogAnswer(id, i) }]),
         [{ text: "✖ Cancel", callback_data: CB.dialogCancel(id) }],
@@ -77,9 +82,9 @@ export function renderDialog(
     };
   }
   if (spec.kind === "select" && numbered) {
-    const lines = (spec.options ?? []).map((o, i) => `${i + 1}. ${o.slice(0, 80)}`).join("\n");
+    const lines = (spec.options ?? []).map((o, i) => `${i + 1}. ${escapeHtml(o.slice(0, 80))}`).join("\n");
     return {
-      text: `🔔 <b>${t}</b>\nReply with the option number:\n${lines}`,
+      text: `❓ <b>${t}</b>\nReply with the option number:\n${lines}`,
       buttons: [[{ text: "✖ Cancel", callback_data: CB.dialogCancel(id) }]],
     };
   }
@@ -140,15 +145,17 @@ export class PendingDialogs {
     const chatId = this.deps.getChatId();
     if (!this.deps.enabled() || chatId === undefined) return undefined;
     const id = this.nextId++;
+    const numbered = spec.kind === "select" && (spec.options?.length ?? 0) > MAX_BUTTON_OPTIONS;
+    const { text, buttons } = renderDialog(spec, id, numbered);
     const p: Pending = {
       chatId,
       spec,
       messageId: -1,
-      numbered: spec.kind === "select" && (spec.options?.length ?? 0) > MAX_BUTTON_OPTIONS,
+      numbered,
+      text, // stamps = original question + status line (renderDialog before byId.set: a racing answer may read it)
       resolve: NOOP, // placeholder until answer() attaches the race resolver
     };
     this.byId.set(id, p);
-    const { text, buttons } = renderDialog(spec, id, p.numbered);
     let sent: number | undefined;
     try { sent = await this.deps.out.send(chatId, text, { replyMarkup: { inline_keyboard: buttons } });
     } catch (err) {
@@ -167,7 +174,7 @@ export class PendingDialogs {
       // id and release (release may hold the answer until answer() attaches).
       const d = p.deferred;
       p.deferred = undefined;
-      void this.deps.out.edit(p.chatId, p.messageId, d.stamp, { parseMode: null }).catch(() => {});
+      void this.deps.out.edit(p.chatId, p.messageId, d.stamp, { parseMode: "HTML" }).catch(() => {});
       this.release(id, d.answer);
     }
     return id;
@@ -197,21 +204,25 @@ export class PendingDialogs {
       if (!Number.isInteger(n) || n < 1 || n > (p.spec.options?.length ?? 0)) return false; // ignore — dialog stays open
       input = { kind: "option", index: n - 1 };
     }
-    const stamp =
-      input.kind === "option" ?
-        // confirm carries a message, not an options list — name the choice.
-        `✔️ ${p.spec.title}: answered: ${
-          p.spec.kind === "confirm" ? (input.index === 0 ? "Yes" : "No") : (p.spec.options ?? [])[input.index] ?? `#${input.index + 1}`
-        }`
+    // Status line under the original question: confirm carries a message, not an
+    // options list — name the choice; numbered lists keep the number.
+    const statusLine =
+      input.kind === "option"
+        ? p.spec.kind === "confirm"
+          ? `✔️ Answered: ${input.index === 0 ? "Yes" : "No"}`
+          : p.numbered
+            ? `✔️ Answered: #${input.index + 1} — ${escapeHtml((p.spec.options ?? [])[input.index] ?? "?")}`
+            : `✔️ Answered: ${escapeHtml((p.spec.options ?? [])[input.index] ?? `#${input.index + 1}`)}`
         : input.kind === "text"
-          ? `✔️ ${p.spec.title}: answered (see reply)`
-          : `✖️ ${p.spec.title}: cancelled`;
+          ? `✔️ Answered: ${escapeHtml(clip(input.text))}`
+          : "✖️ Cancelled";
+    const stamp = `${p.text}\n${statusLine}`;
     if (p.messageId === -1) {
       // The send is still in flight: stamp + release run once show() knows the id.
       p.deferred = { stamp, answer: input };
       return true;
     }
-    void this.deps.out.edit(p.chatId, p.messageId, stamp, { parseMode: null }).catch(() => {});
+    void this.deps.out.edit(p.chatId, p.messageId, stamp, { parseMode: "HTML" }).catch(() => {});
     this.release(dialogId, input);
     return true;
   }
@@ -220,13 +231,20 @@ export class PendingDialogs {
   tuiAnswered(dialogId: number, value: unknown): void {
     const p = this.byId.get(dialogId);
     if (!p) return;
-    const stamp =
-      value === undefined ? `💻 ${p.spec.title}: cancelled in the terminal` : `💻 ${p.spec.title}: answered in the terminal`;
+    const statusLine =
+      value === undefined
+        ? "💻 Cancelled in the terminal"
+        : p.spec.kind === "confirm"
+          ? `💻 Answered in the terminal: ${value ? "Yes" : "No"}`
+          : typeof value === "string"
+            ? `💻 Answered in the terminal: ${escapeHtml(clip(value))}`
+            : "💻 Answered in the terminal";
+    const stamp = `${p.text}\n${statusLine}`;
     if (p.messageId === -1) {
       p.deferred = { stamp, answer: { kind: "expired" } };
       return;
     }
-    void this.deps.out.edit(p.chatId, p.messageId, stamp, { parseMode: null }).catch(() => {});
+    void this.deps.out.edit(p.chatId, p.messageId, stamp, { parseMode: "HTML" }).catch(() => {});
     this.release(dialogId, { kind: "expired" });
   }
 
@@ -234,11 +252,12 @@ export class PendingDialogs {
   cancelAll(): void {
     for (const id of [...this.byId.keys()]) {
       const p = this.byId.get(id)!;
+      const stamp = `${p.text}\n⚠️ Expired`;
       if (p.messageId === -1) {
-        p.deferred = { stamp: `⚠️ ${p.spec.title}: expired`, answer: { kind: "expired" } };
+        p.deferred = { stamp, answer: { kind: "expired" } };
         continue;
       }
-      void this.deps.out.edit(p.chatId, p.messageId, `⚠️ ${p.spec.title}: expired`, { parseMode: null }).catch(() => {});
+      void this.deps.out.edit(p.chatId, p.messageId, stamp, { parseMode: "HTML" }).catch(() => {});
       this.release(id, { kind: "expired" });
     }
   }

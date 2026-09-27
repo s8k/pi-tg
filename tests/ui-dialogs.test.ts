@@ -28,8 +28,9 @@ test("renderDialog select: title + one numbered button row per option + cancel r
   assert.ok(rows[0][0].text.startsWith("1. ") && rows[1][0].text.startsWith("2. "), "options are numbered");
 });
 
-test("renderDialog confirm: Yes/No buttons, message escaped, no cancel row", () => {
+test("renderDialog confirm: Yes/No buttons, message escaped, no cancel row, ❓ header", () => {
   const r = renderDialog({ kind: "confirm", title: "Sure?", message: "m & <x>" }, 3, false);
+  assert.ok(r.text.startsWith("❓ <b>Sure?</b>"), `header is ❓ (got: ${r.text.split("\n")[0]})`);
   assert.ok(r.text.includes("Sure?") && r.text.includes("m &amp; &lt;x&gt;"));
   const flat = (r.buttons as { callback_data: string }[][]).flat();
   assert.deepEqual(flat.map((b) => b.callback_data), ["da:3:0", "da:3:1"]);
@@ -57,7 +58,7 @@ test("show + tgAnswer(option): resolves the race, stamps ✔️, releases the di
   assert.deepEqual(await answer, { kind: "option", index: 1 });
   assert.equal(p.isDialogMessage(100), false); // FakeOut's first send id (100) is released
   const lastEdit = out.calls.filter((c) => c.kind === "edit").pop()!;
-  assert.ok(String(lastEdit.text).includes("answered: b"));
+  assert.ok(String(lastEdit.text).includes("Answered: b"));
 });
 
 test("tgAnswer on unknown id → false (stale tap), nothing sent", async () => {
@@ -139,7 +140,7 @@ test("cancelAll: stamps every pending and releases with 'expired'", async () => 
   assert.equal(p.size, 0);
   const edits = out.calls.filter((c) => c.kind === "edit");
   assert.equal(edits.length, 2);
-  assert.ok(edits.every((e) => String(e.text).includes("expired")));
+  assert.ok(edits.every((e) => String(e.text).includes("Expired")));
 });
 
 test("show: send failure → notify + undefined (TUI-only fallback)", async () => {
@@ -241,8 +242,78 @@ test("confirm stamps the option NAME (Yes/No), not a bare index", async () => {
     await answer;
     const lastEdit = out.calls.filter((c) => c.kind === "edit").pop();
     assert.ok(
-      String(lastEdit?.text).includes(`answered: ${name}`) && !String(lastEdit?.text).includes("#"),
-      `the ${name} tap stamps 'answered: ${name}' (got: ${lastEdit?.text})`,
+      String(lastEdit?.text).includes(`Answered: ${name}`) && !String(lastEdit?.text).includes("#"),
+      `the ${name} tap stamps 'Answered: ${name}' (got: ${lastEdit?.text})`,
     );
   }
+});
+
+test("stamp = original question + status line, edited as HTML (bold title kept)", async () => {
+  const made = deps();
+  const p = new PendingDialogs(made.deps);
+  const out = made.out;
+  await p.show({ kind: "confirm", title: "Sure?", message: "m" });
+  const answer = new Promise<unknown>((res) => p.answer(1, res));
+  p.tgAnswer(1, { kind: "option", index: 0 });
+  await answer;
+  const lastEdit = out.calls.filter((c) => c.kind === "edit").pop();
+  assert.equal(lastEdit?.text, "❓ <b>Sure?</b>\nm\n✔️ Answered: Yes");
+  assert.equal(lastEdit?.opts?.parseMode, "HTML", "stamp keeps the original HTML formatting");
+});
+
+test("stamp: numbered select names the option with its number", async () => {
+  const opts = Array.from({ length: 21 }, (_, i) => `o${i}`); // > MAX_BUTTON_OPTIONS → numbered
+  const made = deps();
+  const p = new PendingDialogs(made.deps);
+  const out = made.out;
+  await p.show({ kind: "select", title: "Pick", options: opts });
+  const answer = new Promise<unknown>((res) => p.answer(1, res));
+  p.tgAnswer(1, { kind: "text", text: "5" }); // numbered reply → option 4
+  await answer;
+  const lastEdit = out.calls.filter((c) => c.kind === "edit").pop();
+  assert.ok(String(lastEdit?.text).includes("✔️ Answered: #5 — o4"), `got: ${lastEdit?.text}`);
+});
+
+test("stamp: input answer text is included, truncated when long", async () => {
+  const made = deps();
+  const p = new PendingDialogs(made.deps);
+  const out = made.out;
+  await p.show({ kind: "input", title: "Name", placeholder: "p" });
+  const answer = new Promise<unknown>((res) => p.answer(1, res));
+  p.tgAnswer(1, { kind: "text", text: "x".repeat(200) });
+  await answer;
+  const t = String(out.calls.filter((c) => c.kind === "edit").pop()?.text ?? "");
+  assert.ok(t.includes("✔️ Answered: ") && t.includes("…"), `truncated with ellipsis, got: ${JSON.stringify(t.slice(-60))}`);
+  assert.ok(!t.includes("x".repeat(121)), "the 200-char text is clipped");
+});
+
+test("stamp: TUI confirm answer maps the boolean to Yes/No", async () => {
+  const made = deps();
+  const p = new PendingDialogs(made.deps);
+  const out = made.out;
+  await p.show({ kind: "confirm", title: "Sure?", message: "m" });
+  const answer = new Promise<unknown>((res) => p.answer(1, res));
+  p.tuiAnswered(1, false);
+  await answer;
+  const lastEdit = out.calls.filter((c) => c.kind === "edit").pop();
+  assert.equal(lastEdit?.text, "❓ <b>Sure?</b>\nm\n💻 Answered in the terminal: No");
+});
+
+test("stamp: TUI cancel and cancelAll read as status lines", async () => {
+  const made = deps();
+  const p = new PendingDialogs(made.deps);
+  const out = made.out;
+  await p.show({ kind: "confirm", title: "Sure?", message: "m" });
+  const answer = new Promise<unknown>((res) => p.answer(1, res));
+  p.tuiAnswered(1, undefined);
+  await answer;
+  let lastEdit = out.calls.filter((c) => c.kind === "edit").pop();
+  assert.equal(lastEdit?.text, "❓ <b>Sure?</b>\nm\n💻 Cancelled in the terminal");
+
+  const made2 = deps();
+  const p2 = new PendingDialogs(made2.deps);
+  await p2.show({ kind: "confirm", title: "Again?", message: "n" });
+  p2.cancelAll();
+  lastEdit = made2.out.calls.filter((c) => c.kind === "edit").pop();
+  assert.equal(lastEdit?.text, "❓ <b>Again?</b>\nn\n⚠️ Expired");
 });
