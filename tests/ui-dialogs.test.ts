@@ -111,25 +111,34 @@ test("numbered select (>20 options): numbered list, numeric reply → option, no
   assert.deepEqual(await answer, { kind: "option", index: 24 });
 });
 
-test("numberedAnswerFor: a bare in-range number routes to the pending numbered dialog (plain-message fallback)", async () => {
+test("plainAnswerFor: plain messages route to pending text-answer dialogs (no reply-to needed)", async () => {
   const made = deps();
   const p = new PendingDialogs(made.deps);
-  assert.equal(p.numberedAnswerFor("17"), undefined, "nothing pending");
+  assert.equal(p.plainAnswerFor("17"), undefined, "nothing pending");
   const id = await p.show({ kind: "select", title: "Many", options: Array.from({ length: 25 }, (_, i) => `opt${i}`) });
   assert.ok(id !== undefined, "chat known → dialog shown");
-  assert.equal(p.numberedAnswerFor("17"), id, "bare number in range → the dialog");
-  assert.equal(p.numberedAnswerFor(" 17 "), id, "whitespace ok");
-  assert.equal(p.numberedAnswerFor("0"), undefined, "below range");
-  assert.equal(p.numberedAnswerFor("26"), undefined, "above range");
-  assert.equal(p.numberedAnswerFor("1.5"), undefined, "not an integer");
-  assert.equal(p.numberedAnswerFor("pick 17"), undefined, "embedded number is a prompt, not an answer");
-  // a button select (≤20 options) never takes the number path
+  // numbered: only a bare in-range number matches
+  assert.equal(p.plainAnswerFor("17"), id, "bare number in range → the dialog");
+  assert.equal(p.plainAnswerFor(" 17 "), id, "whitespace ok");
+  assert.equal(p.plainAnswerFor("0"), undefined, "below range → prompt");
+  assert.equal(p.plainAnswerFor("26"), undefined, "above range → prompt");
+  assert.equal(p.plainAnswerFor("1.5"), undefined, "not an integer → prompt");
+  assert.equal(p.plainAnswerFor("hello"), undefined, "free text never hijacked by a numbered dialog");
+  assert.equal(p.plainAnswerFor("/status"), undefined, "commands keep routing as commands");
+  // a button select (≤20 options) never takes the text path
   await p.show({ kind: "select", title: "Few", options: ["a", "b"] });
-  assert.equal(p.numberedAnswerFor("2"), id, "only the NUMBERED dialog matches");
-  const a = new Promise<unknown>((res) => p.answer(id, res));
-  p.tgAnswer(id, { kind: "cancel" });
+  assert.equal(p.plainAnswerFor("2"), id, "only the NUMBERED dialog matches numbers");
+  // input/editor: ANY plain non-command text answers the oldest pending one
+  const inId = await p.show({ kind: "input", title: "What's your name?" });
+  assert.ok(inId !== undefined);
+  assert.equal(p.plainAnswerFor("Mr. Bean"), inId, "free text → the pending input");
+  assert.equal(p.plainAnswerFor("26"), inId, "a bare number OUT of range for the numbered dialog → input text");
+  assert.equal(p.plainAnswerFor("17"), id, "an in-range number still wins for the numbered dialog");
+  // released dialogs stop matching
+  const a = new Promise<unknown>((res) => p.answer(inId, res));
+  p.tgAnswer(inId, { kind: "text", text: "done" });
   await a;
-  assert.equal(p.numberedAnswerFor("17"), undefined, "released dialog no longer matches");
+  assert.equal(p.plainAnswerFor("Mr. Bean"), undefined, "released input no longer matches");
 });
 
 test("reply routing: isDialogMessage / dialogIdForMessage track the SENT message id", async () => {

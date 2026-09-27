@@ -41,7 +41,7 @@ export type TgAction =
   | { kind: "dialogAnswer"; chatId: number; dialogId: number; index: number }
   | { kind: "dialogCancel"; chatId: number; dialogId: number }
   | { kind: "dialogText"; chatId: number; replyToMessageId: number; text: string }
-  | { kind: "dialogNumber"; chatId: number; dialogId: number; text: string }
+  | { kind: "dialogPlain"; chatId: number; dialogId: number; text: string }
   | { kind: "unknown"; chatId: number; text: string };
 
 const CMD_RE = /^\/([a-zA-Z0-9_]+)(?:@[a-zA-Z0-9_]+)?\s*(.*)$/;
@@ -57,8 +57,8 @@ export function route(
   ownerId: number | undefined,
   opts?: {
     isDialogMessage?: (messageId: number) => boolean;
-    /** Bare-number fallback: returns a dialog id when `text` is a valid option number for a pending numbered dialog. */
-    numberedAnswer?: (text: string) => number | undefined;
+    /** Plain-message fallback: returns a dialog id when `text` is a valid plain answer for a pending text-answer dialog (numbered select / input / editor). */
+    plainAnswer?: (text: string) => number | undefined;
   },
 ): TgAction {
   // The rich draft's native Stop button (Bot API 10.2). Reuses the existing
@@ -114,11 +114,12 @@ export function route(
   const replyTo = msg.reply_to_message?.message_id;
   if (replyTo !== undefined && opts?.isDialogMessage?.(replyTo))
     return { kind: "dialogText", chatId, replyToMessageId: replyTo, text };
-  // Bare-number fallback (no reply-to): a plain "17" while a numbered dialog is
-  // active answers that dialog — the owner may have skipped the reply gesture
-  // or replied to the pause segment above the dialog (live bug, 2026-09-27).
-  const numDlg = opts?.numberedAnswer?.(text);
-  if (numDlg !== undefined) return { kind: "dialogNumber", chatId, dialogId: numDlg, text };
+  // Plain-message fallback (no reply-to): a plain message while a text-answer
+  // dialog is active answers that dialog — the owner may have skipped the
+  // reply gesture or replied to the pause segment above the dialog
+  // (live bug, 2026-09-27).
+  const plainDlg = opts?.plainAnswer?.(text);
+  if (plainDlg !== undefined) return { kind: "dialogPlain", chatId, dialogId: plainDlg, text };
   const cmd = CMD_RE.exec(text);
   if (cmd) {
     const rest = cmd[2].trim();

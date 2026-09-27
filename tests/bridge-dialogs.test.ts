@@ -19,12 +19,14 @@ test("dialogAnswer / dialogCancel / dialogText dispatch to the dialogs port; sta
   await bridge.dispatch({ kind: "dialogCancel", chatId: 42, dialogId: 3 });
   await bridge.dispatch({ kind: "dialogText", chatId: 42, replyToMessageId: 100, text: "hello" });
   await bridge.dispatch({ kind: "dialogText", chatId: 42, replyToMessageId: 999, text: "orphan" });
-  await bridge.dispatch({ kind: "dialogNumber", chatId: 42, dialogId: 4, text: "17" });
+  await bridge.dispatch({ kind: "dialogPlain", chatId: 42, dialogId: 4, text: "17" });
+  await bridge.dispatch({ kind: "dialogPlain", chatId: 42, dialogId: 5, text: "Mr. Bean" });
   assert.deepEqual(calls, [
     ["tg", 3, { kind: "option", index: 1 }],
     ["tg", 3, { kind: "cancel" }],
     ["tg", 7, { kind: "text", text: "hello" }],
     ["tg", 4, { kind: "text", text: "17" }],
+    ["tg", 5, { kind: "text", text: "Mr. Bean" }],
   ]);
   assert.equal(out.calls.length, 0, "dialog dispatches never send their own messages (stamps come from PendingDialogs)");
 });
@@ -35,6 +37,6 @@ test("no dialogs port (flag off at wiring) → dialog actions are silent no-ops"
   await bridge.dispatch({ kind: "dialogAnswer", chatId: 42, dialogId: 3, index: 0 });
   await bridge.dispatch({ kind: "dialogCancel", chatId: 42, dialogId: 3 });
   await bridge.dispatch({ kind: "dialogText", chatId: 42, replyToMessageId: 1, text: "x" });
-  await bridge.dispatch({ kind: "dialogNumber", chatId: 42, dialogId: 1, text: "2" });
+  await bridge.dispatch({ kind: "dialogPlain", chatId: 42, dialogId: 1, text: "2" });
   assert.equal(out.calls.length, 0, "no crash, no noise");
 });

@@ -219,7 +219,7 @@ export default function piTelega(pi: ExtensionAPI): void {
       cfg.ownerId,
       {
         isDialogMessage: (id) => dialogs?.isDialogMessage(id) ?? false,
-        numberedAnswer: (t) => dialogs?.numberedAnswerFor(t),
+        plainAnswer: (t) => dialogs?.plainAnswerFor(t),
       },
     );
     if (action.kind === "ignore") return;

@@ -139,19 +139,31 @@ export class PendingDialogs {
   }
 
   /**
-   * Bare-number fallback for numbered dialogs (live bug, 2026-09-27): the
-   * owner answers a numbered dialog by sending the number as a PLAIN message
-   * (no reply-to) — or replies to the wrong message (e.g. the pause segment
-   * right above the dialog) — and the reply-to routing misses, so the number
-   * lands as a queued prompt while the dialog sits unanswered. Only a bare
-   * integer in range matches; free text never does (input/editor keep the
-   * reply-to contract).
+   * Plain-message fallback for text-answer dialogs (live bug, 2026-09-27):
+   * the owner answers a dialog by sending a PLAIN message (no reply-to — or a
+   * mis-aimed reply, e.g. at the pause segment above the dialog) and the
+   * reply-to routing misses, so the text lands as a queued prompt while the
+   * dialog sits unanswered until Cancel.
+   *
+   * Matching rules (never swallow a real prompt):
+   * - commands ("/…") never match — they keep routing as commands;
+   * - numbered dialogs take only a bare integer in range (1..N) — free text
+   *   is not a valid numbered answer and must stay a prompt;
+   * - input/editor take ANY plain non-command text (a bare number too, when
+   *   no numbered dialog claims it) — the oldest pending one wins.
    */
-  numberedAnswerFor(text: string): number | undefined {
-    const n = Number(text.trim());
-    if (!Number.isInteger(n) || n < 1) return undefined;
+  plainAnswerFor(text: string): number | undefined {
+    const t = text.trim();
+    if (!t || t.startsWith("/")) return undefined;
+    const n = Number(t);
+    if (Number.isInteger(n) && n >= 1) {
+      for (const [id, p] of this.byId) {
+        if (p.numbered && n <= (p.spec.options?.length ?? 0)) return id;
+      }
+      // a bare number no numbered dialog claims falls through to input/editor
+    }
     for (const [id, p] of this.byId) {
-      if (p.numbered && n <= (p.spec.options?.length ?? 0)) return id;
+      if (!p.numbered && (p.spec.kind === "input" || p.spec.kind === "editor")) return id;
     }
     return undefined;
   }
