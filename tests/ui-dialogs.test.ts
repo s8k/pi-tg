@@ -226,3 +226,23 @@ test("hasActive: true while a dialog with the title is pending, false after reso
   assert.equal(p.hasActive("Pick"), false, "a resolved dialog is no longer active");
   void out;
 });
+
+test("confirm stamps the option NAME (Yes/No), not a bare index", async () => {
+  for (const [index, name] of [
+    [0, "Yes"],
+    [1, "No"],
+  ] as const) {
+    const made = deps();
+    const p = new PendingDialogs(made.deps);
+    const out = made.out;
+    await p.show({ kind: "confirm", title: "Sure?", message: "m" });
+    const answer = new Promise<unknown>((res) => p.answer(1, res));
+    p.tgAnswer(1, { kind: "option", index });
+    await answer;
+    const lastEdit = out.calls.filter((c) => c.kind === "edit").pop();
+    assert.ok(
+      String(lastEdit?.text).includes(`answered: ${name}`) && !String(lastEdit?.text).includes("#"),
+      `the ${name} tap stamps 'answered: ${name}' (got: ${lastEdit?.text})`,
+    );
+  }
+});

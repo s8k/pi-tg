@@ -198,8 +198,11 @@ export class PendingDialogs {
       input = { kind: "option", index: n - 1 };
     }
     const stamp =
-      input.kind === "option"
-        ? `✔️ ${p.spec.title}: answered: ${(p.spec.options ?? [])[input.index] ?? `#${input.index + 1}`}`
+      input.kind === "option" ?
+        // confirm carries a message, not an options list — name the choice.
+        `✔️ ${p.spec.title}: answered: ${
+          p.spec.kind === "confirm" ? (input.index === 0 ? "Yes" : "No") : (p.spec.options ?? [])[input.index] ?? `#${input.index + 1}`
+        }`
         : input.kind === "text"
           ? `✔️ ${p.spec.title}: answered (see reply)`
           : `✖️ ${p.spec.title}: cancelled`;
