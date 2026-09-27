@@ -190,3 +190,12 @@ test("timeAgo", () => {
   assert.equal(timeAgo(now - 2 * 86400_000, now), "2d ago");
   assert.match(timeAgo(now - 30 * 86400_000, now), /^\d{4}-\d{2}-\d{2}$/);
 });
+
+test("pair: persists ownerChatId (the chat survives a restart right after pairing)", async () => {
+  const pi = new FakePi();
+  const out = new FakeOut();
+  const deps = makeDeps(pi.build(), out, { ownerId: undefined });
+  const bridge = new SessionBridge(deps);
+  await bridge.dispatch({ kind: "pair", chatId: 99, fromId: 42 });
+  assert.equal(deps.cfg.ownerChatId, 99);
+});

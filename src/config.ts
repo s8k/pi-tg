@@ -27,6 +27,12 @@ export type OutputLevel = "mute" | "minimal" | "full";
 export interface TelegaConfig {
   botToken?: string;
   ownerId?: number;
+  /**
+   * The owner's chat id, persisted so the bot can post immediately after a
+   * reload/restart (it is otherwise only known once an owner message arrives
+   * — after a /reload the bot would go silent until the owner texts again).
+   */
+  ownerChatId?: number;
   streamEditMs: number;
   askClearOnSwitch: boolean;
   maxSessionList: number;
@@ -129,6 +135,7 @@ export function sanitize(raw: unknown): TelegaConfig {
   return {
     botToken: typeof obj.botToken === "string" && obj.botToken.trim() !== "" ? obj.botToken : undefined,
     ownerId: typeof obj.ownerId === "number" && Number.isFinite(obj.ownerId) ? obj.ownerId : undefined,
+    ownerChatId: typeof obj.ownerChatId === "number" && Number.isFinite(obj.ownerChatId) ? obj.ownerChatId : undefined,
     streamEditMs: clampInt(obj.streamEditMs, DEFAULTS.streamEditMs, 500, 10_000),
     askClearOnSwitch: typeof obj.askClearOnSwitch === "boolean" ? obj.askClearOnSwitch : DEFAULTS.askClearOnSwitch,
     maxSessionList: clampInt(obj.maxSessionList, DEFAULTS.maxSessionList, 5, 50),

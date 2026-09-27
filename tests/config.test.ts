@@ -133,3 +133,18 @@ test("sanitize: mirrorDialogs — default true, explicit false kept, garbage →
   assert.equal(sanitize({ mirrorDialogs: "nope" }).mirrorDialogs, true);
   assert.equal(DEFAULTS.mirrorDialogs, true);
 });
+
+test("saveConfig/loadConfig round-trip: ownerChatId persists", () => {
+  const { opts } = tempPath();
+  const cfg = { ...loadConfig(opts), ownerId: 42, ownerChatId: 777 };
+  saveConfig(cfg, opts);
+  const back = loadConfig(opts);
+  assert.equal(back.ownerChatId, 777);
+  assert.equal(back.ownerId, 42);
+});
+
+test("loadConfig: malformed ownerChatId → undefined", () => {
+  const { opts, path } = tempPath();
+  writeFileSync(path, JSON.stringify({ ownerChatId: "chat" }), "utf-8");
+  assert.equal(loadConfig(opts).ownerChatId, undefined);
+});

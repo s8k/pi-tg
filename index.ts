@@ -213,7 +213,11 @@ export default function piTelega(pi: ExtensionAPI): void {
     if (action.kind === "ignore") return;
     const msg = update.message;
     if (msg && msg.from && cfg.ownerId !== undefined && msg.from.id === cfg.ownerId) {
-      ownerChatId = msg.chat.id;
+      if (ownerChatId !== msg.chat.id) {
+        ownerChatId = msg.chat.id;
+        cfg.ownerChatId = msg.chat.id;
+        void persist(); // survive the next reload/restart
+      }
     }
     if (action.kind === "notAuthorized") {
       await out.send(action.chatId, notAuthorizedText(false), { parseMode: null });
@@ -309,6 +313,7 @@ export default function piTelega(pi: ExtensionAPI): void {
       return;
     }
     cfg.ownerId = undefined;
+    cfg.ownerChatId = undefined;
     ownerChatId = undefined; // Mirror must stop posting to the stale chat
     await persist();
     if (!ctxIsAlive(ctx)) return; // session replaced while persisting
@@ -381,6 +386,9 @@ export default function piTelega(pi: ExtensionAPI): void {
     cfg = loadConfig(CFG);
     state = new TelegaState(cfg.lastOffset ?? 0);
     state.restoreSentIds(cfg.sentMessageIds ?? []);
+    // Restore the learned owner chat so the bot can post immediately after a
+    // reload/restart (unpaired → no chat: the mirror stays silent by design).
+    ownerChatId = cfg.ownerId !== undefined ? cfg.ownerChatId : undefined;
     // A failure here (e.g. in onSessionReplaced) must surface as a TUI notice,
     // never as an unhandled rejection that kills the pi process.
     pollPromise = (async () => {

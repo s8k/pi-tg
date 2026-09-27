@@ -435,6 +435,7 @@ export class SessionBridge {
         return;
       case "pair":
         cfg.ownerId = action.fromId;
+        cfg.ownerChatId = action.chatId; // the /start chat is the owner's chat — persist it
         await this.deps.persist();
         await out.send(action.chatId, pairWelcome(this.deps.botUsername, action.fromId));
         await this.sendCardAndHelp(action.chatId);
