@@ -345,6 +345,10 @@ test("mid-run dialog: the live draft is segmented BEFORE the dialog message, and
     String((calls[segIdx]?.body.rich_message as { markdown?: string })?.markdown ?? "").includes("working on it"),
     "the segment carries the pre-dialog work",
   );
+  assert.ok(
+    String((calls[segIdx]?.body.rich_message as { markdown?: string })?.markdown ?? "").includes("⏸️ Paused — answer the dialog below"),
+    "the segment ends with the paused status line",
+  );
 
   // the TUI side resolved ("x") — the agent continues: a FRESH draft with only
   // the post-dialog content (the pre-dialog part lives in the segment)

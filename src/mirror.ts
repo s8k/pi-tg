@@ -100,7 +100,7 @@ export type BottomLine =
   | { kind: "done" } // clean end: Completed ✔️
   | { kind: "error"; text: string; thinking?: boolean; word?: string } // error end: ⚠️ error: <text> (text pre-escaped; "" → no line); thinking → stream still open (pi may retry): `---` divider + spinner below the ⚠️ line
   | { kind: "aborted" } // stop end: ⚠️ Request was aborted
-  | { kind: "paused" }; // dialog segment (pauseForDialog): no bottom line — blocks + tail only
+  | { kind: "paused" }; // dialog segment (pauseForDialog): '⏸️ Paused — answer the dialog below'
 
 /**
  * Render the single mirror message: committed blocks + the in-flight tail
@@ -240,7 +240,7 @@ export function bottomLineText(bottom: BottomLine): string {
     case "aborted":
       return "⚠️ Request was aborted";
     case "paused":
-      return ""; // the dialog-segment message ends after the tail — the dialog follows
+      return "⏸️ Paused — answer the dialog below"; // the dialog-segment's bottom line (the dialog message follows)
   }
 }
 

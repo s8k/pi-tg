@@ -442,6 +442,7 @@ test("pauseForDialog: working draft → persistent segment; log segmented; next 
   assert.equal(seg.length, 1, "the segment is one persistent rich message");
   assert.ok((seg[0]?.text ?? "").includes("pre-dialog work"), "the segment carries the pre-dialog log");
   assert.ok(!(seg[0]?.text ?? "").includes("Completed ✔️"), "the segment has no run-end marker");
+  assert.ok((seg[0]?.text ?? "").includes("⏸️ Paused — answer the dialog below"), "the segment ends with the paused status line");
   assert.ok(seg[0]?.opts?.disableNotification, "the segment is silent (the dialog is the notification)");
 
   // the answer arrives — the agent continues: the next content event re-spawns
@@ -480,8 +481,11 @@ test("pauseForDialog: no-op without a live working draft (no run / error end)", 
   }
 });
 
-test("BottomLine 'paused' renders blocks + tail with no bottom line", () => {
-  assert.equal(blocksToMd([{ type: "narration", text: "work" }], { tail: "tail", bottom: { kind: "paused" } }), "work\n\ntail");
+test("BottomLine 'paused' renders blocks + tail + the paused status line", () => {
+  assert.equal(
+    blocksToMd([{ type: "narration", text: "work" }], { tail: "tail", bottom: { kind: "paused" } }),
+    "work\n\ntail\n\n⏸️ Paused — answer the dialog below",
+  );
 });
 
 test("post-dialog: the fresh draft re-appears (spinner) at the next assistant MESSAGE START — before any visible text (thinking-only output)", async () => {
