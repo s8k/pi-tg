@@ -358,6 +358,8 @@ export interface MirrorDeps {
    * periodic "still failing" note while it persists, and recovery (info).
    */
   notify?: (msg: string, level?: "info" | "warning" | "error") => void;
+  /** TEMP DEBUG (draft-silence diagnosis): append to a local log file. Remove after diagnosis. */
+  debug?: (msg: string) => void;
 }
 
 /** A content part of an assistant message (text | thinking | toolCall). */
@@ -524,9 +526,16 @@ export class Mirror {
    * the live error-end draft.
    */
   private startRunDraft(): void {
-    if (this.deps.cfg.level === "mute" || this.deps.getChatId() === undefined) return;
-    if (this.draftId !== 0) return; // a draft is already live for this run — reuse it
+    if (this.deps.cfg.level === "mute" || this.deps.getChatId() === undefined) {
+      this.deps.debug?.(`startRunDraft SKIP (level=${this.deps.cfg.level}, chat=${this.deps.getChatId()})`);
+      return;
+    }
+    if (this.draftId !== 0) {
+      this.deps.debug?.(`startRunDraft SKIP (draft ${this.draftId} already live)`);
+      return; // a draft is already live for this run — reuse it
+    }
     this.draftId = ++this.draftSeq;
+    this.deps.debug?.(`startRunDraft SPAWN draftId=${this.draftId} chat=${this.deps.getChatId()}`);
     this.requestUpdate();
     this.armHeartbeat();
   }
@@ -551,6 +560,7 @@ export class Mirror {
    * a live run (phase work) is a no-op: that run already owns its draft.
    */
   onPromptAccepted(): void {
+    this.deps.debug?.(`onPromptAccepted (phase=${this.phase}, chat=${this.deps.getChatId()}, draftId=${this.draftId})`);
     if (this.phase === "work") return; // steer: the live run already owns its draft
     this.log = [];
     this.resetRunUsage();
@@ -991,8 +1001,14 @@ export class Mirror {
    *    content of the same draft (latest wins, no concurrent retry chains).
    */
   private requestDraftUpdate(draftId: number, content: string, canStop: boolean): void {
-    if (this.deps.cfg.level === "mute" || this.phase !== "work") return;
-    if (this.deps.getChatId() === undefined) return;
+    if (this.deps.cfg.level === "mute" || this.phase !== "work") {
+      this.deps.debug?.(`requestDraftUpdate SKIP (level=${this.deps.cfg.level}, phase=${this.phase})`);
+      return;
+    }
+    if (this.deps.getChatId() === undefined) {
+      this.deps.debug?.("requestDraftUpdate SKIP (no chat)");
+      return;
+    }
     this.pending.set(draftId, { content, canStop, run: this.runSeq });
     if (this.deps.now() < this.nextDraftAt && !this.forceNext) {
       this.armDrain();
@@ -1011,7 +1027,10 @@ export class Mirror {
   }
 
   private pump(): Promise<void> {
-    if (this.inflight) return this.inflight;
+    if (this.inflight) {
+      this.deps.debug?.("pump coalesced (draft send in flight)");
+      return this.inflight;
+    }
     let self: Promise<void> | undefined;
     const run = (async (): Promise<void> => {
       try {
@@ -1057,7 +1076,8 @@ export class Mirror {
     const chatId = this.deps.getChatId();
     if (chatId === undefined) return;
     try {
-      await out.sendDraft(chatId, draftId, content, canStop, true /* keepOnStop: keep the draft when Stop is pressed */);
+      const sent = await out.sendDraft(chatId, draftId, content, canStop, true /* keepOnStop: keep the draft when Stop is pressed */);
+      this.deps.debug?.(`runDraftOnce draftId=${draftId} -> ${sent}${sent === false ? " (DRAFT NO LONGER EXISTS — SILENT NO-OP!)" : ""}`);
       this.nextDraftAt = this.deps.now() + cfg.streamEditMs;
       if (this.draftFailStreak > 0) {
         this.deps.notify?.(`draft updates recovered after ${this.draftFailStreak} failure(s)`, "info");

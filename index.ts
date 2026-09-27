@@ -1,3 +1,5 @@
+import { appendFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SessionManager, getAgentDir, convertToLlm, estimateTokens } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
@@ -19,6 +21,18 @@ import { runTgCompaction } from "./src/compact.ts";
 
 const CFG = { path: join(getAgentDir(), "pi-telega.json") };
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+// TEMP DEBUG (draft-silence diagnosis): the mirror runs inside pi's process,
+// so TUI notices are not observable from the agent loop — a local log file is.
+// The agent (bash) reads this after a reproduced run. REMOVE AFTER DIAGNOSIS.
+const DBG_LOG = join(tmpdir(), "pi-telega-dbg.log");
+const dbg = (msg: string): void => {
+  try {
+    appendFileSync(DBG_LOG, `${new Date().toISOString()} ${msg}\n`);
+  } catch {
+    /* diagnostics must never break the mirror */
+  }
+};
 
 /**
  * The "after" count for the AUTO compact detail (`before → after tokens`).
@@ -171,6 +185,7 @@ export default function piTelega(pi: ExtensionAPI): void {
       cfg,
       getChatId: () => ownerChatId,
       now: () => Date.now(),
+      debug: dbg, // TEMP DEBUG (draft-silence diagnosis)
       setTimer: (fn, ms) => {
         const t = setTimeout(fn, ms);
         t.unref?.(); // don't hold the process open if pi exits mid-turn
@@ -216,6 +231,7 @@ export default function piTelega(pi: ExtensionAPI): void {
       if (ownerChatId !== msg.chat.id) {
         ownerChatId = msg.chat.id;
         cfg.ownerChatId = msg.chat.id;
+        dbg(`learn: ownerChatId=${ownerChatId} (msg ${msg.message_id})`);
         void persist(); // survive the next reload/restart
         // A run that started while the chat was unknown (fresh generation +
         // TUI prompt) never spawned its draft — spawn it now.
@@ -389,9 +405,13 @@ export default function piTelega(pi: ExtensionAPI): void {
     cfg = loadConfig(CFG);
     state = new TelegaState(cfg.lastOffset ?? 0);
     state.restoreSentIds(cfg.sentMessageIds ?? []);
-    // Restore the learned owner chat so the bot can post immediately after a
-    // reload/restart (unpaired → no chat: the mirror stays silent by design).
-    ownerChatId = cfg.ownerId !== undefined ? cfg.ownerChatId : undefined;
+    // In-process generation swaps ("reload") restore the persisted owner chat
+    // so the mirror keeps working seamlessly. A fresh process ("startup") must
+    // NOT: after a pi restart the bot stays silent on Telegram until the owner
+    // sends a message first (the learn path then sets + persists the chat).
+    if (event.reason === "reload")
+      ownerChatId = cfg.ownerId !== undefined ? cfg.ownerChatId : undefined;
+    dbg(`session_start reason=${String(event.reason)} cfg.ownerChatId=${cfg.ownerChatId} -> ownerChatId=${ownerChatId}`);
     // A failure here (e.g. in onSessionReplaced) must surface as a TUI notice,
     // never as an unhandled rejection that kills the pi process.
     pollPromise = (async () => {
