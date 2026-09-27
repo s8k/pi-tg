@@ -1,7 +1,7 @@
 # /status: GPU line + new card format
 
 Date: 2026-09-02
-Branch: `feat/pi-telega-v1`
+Branch: `feat/pi-tg-v1`
 
 ## What
 
@@ -10,7 +10,7 @@ card switches to an emoji-labeled format:
 
 ```
 🆔 Untitled session — idle
-📁 dir: c:\tmp\pi-telega
+📁 dir: c:\tmp\pi-tg
 🤖 model: huggingface.co/unsloth/qwen3.8-27b-gguf:UD-Q4_K_M · 🧠 thinking: medium
 📖 context: 76% (92024/120000)
 📨 messages: 171

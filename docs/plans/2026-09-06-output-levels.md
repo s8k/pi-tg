@@ -4,13 +4,13 @@
 
 **Goal:** Replace the boolean mute with a three-level agent-output system (`mute` / `minimal` / `full`), one 1-tap command per level, implemented as a render filter over the existing single-draft rich pipeline.
 
-**Architecture:** `TelegaConfig.muted: boolean` becomes `TelegaConfig.level: "mute" | "minimal" | "full"` (the parser migrates the legacy `muted` key). The level is a *render filter + finalize-branch flag* over the existing machinery: an exported `blocksForLevel()` drops non-visible log blocks, the draft content renders filtered blocks + the streaming tail + the unchanged `<tg-thinking>` bottom line, and `finalize()` collapses the full-level m1/m2 split into ONE persistent message for `minimal` (same notification rules). Command surface: `/level_mute` `/level_minimal` `/level_full` hard-replace `/mute` `/unmute` (router kinds, `command-args` PLAIN set, `BOT_COMMANDS`, bridge dispatch/acks, help); the status card ALWAYS shows the level suffix.
+**Architecture:** `TelegramConfig.muted: boolean` becomes `TelegramConfig.level: "mute" | "minimal" | "full"` (the parser migrates the legacy `muted` key). The level is a *render filter + finalize-branch flag* over the existing machinery: an exported `blocksForLevel()` drops non-visible log blocks, the draft content renders filtered blocks + the streaming tail + the unchanged `<tg-thinking>` bottom line, and `finalize()` collapses the full-level m1/m2 split into ONE persistent message for `minimal` (same notification rules). Command surface: `/level_mute` `/level_minimal` `/level_full` hard-replace `/mute` `/unmute` (router kinds, `command-args` PLAIN set, `BOT_COMMANDS`, bridge dispatch/acks, help); the status card ALWAYS shows the level suffix.
 
 **Tech Stack:** TypeScript (Node ≥ 22.18, native TS type-stripping), `node:test`, no new dependencies. Design: `docs/plans/2026-09-06-output-levels-design.md` (source of truth for strings/behavior; this plan adapts it to the actual code — see adaptation notes).
 
 **Verification (every task ends with):** `npx tsc --noEmit` (expect: no output) + `node --test` (expect: `# fail 0`).
 
-**Branch:** `feat/pi-telega-v1` (already active — do not merge main into it).
+**Branch:** `feat/pi-tg-v1` (already active — do not merge main into it).
 
 ## Task progress
 
@@ -23,7 +23,7 @@
 
 ## Adaptation notes (design → actual code, confirmed during planning)
 
-1. The design sketch says `PairingConfig.muted`; the real code is a flat `TelegaConfig.muted` → becomes `TelegaConfig.level`.
+1. The design sketch says `PairingConfig.muted`; the real code is a flat `TelegramConfig.muted` → becomes `TelegramConfig.level`.
 2. The design lists the three mirror gate sites; there is a FOURTH `cfg.muted` read: `index.ts` auto-compact lane selection (`if (cfg.muted || ownerChatId === undefined) return;`). The mute level keeps suppressing auto-compact messaging exactly as today's mute does; minimal/full do not.
 3. `blocksForLevel("minimal")` keeps ONLY `narration` blocks (the TUI white text). Dropped: `tool` (tool log lines), `prompt` (the mirror-generated "⚠️ terminal prompt — answer there" line — not agent output), `agentError` (carried-over ⚠️ lines). The in-flight tail (current message text = partial answer) is ALWAYS shown — it is the white text. The design delegates the exact block-type choice to planning ("types seen so far: narration, agentError, …").
 4. Help-text lines: the design specifies acks and command descriptions only; the help lines follow the existing `/cmd — description` style WITHOUT the "Output level:" prefix (exact strings in Task 2).
@@ -34,10 +34,10 @@
 
 ### Task 1: config `level` + legacy `muted` migration + rename all `cfg.muted` gates
 
-**TDD scenario:** Full TDD cycle for the new config behavior (failing test first); the consumer renames are mechanical and behavior-preserving (`level === "mute"` ≡ old `muted === true`; `/unmute` sets `"full"`). The rename MUST be atomic with the config change — removing `muted` from `TelegaConfig` breaks every `cfg.muted` read (tsc + runtime), so this task is one commit.
+**TDD scenario:** Full TDD cycle for the new config behavior (failing test first); the consumer renames are mechanical and behavior-preserving (`level === "mute"` ≡ old `muted === true`; `/unmute` sets `"full"`). The rename MUST be atomic with the config change — removing `muted` from `TelegramConfig` breaks every `cfg.muted` read (tsc + runtime), so this task is one commit.
 
 **Files:**
-- Modify: `src/config.ts` (add `OutputLevel` type; `TelegaConfig.level`; `DEFAULTS.level`; `parseLevel` in `sanitize`)
+- Modify: `src/config.ts` (add `OutputLevel` type; `TelegramConfig.level`; `DEFAULTS.level`; `parseLevel` in `sanitize`)
 - Modify: `src/mirror.ts:512` (`startRunDraft` gate), `src/mirror.ts:816` (`requestDraftUpdate` gate), `src/mirror.ts:959` (`finalize` gate)
 - Modify: `src/session-bridge.ts:388` (card — KEEP the old "muted" wording; the new always-on suffix comes in Task 2), `src/session-bridge.ts:494-502` (dispatch cases)
 - Modify: `index.ts:458` (auto-compact lane gate)
@@ -89,7 +89,7 @@ Add (after the `PendingAction` type):
 export type OutputLevel = "mute" | "minimal" | "full";
 ```
 
-In `TelegaConfig`, replace:
+In `TelegramConfig`, replace:
 
 ```ts
   /** When true, agent output (mirror) is suppressed; command replies still work. */
@@ -915,5 +915,5 @@ git commit -m "docs: output levels in comments + README (replaces /mute /unmute)
 
 - [ ] `npx tsc --noEmit` clean
 - [ ] `node --test` — 0 fail (all pre-existing full-level tests unmodified and passing)
-- [ ] `git log` shows the 6 task commits on `feat/pi-telega-v1`
+- [ ] `git log` shows the 6 task commits on `feat/pi-tg-v1`
 - [ ] No `muted` identifier remains in `src/` or `index.ts` (`grep -rn "muted" src/ index.ts` → only the legacy-key strings in `config.ts`'s migration code)

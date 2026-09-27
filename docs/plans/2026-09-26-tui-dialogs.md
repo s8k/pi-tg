@@ -4,7 +4,7 @@
 
 **Goal:** Let the owner answer other extensions' TUI dialogs (`ctx.ui.select/confirm/input/editor`) from the Telegram chat — inline buttons or message replies — with the choice delivered to pi exactly as if it had been selected in the TUI.
 
-**Architecture:** pi's `ctx.ui` is ONE shared, plain, mutable object (`runner.uiContext`, wrapped by pi's `wrapUIPromptContext`); every extension's ctx reads it live. pi-telega installs an **in-place proxy** on that object once per session (`installUiProxy` in `src/wiring.ts`): each dialog method is wrapped so that (1) the real TUI dialog opens as usual, (2) simultaneously a Telegram dialog message goes out (`PendingDialogs`, new pi-free module `src/ui-dialogs.ts`), (3) a race decides the winner — Telegram tap → the TUI dialog is programmatically dismissed via a combined `AbortSignal` (pi's own supported dismiss path) and the tapped value resolves the caller's promise; terminal key → the Telegram message is stamped "answered in the terminal". `custom()` and non-mirrorable cases keep today's heads-up (`ui_prompt_start` mirror line).
+**Architecture:** pi's `ctx.ui` is ONE shared, plain, mutable object (`runner.uiContext`, wrapped by pi's `wrapUIPromptContext`); every extension's ctx reads it live. pi-tg installs an **in-place proxy** on that object once per session (`installUiProxy` in `src/wiring.ts`): each dialog method is wrapped so that (1) the real TUI dialog opens as usual, (2) simultaneously a Telegram dialog message goes out (`PendingDialogs`, new pi-free module `src/ui-dialogs.ts`), (3) a race decides the winner — Telegram tap → the TUI dialog is programmatically dismissed via a combined `AbortSignal` (pi's own supported dismiss path) and the tapped value resolves the caller's promise; terminal key → the Telegram message is stamped "answered in the terminal". `custom()` and non-mirrorable cases keep today's heads-up (`ui_prompt_start` mirror line).
 
 **Tech Stack:** TypeScript (Node ≥ 22.18 type-stripping, erasable syntax only), `node --test`, `tsc --noEmit`; zero new dependencies.
 
@@ -80,7 +80,7 @@ Expected: FAIL — `sanitize({}).mirrorDialogs` is `undefined` (assertion `undef
 **Step 3: Implement**
 
 `src/config.ts`:
-- `TelegaConfig`: add
+- `TelegramConfig`: add
   ```ts
   /** Mirror other extensions' TUI dialogs (select/confirm/input/editor) to Telegram. */
   mirrorDialogs: boolean;
@@ -304,7 +304,7 @@ export class PendingDialogs {
     try {
       sent = await this.deps.out.send(chatId, text, { replyMarkup: { inline_keyboard: buttons } });
     } catch (err) {
-      this.deps.notify?.(`pi-telega: dialog send failed: ${String(err)}`, "error");
+      this.deps.notify?.(`pi-tg: dialog send failed: ${String(err)}`, "error");
       this.release(id, { kind: "expired" });
       return undefined;
     }
@@ -921,7 +921,7 @@ export interface UiDialogHost {
   tuiAnswered(id: number, value: unknown): void;
 }
 
-export const UI_PROXY_MARKER = Symbol.for("pi-telega.ui-proxy");
+export const UI_PROXY_MARKER = Symbol.for("pi-telegram.ui-proxy");
 
 function specFor(method: UiDialogSpec["kind"], args: unknown[]): UiDialogSpec {
   const [title, a2] = args;
@@ -1031,17 +1031,17 @@ export function installUiProxy(ui: Record<PropertyKey, unknown>, host: UiDialogH
       ui[m] = wrapped;
     } catch {
       // getter-only property (strict mode): the assignment throws — not patchable
-      warn?.("pi-telega: ctx.ui is not patchable — dialog mirroring disabled (heads-up only)");
+      warn?.("pi-tg: ctx.ui is not patchable — dialog mirroring disabled (heads-up only)");
       return false;
     }
     if (ui[m] !== wrapped) {
-      warn?.("pi-telega: ctx.ui is not patchable — dialog mirroring disabled (heads-up only)");
+      warn?.("pi-tg: ctx.ui is not patchable — dialog mirroring disabled (heads-up only)");
       return false;
     }
     patched++;
   }
   if (patched === 0) {
-    warn?.("pi-telega: no dialog methods on ctx.ui — dialog mirroring disabled");
+    warn?.("pi-tg: no dialog methods on ctx.ui — dialog mirroring disabled");
     return false;
   }
   ui[UI_PROXY_MARKER] = true;
@@ -1097,7 +1097,7 @@ const fakeCtx = {
 ```ts
 const handlers = new Map<string, (...a: unknown[]) => unknown>();
 let tgCommand: { handler: (args: string, ctx: unknown) => Promise<void> } | undefined;
-piTelega({
+piTelegram({
   registerCommand: (name: string, def: unknown) => {
     if (name === "tg") tgCommand = def as typeof tgCommand;
   },
@@ -1217,7 +1217,7 @@ test("dialog mirroring E2E: extension select → TG buttons → owner tap wins (
 - Other extensions' TUI dialogs (`ctx.ui.select/confirm/input/editor`) are mirrored to the chat: select/confirm as inline buttons, input/editor as *reply to the dialog message*, >20 options as a numbered list + reply with the number.
 - First answer wins: tap the phone → the terminal dialog dismisses itself and the message is stamped `✔️`; press a key in the terminal → the message is stamped `💻 answered in the terminal`.
 - `custom()` (arbitrary terminal UI) is NOT mirrorable — it stays terminal-only with the usual "⚠️ terminal prompt" heads-up in the work log. `editor` caveat: if the phone answers first, the terminal editor stays open until Esc (pi gives it no programmatic dismiss).
-- Config: `"mirrorDialogs": false` in `~/.pi/agent/pi-telega.json` disables mirroring (default `true`; independent of the output level).
+- Config: `"mirrorDialogs": false` in `~/.pi/agent/pi-telegram.json` disables mirroring (default `true`; independent of the output level).
 
 **Step 2: Full verification** — run and read the output of BOTH:
 ```bash

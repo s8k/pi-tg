@@ -1,10 +1,10 @@
 # Design: Telegram bot command menu (`setMyCommands`)
 
-Date: 2026-09-02 · Branch: `feat/pi-telega-v1` · Status: validated, implementing
+Date: 2026-09-02 · Branch: `feat/pi-tg-v1` · Status: validated, implementing
 
 ## Context
 
-pi-telega's bot currently has no Telegram command menu — the phone user sees no
+pi-tg's bot currently has no Telegram command menu — the phone user sees no
 hint at `/` and must know the commands. The Bot API's `setMyCommands` fills the
 menu with `BotCommand { command, description }` pairs (global scope, the API
 default; one call, idempotent).
@@ -45,7 +45,7 @@ Telegram constraints (validated by test): `command` = 1–32 chars of `a-z0-9_`
   `this.call("setMyCommands", { commands: BOT_COMMANDS })`. Global scope
   default, no `language_code`.
 - **`index.ts` `startPolling()`**, right after `getMe()` succeeds:
-  `void client.setMyCommands().catch((err) => ui("pi-telega: setMyCommands failed: …", "warning"))`
+  `void client.setMyCommands().catch((err) => ui("pi-tg: setMyCommands failed: …", "warning"))`
   — best-effort: a failure logs a TUI warning and never blocks or kills polling.
 
 ## When it runs
@@ -87,4 +87,4 @@ start** — self-healing, one idempotent call each time:
 
 TDD: red tests first (both files), then `bot-commands.ts` + the client
 method, then the one-line wiring in `index.ts`. Gate: `tsc --noEmit` + full
-`node --test`. Commit on `feat/pi-telega-v1`, push.
+`node --test`. Commit on `feat/pi-tg-v1`, push.

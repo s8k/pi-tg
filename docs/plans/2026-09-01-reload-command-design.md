@@ -1,6 +1,6 @@
 # Design: `/reload` Telegram command (hot-reload pi extensions)
 
-Date: 2026-09-01 · Branch: `feat/tg-reload-command` (from `feat/pi-telega-v1`)
+Date: 2026-09-01 · Branch: `feat/tg-reload-command` (from `feat/pi-tg-v1`)
 
 ## Goal
 
@@ -16,7 +16,7 @@ extension runtime is alive.
   `session_start` (reason `"reload"`) + `resources_discover`.
 - Docs caveat: code after `await ctx.reload()` still runs from the **pre-reload**
   version; treat reload as terminal for that handler.
-- Failure mode: if an extension fails to load, the pi-telega poller is dead until
+- Failure mode: if an extension fails to load, the pi-tg poller is dead until
   the extension is fixed and reloaded from the TUI. Accepted (user chose option C:
   no inline confirmation, refuse while busy).
 
@@ -51,8 +51,8 @@ extension runtime is alive.
 | `src/router.ts` | `TgAction` union gains `{ kind: "reload"; chatId: number }`; command switch `case "reload"` |
 | `src/command-args.ts` | `"reload"` added to the `PLAIN` set (chatId-only encoding) |
 | `src/config.ts` | `PendingAction` gains `{ type: "reload"; chatId: number }`; `sanitizePending` accepts it |
-| `src/session-bridge.ts` | `TelegaPi.reload(onDone: (ok: boolean, detail?: string) => void): void`; `handle()` `case "reload"`; `onSessionReplaced` clear-question guard for `type === "reload"`; `/help` line: `<b>/reload</b> — hot-reload extensions & resources (idle only)` |
-| `src/wiring.ts` | `CtxLike` gains `reload?(): Promise<void>`; `makeTelegaPi.reload(onDone)` resolves `requireCtx()`, requires `c.reload`, `void c.reload().then(() => onDone(true), (e) => onDone(false, e instanceof Error ? e.message : String(e)))` |
+| `src/session-bridge.ts` | `TelegramPi.reload(onDone: (ok: boolean, detail?: string) => void): void`; `handle()` `case "reload"`; `onSessionReplaced` clear-question guard for `type === "reload"`; `/help` line: `<b>/reload</b> — hot-reload extensions & resources (idle only)` |
+| `src/wiring.ts` | `CtxLike` gains `reload?(): Promise<void>`; `makeTelegramPi.reload(onDone)` resolves `requireCtx()`, requires `c.reload`, `void c.reload().then(() => onDone(true), (e) => onDone(false, e instanceof Error ? e.message : String(e)))` |
 | `index.ts` | none |
 
 ## Tests (TDD, node:test, matching existing suites)
@@ -90,6 +90,6 @@ bad token, our own regression in the handler), the old instance has already
 stamped ✔️ (false positive) and the bot goes silently deaf until the next
 TUI interaction (restart / TUI `/reload`). The card was the only signal that
 could only be produced by a live new poller; the TUI notice
-(`telega: <err>` on the session_start IIFE) is the only remaining trace.
+(`pi-tg: <err>` on the session_start IIFE) is the only remaining trace.
 Rejected alternative: a small "✅ Extensions reloaded" ack from the
 replacement (kept the end-to-end proof without session noise).

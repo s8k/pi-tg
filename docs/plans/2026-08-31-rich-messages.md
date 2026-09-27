@@ -22,7 +22,7 @@ read it first; this plan implements it without deviation.
 
 ## Context
 
-- Repo: `c:/tmp/pi-telega`, branch `feat/pi-telega-v1`.
+- Repo: `c:/tmp/pi-tg`, branch `feat/pi-tg-v1`.
 - Run all tests: `node --test` (from repo root). Single file:
   `node --test tests/markdown.test.ts`.
 - **Type gate:** `npx tsc --noEmit` (strict, erasable-TS) — run it before every
@@ -39,7 +39,7 @@ read it first; this plan implements it without deviation.
   - `src/mirror.ts` — per-turn agent-event mirroring (the file being rewritten).
   - `src/markdown.ts` — legacy converter (untouched) + new rich functions.
   - `src/config.ts` — `DEFAULTS` + `sanitize()` pattern.
-  - `src/state.ts` — `TelegaState` (working/tool-msg fields being deleted).
+  - `src/state.ts` — `TelegramState` (working/tool-msg fields being deleted).
   - `index.ts` — extension entry; constructs `Mirror` with deps.
   - Test fakes: `tests/fake-pi.ts` (`FakeOut`, `FakePi`),
     `tests/fake-fetch.ts` (`makeFakeFetch`), `tests/mirror-helpers.ts`
@@ -205,7 +205,7 @@ old tests pass.
 
 **Step 3: Implement** — `src/config.ts`:
 
-(a) In `TelegaConfig`, after `maxSessionList: number;` add:
+(a) In `TelegramConfig`, after `maxSessionList: number;` add:
 
 ```ts
   /** Re-send cadence of the rich draft (keeps the ~30 s ephemeral window alive). */
@@ -457,7 +457,7 @@ test("makeOut: sendRich → client.sendRichMessage + addSent + persist", async (
     sendRichMessage: async (chatId, rich) => { calls.push(["rich", chatId, rich]); return { message_id: 888 }; },
     sendRichMessageDraft: async () => true,
   };
-  const state = new TelegaState();
+  const state = new TelegramState();
   const out = makeOut(client, state, async () => {});
   const id = await out.sendRich(7, "a table");
   assert.equal(id, 888);
@@ -474,7 +474,7 @@ test("makeOut: sendDraft → passthrough (draftId + canStop), no addSent", async
     sendRichMessage: async () => { throw new Error("unexpected"); },
     sendRichMessageDraft: async (chatId, draftId, rich, canStop) => { calls.push(["draft", chatId, draftId, rich, canStop]); return true; },
   };
-  const state = new TelegaState();
+  const state = new TelegramState();
   const out = makeOut(client, state, async () => {});
   assert.equal(await out.sendDraft(7, 3, "working", true), true);
   assert.deepEqual(calls[0], ["draft", 7, 3, { markdown: "working" }, true]);
@@ -1220,28 +1220,28 @@ One commit at the end (suite must be green at commit time).
 **Step 1: Rewrite `tests/mirror-helpers.ts`** (full file):
 
 ```ts
-// Shared fake harness for mirror tests: real Mirror + TelegaState, fake Out,
+// Shared fake harness for mirror tests: real Mirror + TelegramState, fake Out,
 // injectable clock AND timer (the heartbeat is fake — no real sleeps).
 import { Mirror, type MirrorDeps } from "../src/mirror.ts";
-import { TelegaState } from "../src/state.ts";
-import { DEFAULTS, type TelegaConfig } from "../src/config.ts";
+import { TelegramState } from "../src/state.ts";
+import { DEFAULTS, type TelegramConfig } from "../src/config.ts";
 import { FakeOut } from "./fake-pi.ts";
 
 export interface MirrorTestDeps {
   deps: MirrorDeps;
   out: FakeOut;
-  state: TelegaState;
-  cfg: TelegaConfig;
+  state: TelegramState;
+  cfg: TelegramConfig;
   advance(ms: number): void;
   fireTimer(): void; // fires the single pending (heartbeat) timer, if any
 }
 
-export function makeMirrorDeps(cfg: Partial<TelegaConfig> = {}, chatId = 7): MirrorTestDeps {
+export function makeMirrorDeps(cfg: Partial<TelegramConfig> = {}, chatId = 7): MirrorTestDeps {
   const out = new FakeOut();
-  const state = new TelegaState();
+  const state = new TelegramState();
   let t = 0;
   let timer: { fn: () => void } | undefined;
-  const fullCfg: TelegaConfig = { ...DEFAULTS, botToken: "t", ownerId: 7, ...cfg };
+  const fullCfg: TelegramConfig = { ...DEFAULTS, botToken: "t", ownerId: 7, ...cfg };
   const deps: MirrorDeps = {
     out,
     state,
@@ -1623,8 +1623,8 @@ Expected: FAIL (old mirror has no `sendDraft` behavior / `MirrorDeps` type missi
  * chunk → plain text. Mute = fully silent.
  */
 import type { Out } from "./session-bridge.ts";
-import type { TelegaState } from "./state.ts";
-import type { TelegaConfig } from "./config.ts";
+import type { TelegramState } from "./state.ts";
+import type { TelegramConfig } from "./config.ts";
 import { RICH_CAP, foldLongFences, tailView, chunkRich, chunkMarkdown, chunkText, toPlainText } from "./markdown.ts";
 import { TgError } from "./telegram-client.ts";
 
@@ -1670,8 +1670,8 @@ interface ToolLine {
 
 export interface MirrorDeps {
   out: Out;
-  state: TelegaState;
-  cfg: TelegaConfig;
+  state: TelegramState;
+  cfg: TelegramConfig;
   getChatId(): number | undefined;
   now(): number;
   setTimer(fn: () => void, ms: number): unknown;
@@ -1910,11 +1910,11 @@ the suite to confirm.
 - Modify: `tests/state.test.ts`
 
 **Step 1: Edit `src/state.ts`** — delete all of the following (nothing else
-uses them after Task 9; note `TelegaState` has NO `toJSON`/`loadFrom` —
+uses them after Task 9; note `TelegramState` has NO `toJSON`/`loadFrom` —
 persistence happens in `index.ts` via `cfg.lastOffset` / `cfg.sentMessageIds`,
 so nothing to change there):
 
-- Fields in `TelegaState`:
+- Fields in `TelegramState`:
 
 ```ts
   private workingMsgId: number | undefined;
@@ -1952,7 +1952,7 @@ final rich messages and the small plain status lines are still recorded for
 
 ```ts
 test("offset lifecycle", () => {
-  const s = new TelegaState(41);
+  const s = new TelegramState(41);
   assert.equal(s.getOffset(), 41);
   s.setOffset(42);
   assert.equal(s.getOffset(), 42);

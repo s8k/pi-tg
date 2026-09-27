@@ -1,7 +1,7 @@
 # Rich Messages switch — design
 
 - Date: 2026-08-31
-- Branch: `feat/pi-telega-v1`
+- Branch: `feat/pi-tg-v1`
 - Status: design validated with the owner; implementation pending
 - Sources of truth: live `core.telegram.org/bots/api` (Bot API 10.2/10.3, fetched
   2026-08-31) and the current code in `src/`

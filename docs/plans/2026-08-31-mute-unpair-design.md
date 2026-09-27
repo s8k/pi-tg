@@ -9,7 +9,7 @@ While the TUI runs, `Mirror` keeps posting agent output (working message, tool
 lines, streaming edits, final answers, permission notices) to the last-known
 owner chat — even when the user is at the PC and doesn't want the phone flooded
 with what's already on screen. Currently there is no way to pause this, and the
-only way to unpair is deleting `~/.pi/agent/pi-telega.json` by hand.
+only way to unpair is deleting `~/.pi/agent/pi-telegram.json` by hand.
 
 ## 2. Decisions
 
@@ -25,7 +25,7 @@ only way to unpair is deleting `~/.pi/agent/pi-telega.json` by hand.
 
 ## 3. Changes by module
 
-**`src/config.ts`** — `muted: boolean` on `TelegaConfig` (sanitized: only a real
+**`src/config.ts`** — `muted: boolean` on `TelegramConfig` (sanitized: only a real
 boolean passes, default `false`); `DEFAULTS.muted = false`.
 
 **`src/router.ts`** — `/mute` → `{ kind: "mute", chatId }`, `/unmute` →

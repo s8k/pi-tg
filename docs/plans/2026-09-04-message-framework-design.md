@@ -169,7 +169,7 @@ grace timer is the backstop for a lost settled.)
   when a NEW run starts. The ⚠️ outcome lines (error / aborted) carry no
   suffix. The session card + `/status` show the session's CUMULATIVE usage
   (all of the session's assistant messages, compaction-aware-free —
-  `TelegaPi.sessionUsage` over `sessionManager.getBranch()`) as a `🪙
+  `TelegramPi.sessionUsage` over `sessionManager.getBranch()`) as a `🪙
   tokens: ↑<in> ↓<out>` line ABOVE the messages line — `/status` always
   shows it (`↑0 ↓0` proves the wiring is live); the card omits it while
   zero.
@@ -699,7 +699,7 @@ Order matters: T1 before T6 (lane 2 renders into the same bottom line).
   input at `message_start`, output growing per `message_delta`. The ⚠️
   outcome lines (error / aborted) carry no suffix. Session card + `/status` (user request: tokens ABOVE the
   messages line in any session card): both get a `🪙 tokens: ↑<in> ↓<out>`
-  line (session cumulative — `TelegaPi.sessionUsage()`, full branch,
+  line (session cumulative — `TelegramPi.sessionUsage()`, full branch,
   assistant messages only, wired over `sessionManager.getBranch()`, the
   same non-compaction-aware source as `messageCount`) ABOVE the messages
   line — `/status` ALWAYS shows it (`↑0 ↓0` proves the wiring is live);
@@ -729,7 +729,7 @@ Order matters: T1 before T6 (lane 2 renders into the same bottom line).
   wire carries `128,432 → 2 tokens` (the exact re-derived number) in both
   lanes.
 - 2026-09-05 — poller 409 fix (field incident: after a session
-  resume/swap the red TUI toast `pi-telega poll error: getUpdates: 409
+  resume/swap the red TUI toast `pi-tg poll error: getUpdates: 409
   Conflict: terminated by other getUpdates request; make sure that only
   one bot client is running` appeared and the bot went deaf — Telegram
   updates sat in the queue unfetched). Root cause: the `session_start`
@@ -741,7 +741,7 @@ Order matters: T1 before T6 (lane 2 renders into the same bottom line).
   poller left. SUPERSEDED on three fronts:
   - **409 no longer kills the loop.** `PollerDeps` gains a required
     `onConflict(err)` (distinct from `onError`): 409 → TUI **warning**
-    `pi-telega: another client is polling this bot token (409 Conflict)
+    `pi-tg: another client is polling this bot token (409 Conflict)
     — backing off and retrying`, then the same 1 s→30 s backoff + retry
     as any error. A single conflict — even a genuine external
     double-poller — can no longer deafen the bot permanently; if the

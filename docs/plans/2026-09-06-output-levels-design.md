@@ -1,7 +1,7 @@
 # Output Levels (mute / minimal / full) — Design
 
 Date: 2026-09-06 · Status: designed (brainstorm complete), awaiting implementation plan
-Branch: `feat/pi-telega-v1` · Supersedes: `/mute` + `/unmute`
+Branch: `feat/pi-tg-v1` · Supersedes: `/mute` + `/unmute`
 
 ## Chunk progress
 
@@ -199,7 +199,7 @@ The `/mute` and `/unmute` entries are removed.
 
 ### Follow-ups (explicitly out of scope)
 
-1. **Token display cache columns** — pi-telega's ` ↑↓` omits `cacheRead` /
+1. **Token display cache columns** — pi-tg's ` ↑↓` omits `cacheRead` /
    `cacheWrite` (pi's TUI footer shows `R… W…`). On caching servers (e.g. the local
    llama server reporting prefix-cache hits) the card and bottom line under-report the
    prompt actually sent. Separate design.

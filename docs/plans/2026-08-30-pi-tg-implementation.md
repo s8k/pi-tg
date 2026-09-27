@@ -1,11 +1,11 @@
-# pi-telega Implementation Plan
+# pi-tg Implementation Plan
 
 > **REQUIRED SUB-SKILL:** Use the executing-plans skill to implement this plan task-by-task.
-> Design spec: `docs/plans/2026-08-29-pi-telega-design.md` (this plan implements it; where they conflict, this plan wins and the conflict is noted inline).
+> Design spec: `docs/plans/2026-08-29-pi-tg-design.md` (this plan implements it; where they conflict, this plan wins and the conflict is noted inline).
 
 **Goal:** A pi extension that bridges a local Pi Coding Agent (TUI process) to Telegram via Bot API long polling, so the phone and the terminal are co-clients of the same live session.
 
-**Architecture:** One pi extension running inside the live TUI process. Modules are pure functions of (inputs, fakes) and communicate through a small `Out` interface (send/edit/delete/answer) and an injected `TelegaPi` interface (the pi API surface). The Telegram poller is a per-extension-instance loop started at `session_start`, stopped at `session_shutdown`. Session-control operations (`newSession`/`switchSession`/`waitForIdle`) are only available on pi's command context, so the bridge dispatches them by sending `/tg internal <action>` through `pi.sendUserMessage(..., { expandPromptTemplates: true })`, which pi executes *immediately* (even mid-stream) with a full `ExtensionCommandContext`. Because `newSession`/`switchSession` replace the extension instance (old instance `session_shutdown` → new instance `session_start`), anything that must survive the replacement (pending Telegram actions, poll offset, sent message IDs) is persisted to `~/.pi/agent/pi-telega.json` before the call and consumed by the new instance on `session_start`.
+**Architecture:** One pi extension running inside the live TUI process. Modules are pure functions of (inputs, fakes) and communicate through a small `Out` interface (send/edit/delete/answer) and an injected `TelegramPi` interface (the pi API surface). The Telegram poller is a per-extension-instance loop started at `session_start`, stopped at `session_shutdown`. Session-control operations (`newSession`/`switchSession`/`waitForIdle`) are only available on pi's command context, so the bridge dispatches them by sending `/tg internal <action>` through `pi.sendUserMessage(..., { expandPromptTemplates: true })`, which pi executes *immediately* (even mid-stream) with a full `ExtensionCommandContext`. Because `newSession`/`switchSession` replace the extension instance (old instance `session_shutdown` → new instance `session_start`), anything that must survive the replacement (pending Telegram actions, poll offset, sent message IDs) is persisted to `~/.pi/agent/pi-telegram.json` before the call and consumed by the new instance on `session_start`.
 
 **Tech Stack:** TypeScript (erasable syntax only — Node type-stripping), Node ≥ 22.6 (dev on 26.x), global `fetch`, one runtime dep `qrcode@1.5.4` (QR matrix via `QRCode.create`, rendered `█`/`▁`), `@earendil-works/pi-coding-agent` as devDependency for types only, tests via built-in `node:test` + `node:assert`. No build step: pi loads `index.ts` via jiti, `tsc --noEmit` is the type gate, `node --test` runs `.ts` tests directly.
 
@@ -43,37 +43,37 @@ Checkpoint after each chunk (and at phase boundaries B/C, F, I, K): run `npx tsc
 9. **Telegram Bot API gotchas:** callback data ≤ 64 bytes (use short JSON keys `{"a":"act","i":2}`); `deleteMessage` on an already-deleted/too-old message returns `ok:false, error_code:400, description:"Message to delete not found"` — treat as success; `429` carries `parameters.retry_after` (seconds); `409` = token polled elsewhere; `400 "can't parse entities"` = HTML fallback trigger; `sendMessage`/`editMessageText` limit is 4096 chars; omitting `reply_markup` on edit removes buttons.
 10. **Windows/Node test commands:** `node --test` (bare, auto-discovers `**/*.test.ts` — Node 26 native type-stripping) and `node --test tests/<file>.test.ts`. `node --test tests/` (directory) does NOT work on Windows — never use it. `tsc --noEmit` for types.
 11. **QR:** `QRCode.create(text, { errorCorrectionLevel: "L" })` is synchronous → `{ modules: { size, data: Uint8Array } }` (row-major, 1 = dark). `https://t.me/<username>` needs a 25×25 matrix at ECC-L. Render rows with `█`/`▁` — do NOT use `QRCode.toString(..., {type:"terminal"})` (ANSI escapes, 554 chars wide).
-12. **Config location:** `getAgentDir()` from pi exports `~/.pi/agent` — config file is `join(getAgentDir(), "pi-telega.json")`.
+12. **Config location:** `getAgentDir()` from pi exports `~/.pi/agent` — config file is `join(getAgentDir(), "pi-telegram.json")`.
 
 ## Conventions
 
 - **TDD for every task:** failing test → run (see it fail) → minimal implementation → run (see it pass) → `tsc --noEmit` → commit. Each step below is 2–5 minutes of work.
 - **Commits:** `git add <exact files> && git commit -m "<type>: <imperative summary>"`; types: `chore|feat|test|docs`. Commit at every task step 5.
-- **Module boundary rule:** only `index.ts` imports `@earendil-works/pi-coding-agent` at runtime (types + `getAgentDir` + `SessionManager`); all `src/` modules take interfaces (`TelegaPi`, `Out`, `FetchLike`) and stay pi-free. `tests/fake-pi.ts` implements exactly `TelegaPi`; `tests/fake-fetch.ts` scripts Bot API responses.
+- **Module boundary rule:** only `index.ts` imports `@earendil-works/pi-coding-agent` at runtime (types + `getAgentDir` + `SessionManager`); all `src/` modules take interfaces (`TelegramPi`, `Out`, `FetchLike`) and stay pi-free. `tests/fake-pi.ts` implements exactly `TelegramPi`; `tests/fake-fetch.ts` scripts Bot API responses.
 - **Erasable-TS only:** no `enum`, no namespace, no constructor parameter properties. Use `interface`/`type` + string-literal unions.
 - **Reply language:** all Telegram texts are English; emoji as specified in the design doc §4.
 
 ## File layout (target state)
 
 ```
-pi-telega/
+pi-tg/
 ├── index.ts                  # entry: wiring, /tg command, poller lifecycle (only runtime pi importer)
 ├── package.json              # "type":"module"; dep: qrcode; devDep: pi-coding-agent (types), typescript, @types/node
 ├── tsconfig.json
 ├── .gitignore
 ├── README.md
 ├── src/
-│   ├── config.ts             # load/save ~/.pi/agent/pi-telega.json; PI_TELEGA_BOT_TOKEN override
+│   ├── config.ts             # load/save ~/.pi/agent/pi-telegram.json; PI_TELEGRAM_BOT_TOKEN override
 │   ├── telegram-client.ts    # Bot API: call/429/409/400-parse, methods, poller loop + offset
 │   ├── markdown.ts           # md→Telegram HTML + chunking ≤4096 + plain-text fallback
 │   ├── thinking.ts           # supportedThinkingLevels(model) — mirror of pi's logic
 │   ├── router.ts             # update → typed TgAction (pure)
 │   ├── command-args.ts       # encode/parse `/tg internal …` command args (pure)
-│   ├── session-bridge.ts     # TelegaPi interface + all bot command logic
+│   ├── session-bridge.ts     # TelegramPi interface + all bot command logic
 │   ├── mirror.ts             # pi events → Telegram (working msg, tools, finalize, cards, notes)
 │   ├── onboarding.ts         # QR rendering, token validation, pairing/allowlist (pure)
-│   ├── state.ts              # TelegaState: sent IDs (cap 500), offset, working/tool msg ids
-│   └── wiring.ts             # makeOut + makeTelegaPi adapters (pi-free, structural types)
+│   ├── state.ts              # TelegramState: sent IDs (cap 500), offset, working/tool msg ids
+│   └── wiring.ts             # makeOut + makeTelegramPi adapters (pi-free, structural types)
 └── tests/
     ├── fake-pi.ts, fake-fetch.ts, helpers.ts
     ├── smoke, config, markdown, telegram-client, router, state, onboarding, thinking .test.ts
@@ -100,7 +100,7 @@ pi-telega/
 
 ```json
 {
-  "name": "pi-telega",
+  "name": "pi-tg",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -172,7 +172,7 @@ declare module "qrcode" {
 
 **Step 5: Install + typecheck**
 
-Run: `npm install` (repo root `C:\tmp\pi-telega`)
+Run: `npm install` (repo root `C:\tmp\pi-tg`)
 Then: `npx tsc --noEmit`
 Expected: install succeeds; tsc prints nothing (no errors).
 
@@ -180,7 +180,7 @@ Expected: install succeeds; tsc prints nothing (no errors).
 
 ```bash
 git add package.json package-lock.json tsconfig.json .gitignore src/vendor/qrcode.d.ts
-git commit -m "chore: scaffold pi-telega (package, tsconfig, qrcode types)"
+git commit -m "chore: scaffold pi-tg (package, tsconfig, qrcode types)"
 ```
 
 ### Task 2: Test-runner smoke test
@@ -241,13 +241,13 @@ import { join } from "node:path";
 import { DEFAULTS, configPath, getBotToken, loadConfig, sanitize, saveConfig } from "../src/config.ts";
 
 function tempPath(): { opts: { path: string }; path: string } {
-  const dir = mkdtempSync(join(tmpdir(), "telega-cfg-"));
-  const path = join(dir, "pi-telega.json");
+  const dir = mkdtempSync(join(tmpdir(), "pi-tg-cfg-"));
+  const path = join(dir, "pi-telegram.json");
   return { opts: { path }, path };
 }
 
 test("configPath: default under ~/.pi/agent, override honored", () => {
-  assert.equal(configPath(), join(homedir(), ".pi", "agent", "pi-telega.json"));
+  assert.equal(configPath(), join(homedir(), ".pi", "agent", "pi-telegram.json"));
   assert.equal(configPath({ path: "/x/y.json" }), "/x/y.json");
 });
 
@@ -277,9 +277,9 @@ test("saveConfig/loadConfig round-trip", () => {
 test("getBotToken: env override wins, blank env falls through", () => {
   const { opts } = tempPath();
   const cfg = { ...loadConfig(opts), botToken: "file-token" };
-  assert.equal(getBotToken(cfg, { ...opts, env: { PI_TELEGA_BOT_TOKEN: "env-token" } }), "env-token");
+  assert.equal(getBotToken(cfg, { ...opts, env: { PI_TELEGRAM_BOT_TOKEN: "env-token" } }), "env-token");
   assert.equal(getBotToken(cfg, { ...opts, env: {} }), "file-token");
-  assert.equal(getBotToken(cfg, { ...opts, env: { PI_TELEGA_BOT_TOKEN: "  " } }), "file-token");
+  assert.equal(getBotToken(cfg, { ...opts, env: { PI_TELEGRAM_BOT_TOKEN: "  " } }), "file-token");
 });
 
 test("loadConfig: corrupt JSON → defaults, no throw", () => {
@@ -334,7 +334,7 @@ export type PendingAction =
   | { type: "new"; chatId: number }
   | { type: "activate"; chatId: number; path: string };
 
-export interface TelegaConfig {
+export interface TelegramConfig {
   botToken?: string;
   ownerId?: number;
   streamEditMs: number;
@@ -357,7 +357,7 @@ export interface ConfigOptions {
 }
 
 export const DEFAULTS: Pick<
-  TelegaConfig,
+  TelegramConfig,
   "streamEditMs" | "toolPreviewChars" | "askClearOnSwitch" | "maxSessionList" | "sentMessageIds"
 > = {
   streamEditMs: 1500,
@@ -368,7 +368,7 @@ export const DEFAULTS: Pick<
 };
 
 export function configPath(opts?: ConfigOptions): string {
-  return opts?.path ?? join(homedir(), ".pi", "agent", "pi-telega.json");
+  return opts?.path ?? join(homedir(), ".pi", "agent", "pi-telegram.json");
 }
 
 function clampInt(value: unknown, fallback: number, min: number, max: number): number {
@@ -404,7 +404,7 @@ function sanitizePending(value: unknown): PendingAction | undefined {
 }
 
 /** Repair a raw (possibly hand-edited/corrupt) config object into a valid one. */
-export function sanitize(raw: unknown): TelegaConfig {
+export function sanitize(raw: unknown): TelegramConfig {
   const obj = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
   return {
     botToken: typeof obj.botToken === "string" && obj.botToken.trim() !== "" ? obj.botToken : undefined,
@@ -419,7 +419,7 @@ export function sanitize(raw: unknown): TelegaConfig {
   };
 }
 
-export function loadConfig(opts?: ConfigOptions): TelegaConfig {
+export function loadConfig(opts?: ConfigOptions): TelegramConfig {
   try {
     return sanitize(JSON.parse(readFileSync(configPath(opts), "utf-8")));
   } catch {
@@ -427,16 +427,16 @@ export function loadConfig(opts?: ConfigOptions): TelegaConfig {
   }
 }
 
-/** Effective bot token: env `PI_TELEGA_BOT_TOKEN` (preferred) beats the stored value. */
-export function getBotToken(cfg: TelegaConfig, opts?: ConfigOptions): string | undefined {
+/** Effective bot token: env `PI_TELEGRAM_BOT_TOKEN` (preferred) beats the stored value. */
+export function getBotToken(cfg: TelegramConfig, opts?: ConfigOptions): string | undefined {
   const env = opts?.env ?? process.env;
-  const fromEnv = env.PI_TELEGA_BOT_TOKEN;
+  const fromEnv = env.PI_TELEGRAM_BOT_TOKEN;
   if (typeof fromEnv === "string" && fromEnv.trim() !== "") return fromEnv.trim();
   return cfg.botToken;
 }
 
 /** Atomic-ish write (tmp + rename) so a crash never leaves a torn config file. */
-export function saveConfig(cfg: TelegaConfig, opts?: ConfigOptions): void {
+export function saveConfig(cfg: TelegramConfig, opts?: ConfigOptions): void {
   const path = configPath(opts);
   mkdirSync(dirname(path), { recursive: true });
   const tmp = `${path}.tmp`;
@@ -1795,11 +1795,11 @@ git commit -m "feat: pure router (pairing gate, commands, compact callback vocab
 
 ## Phase 6 — State + Onboarding
 
-### Task 11: `src/state.ts` — `TelegaState`
+### Task 11: `src/state.ts` — `TelegramState`
 
 **TDD scenario:** New feature — full TDD cycle.
 
-**Design note:** per-extension-instance runtime state. Exactly two fields must survive process restarts **and** instance swaps (session replacement): `sentIds` and `offset` — they mirror `TelegaConfig` and `index.ts` persists them (design §8: “sent-ID tracker persists so `/new`-clean still works”). Everything else is instance-scoped: the working-message ID, per-tool message IDs, and the **list caches** that give callback buttons their index→item mapping.
+**Design note:** per-extension-instance runtime state. Exactly two fields must survive process restarts **and** instance swaps (session replacement): `sentIds` and `offset` — they mirror `TelegramConfig` and `index.ts` persists them (design §8: “sent-ID tracker persists so `/new`-clean still works”). Everything else is instance-scoped: the working-message ID, per-tool message IDs, and the **list caches** that give callback buttons their index→item mapping.
 
 **Files:**
 - Create: `src/state.ts`
@@ -1810,10 +1810,10 @@ git commit -m "feat: pure router (pairing gate, commands, compact callback vocab
 ```ts
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { TelegaState } from "../src/state.ts";
+import { TelegramState } from "../src/state.ts";
 
 test("sent ids: add, dedupe, cap 500 (newest kept)", () => {
-  const s = new TelegaState();
+  const s = new TelegramState();
   s.addSent(1);
   s.addSent(1);
   s.addSent(2);
@@ -1826,7 +1826,7 @@ test("sent ids: add, dedupe, cap 500 (newest kept)", () => {
 });
 
 test("drainSent: newest first + resets", () => {
-  const s = new TelegaState();
+  const s = new TelegramState();
   s.addSent(1);
   s.addSent(2);
   s.addSent(3);
@@ -1835,7 +1835,7 @@ test("drainSent: newest first + resets", () => {
 });
 
 test("restoreSentIds: capped + copied", () => {
-  const s = new TelegaState();
+  const s = new TelegramState();
   const many = Array.from({ length: 600 }, (_, i) => i + 1);
   s.restoreSentIds(many);
   assert.equal(s.sentIds().length, 500);
@@ -1844,7 +1844,7 @@ test("restoreSentIds: capped + copied", () => {
 });
 
 test("offset + working + tool-msg lifecycle", () => {
-  const s = new TelegaState(41);
+  const s = new TelegramState(41);
   assert.equal(s.getOffset(), 41);
   s.setOffset(42);
   assert.equal(s.getOffset(), 42);
@@ -1860,7 +1860,7 @@ test("offset + working + tool-msg lifecycle", () => {
 });
 
 test("list caches: index + out of range", () => {
-  const s = new TelegaState();
+  const s = new TelegramState();
   s.setSessionList([{ path: "/a.jsonl", id: "a", modified: 1, messageCount: 3 }]);
   assert.equal(s.sessionAt(0)?.path, "/a.jsonl");
   assert.equal(s.sessionAt(1), undefined);
@@ -1892,7 +1892,7 @@ const SENT_CAP = 500;
  * Per-instance runtime state. `sentIds` + `offset` are persisted by index.ts
  * (they must survive restarts and session replacement); the rest is instance-scoped.
  */
-export class TelegaState {
+export class TelegramState {
   private sentIds: number[] = [];
   private offset: number;
   private workingMsgId: number | undefined;
@@ -1973,7 +1973,7 @@ export class TelegaState {
 
 ```bash
 git add src/state.ts tests/state.test.ts
-git commit -m "feat: TelegaState (sent-id tracker, offset, working/tool msg ids, list caches)"
+git commit -m "feat: TelegramState (sent-id tracker, offset, working/tool msg ids, list caches)"
 ```
 
 ### Task 12: `src/onboarding.ts` — QR + pairing texts
@@ -1994,8 +1994,8 @@ import assert from "node:assert/strict";
 import { notAuthorizedText, pairWelcome, renderQr, tokenLooksValid } from "../src/onboarding.ts";
 
 test("renderQr: uniform width, no ANSI escapes, deterministic, has modules", () => {
-  const q1 = renderQr("https://t.me/pi_telega_bot");
-  const q2 = renderQr("https://t.me/pi_telega_bot");
+  const q1 = renderQr("https://t.me/pi_telegram_bot");
+  const q2 = renderQr("https://t.me/pi_telegram_bot");
   assert.equal(q1, q2);
   assert.ok(!q1.includes("\x1b"));
   const lines = q1.split("\n");
@@ -2162,16 +2162,16 @@ export function supportedThinkingLevels(model: PiModel): PiThinkingLevel[] {
 **Step 5: Write `tests/helpers.ts`** (shared by all bridge test files)
 
 ```ts
-import type { TelegaPi, BridgeDeps } from "../src/session-bridge.ts";
-import type { TelegaConfig } from "../src/config.ts";
-import { TelegaState } from "../src/state.ts";
+import type { TelegramPi, BridgeDeps } from "../src/session-bridge.ts";
+import type { TelegramConfig } from "../src/config.ts";
+import { TelegramState } from "../src/state.ts";
 import type { FakeOut } from "./fake-pi.ts";
 
-export function makeDeps(pi: TelegaPi, out: FakeOut, cfg: Partial<TelegaConfig> = {}): BridgeDeps {
+export function makeDeps(pi: TelegramPi, out: FakeOut, cfg: Partial<TelegramConfig> = {}): BridgeDeps {
   return {
     pi,
     out,
-    state: new TelegaState(),
+    state: new TelegramState(),
     cfg: {
       botToken: "t",
       ownerId: 7,
@@ -2199,7 +2199,7 @@ export function lastSend(out: FakeOut): string {
 ```ts
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { SessionBridge, helpText, timeAgo, type TelegaPi } from "../src/session-bridge.ts";
+import { SessionBridge, helpText, timeAgo, type TelegramPi } from "../src/session-bridge.ts";
 import { FakeOut, FakePi } from "./fake-pi.ts";
 import { makeDeps, lastSend } from "./helpers.ts";
 
@@ -2297,7 +2297,7 @@ test("unknown + help", async () => {
 
 test("dispatch: handler error → ⚠ to chat + TUI notice, never throws", async () => {
   const pi = new FakePi();
-  const evil: TelegaPi = { ...pi.build(), isIdle: () => { throw new Error("boom"); } };
+  const evil: TelegramPi = { ...pi.build(), isIdle: () => { throw new Error("boom"); } };
   const out = new FakeOut();
   const deps = makeDeps(evil, out);
   assert.throws(() => deps.pi.isIdle());
@@ -2323,7 +2323,7 @@ test("timeAgo", () => {
 **Step 8: Write `tests/fake-pi.ts`**
 
 ```ts
-import type { TelegaPi, PiModelInfo, PiSessionInfo, PiContextUsage } from "../src/session-bridge.ts";
+import type { TelegramPi, PiModelInfo, PiSessionInfo, PiContextUsage } from "../src/session-bridge.ts";
 import type { PiModel, PiThinkingLevel } from "../src/thinking.ts";
 
 export interface FakePiOptions {
@@ -2360,7 +2360,7 @@ export class FakePi {
     this.opts = opts;
   }
 
-  build(): TelegaPi {
+  build(): TelegramPi {
     const self = this;
     return {
       cwd: self.opts.cwd ?? "/proj",
@@ -2430,8 +2430,8 @@ export class FakeOut {
 ```ts
 import type { TgAction } from "./router.ts";
 import { CB } from "./router.ts";
-import type { TelegaConfig } from "./config.ts";
-import type { TelegaState, SessionListItem } from "./state.ts";
+import type { TelegramConfig } from "./config.ts";
+import type { TelegramState, SessionListItem } from "./state.ts";
 import type { PiModel, PiThinkingLevel } from "./thinking.ts";
 import { supportedThinkingLevels } from "./thinking.ts";
 import { pairWelcome, notAuthorizedText } from "./onboarding.ts";
@@ -2460,7 +2460,7 @@ export interface PiSessionInfo {
 }
 
 /** Structural view of the pi extension context — implemented by index.ts only. */
-export interface TelegaPi {
+export interface TelegramPi {
   cwd: string;
   isIdle(): boolean;
   abort(): void;
@@ -2502,10 +2502,10 @@ export interface Out {
 }
 
 export interface BridgeDeps {
-  pi: TelegaPi;
+  pi: TelegramPi;
   out: Out;
-  state: TelegaState;
-  cfg: TelegaConfig;
+  state: TelegramState;
+  cfg: TelegramConfig;
   botUsername: string | undefined;
   persist: () => Promise<void>; // save cfg (offset/sentIds/pendingAction/ownerId)
   sleep: (ms: number) => Promise<void>;
@@ -2525,7 +2525,7 @@ export function timeAgo(ms: number, now = Date.now()): string {
 
 export function helpText(): string {
   return [
-    "<b>pi-telega</b> — drive this pi session from Telegram",
+    "<b>pi-tg</b> — drive this pi session from Telegram",
     "Plain text → prompt (busy → ⚡ queued steer)",
     "<b>/new</b> — start a new session",
     "<b>/sessions</b> — list &amp; switch sessions",
@@ -2554,7 +2554,7 @@ export class SessionBridge {
       await this.handle(action);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      this.deps.pi.notifyUi(`telega: ${msg}`, "error");
+      this.deps.pi.notifyUi(`pi-tg: `, "error");
       const chatId = "chatId" in action ? (action as { chatId: number }).chatId : undefined;
       if (chatId !== undefined) {
         try {
@@ -2895,7 +2895,7 @@ git commit -m "feat: thinking levels + session bridge core (interfaces, basic ha
 ```ts
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { SessionBridge, type TelegaPi } from "../src/session-bridge.ts";
+import { SessionBridge, type TelegramPi } from "../src/session-bridge.ts";
 import { FakeOut, FakePi } from "./fake-pi.ts";
 import { makeDeps } from "./helpers.ts";
 
@@ -2908,7 +2908,7 @@ test("/new: pendingAction persisted (awaited) BEFORE newSession; user notified",
   const out = new FakeOut();
   const order: string[] = [];
   const built = pi.build();
-  const traced: TelegaPi = { ...built, newSession: () => { order.push("newSession"); built.newSession(); } };
+  const traced: TelegramPi = { ...built, newSession: () => { order.push("newSession"); built.newSession(); } };
   const deps = makeDeps(traced, out);
   deps.persist = async () => {
     await new Promise((r) => setTimeout(r, 0)); // simulate the real async disk save
@@ -3184,7 +3184,7 @@ git commit -m "test: bridge model/thinking/kill/clear/compact"
 
 ## Phase 8 — Mirror (pi events → Telegram)
 
-**Design note:** `mirror.ts` translates pi lifecycle events into the Telegram UX (design §7): `agent_start` → “working” message with `[⏹ Stop]`; each tool → a status line `⚙ <tool>: <arg> … ✔/✖`; assistant text streams via throttled plain-text edits (≤4096); `agent_end` → finalize the working message and post the final answer as **HTML chunks** (`chunkMarkdown` → `markdownToHtml`). The mirror is pi-free: it receives structurally-typed messages (`MirrorMessage`) and injectable deps (`Out`, `TelegaState`, clock). Intermediate assistant messages (tool-call turns) are streamed too, then their stream message is deleted; `agent_end` picks the **last non-empty assistant text** as the final answer.
+**Design note:** `mirror.ts` translates pi lifecycle events into the Telegram UX (design §7): `agent_start` → “working” message with `[⏹ Stop]`; each tool → a status line `⚙ <tool>: <arg> … ✔/✖`; assistant text streams via throttled plain-text edits (≤4096); `agent_end` → finalize the working message and post the final answer as **HTML chunks** (`chunkMarkdown` → `markdownToHtml`). The mirror is pi-free: it receives structurally-typed messages (`MirrorMessage`) and injectable deps (`Out`, `TelegramState`, clock). Intermediate assistant messages (tool-call turns) are streamed too, then their stream message is deleted; `agent_end` picks the **last non-empty assistant text** as the final answer.
 
 ### Task 16: `src/mirror.ts` — pure helpers + working/tool messages
 
@@ -3201,22 +3201,22 @@ git commit -m "test: bridge model/thinking/kill/clear/compact"
 
 ```ts
 import type { MirrorDeps } from "../src/mirror.ts";
-import type { TelegaConfig } from "../src/config.ts";
+import type { TelegramConfig } from "../src/config.ts";
 import { DEFAULTS } from "../src/config.ts";
-import { TelegaState } from "../src/state.ts";
+import { TelegramState } from "../src/state.ts";
 import type { FakeOut } from "./fake-pi.ts";
 
 export type MirrorTestDeps = MirrorDeps & { advance(ms: number): void };
 
 export function makeMirrorDeps(
   out: FakeOut,
-  cfg: Partial<TelegaConfig> = {},
+  cfg: Partial<TelegramConfig> = {},
   chatId: number | undefined = 7
 ): MirrorTestDeps {
   let clock = 0;
   return {
     out,
-    state: new TelegaState(),
+    state: new TelegramState(),
     cfg: { ...DEFAULTS, botToken: "t", ownerId: 7, ...cfg },
     getChatId: () => chatId,
     now: () => clock,
@@ -3305,8 +3305,8 @@ test("no chatId yet → every event is a silent no-op", async () => {
 
 ```ts
 import type { Out } from "./session-bridge.ts";
-import type { TelegaState } from "./state.ts";
-import type { TelegaConfig } from "./config.ts";
+import type { TelegramState } from "./state.ts";
+import type { TelegramConfig } from "./config.ts";
 import { CB } from "./router.ts";
 import { chunkMarkdown, markdownToHtml, TG_MAX_LEN } from "./markdown.ts";
 
@@ -3358,8 +3358,8 @@ export function toolPreview(toolName: string, args: unknown, maxChars = PREVIEW_
 
 export interface MirrorDeps {
   out: Out;
-  state: TelegaState;
-  cfg: TelegaConfig;
+  state: TelegramState;
+  cfg: TelegramConfig;
   getChatId(): number | undefined;
   now(): number; // injectable clock (stream throttling)
 }
@@ -3900,7 +3900,7 @@ git add src/command-args.ts tests/command-args.test.ts
 git commit -m "feat: internal command encode/parse for phone→terminal dispatch"
 ```
 
-### Task 20: `src/wiring.ts` — `makeOut` + `makeTelegaPi` adapters
+### Task 20: `src/wiring.ts` — `makeOut` + `makeTelegramPi` adapters
 
 **TDD scenario:** New feature — full TDD cycle. The adapters live in `wiring.ts` (NOT `index.ts`) so they are pi-free and unit-testable; `wiring.ts` declares **local structural interfaces** (`PiLike`/`CtxLike`/`ClientLike`) that mirror pi 0.84.4’s surface — `index.ts` passes the real objects, which satisfy them structurally (method-syntax declarations keep assignability bivariant).
 
@@ -3913,8 +3913,8 @@ git commit -m "feat: internal command encode/parse for phone→terminal dispatch
 ```ts
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { makeOut, makeTelegaPi, type CtxLike, type ClientLike, type PiLike } from "../src/wiring.ts";
-import { TelegaState } from "../src/state.ts";
+import { makeOut, makeTelegramPi, type CtxLike, type ClientLike, type PiLike } from "../src/wiring.ts";
+import { TelegramState } from "../src/state.ts";
 
 test("makeOut: send → addSent + persist, default parseMode HTML", async () => {
   const calls: unknown[][] = [];
@@ -3923,7 +3923,7 @@ test("makeOut: send → addSent + persist, default parseMode HTML", async () => 
     editMessageText: async (a, b, c, d) => { calls.push(["edit", a, b, c, d]); return true; },
     deleteMessage: async (a, b) => { calls.push(["del", a, b]); },
   };
-  const state = new TelegaState();
+  const state = new TelegramState();
   let persists = 0;
   const out = makeOut(client, state, async () => { persists++; });
   const id = await out.send(7, "hello");
@@ -3940,7 +3940,7 @@ test("makeOut: explicit parseMode null survives; edit/delete passthrough", async
     editMessageText: async (a, b, c, d) => { calls.push(["edit", a, b, c, d]); return false; },
     deleteMessage: async (a, b) => { calls.push(["del", a, b]); },
   };
-  const out = makeOut(client, new TelegaState(), async () => {});
+  const out = makeOut(client, new TelegramState(), async () => {});
   await out.send(7, "plain", { parseMode: null });
   assert.equal(calls[0][3].parseMode, null);
   const edited = await out.edit(7, 8, "x", { parseMode: null });
@@ -3973,7 +3973,7 @@ function makeFakeCtx(over: Partial<CtxLike> = {}): CtxLike {
   };
 }
 
-test("makeTelegaPi: sendPrompt now/steer mapping", () => {
+test("makeTelegramPi: sendPrompt now/steer mapping", () => {
   const sent: { text: string; opts?: unknown }[] = [];
   const pi: PiLike = {
     sendUserMessage: (text, opts) => { sent.push({ text, opts }); },
@@ -3982,19 +3982,19 @@ test("makeTelegaPi: sendPrompt now/steer mapping", () => {
     setModel: async () => true,
     setThinkingLevel: () => {},
   };
-  const t = makeTelegaPi({ pi, getCmdCtx: () => makeFakeCtx(), getSessionCtx: () => undefined, listSessions: async () => [] });
+  const t = makeTelegramPi({ pi, getCmdCtx: () => makeFakeCtx(), getSessionCtx: () => undefined, listSessions: async () => [] });
   t.sendPrompt("hi", "now");
   assert.deepEqual(sent[0].opts, { expandPromptTemplates: true });
   t.sendPrompt("hi", "steer");
   assert.deepEqual(sent[1].opts, { deliverAs: "steer", expandPromptTemplates: true });
 });
 
-test("makeTelegaPi: session control goes to cmdCtx (preferred over sessionCtx)", async () => {
+test("makeTelegramPi: session control goes to cmdCtx (preferred over sessionCtx)", async () => {
   let newCalls = 0;
   let switchCalls: string[] = [];
   const cmd = makeFakeCtx({ newSession: async () => { newCalls++; return { cancelled: false }; }, switchSession: async (p) => { switchCalls.push(p); return { cancelled: false }; } });
   const sess = makeFakeCtx({ newSession: async () => { newCalls += 100; return { cancelled: false }; } });
-  const t = makeTelegaPi({ pi: {} as PiLike, getCmdCtx: () => cmd, getSessionCtx: () => sess, listSessions: async () => [] });
+  const t = makeTelegramPi({ pi: {} as PiLike, getCmdCtx: () => cmd, getSessionCtx: () => sess, listSessions: async () => [] });
   t.newSession();
   t.switchSession("/x.jsonl");
   await new Promise((r) => setTimeout(r, 10));
@@ -4002,7 +4002,7 @@ test("makeTelegaPi: session control goes to cmdCtx (preferred over sessionCtx)",
   assert.deepEqual(switchCalls, ["/x.jsonl"]);
 });
 
-test("makeTelegaPi: setModel scoped-first, registry fallback, unknown → false", async () => {
+test("makeTelegramPi: setModel scoped-first, registry fallback, unknown → false", async () => {
   let calledWith: string[] = [];
   const pi: PiLike = {
     sendUserMessage: () => {},
@@ -4013,15 +4013,15 @@ test("makeTelegaPi: setModel scoped-first, registry fallback, unknown → false"
   };
   const scopedB = { id: "b", name: "B", provider: "p", reasoning: true, thinkingLevelMap: { xhigh: "9000" } };
   const ctx = makeFakeCtx({ scopedModels: [scopedB], modelRegistry: { getAvailable: () => [{ id: "c", name: "C", provider: "p", reasoning: false }, scopedB] } });
-  const t = makeTelegaPi({ pi, getCmdCtx: () => ctx, getSessionCtx: () => undefined, listSessions: async () => [] });
+  const t = makeTelegramPi({ pi, getCmdCtx: () => ctx, getSessionCtx: () => undefined, listSessions: async () => [] });
   assert.equal(await t.setModel("b"), true);
   assert.equal(await t.setModel("c"), true);
   assert.equal(await t.setModel("zz"), false);
   assert.deepEqual(calledWith, ["b", "c"]);
 });
 
-test("makeTelegaPi: messageCount, contextUsage, cwd getter", () => {
-  const t = makeTelegaPi({ pi: {} as PiLike, getCmdCtx: () => makeFakeCtx(), getSessionCtx: () => undefined, listSessions: async () => [] });
+test("makeTelegramPi: messageCount, contextUsage, cwd getter", () => {
+  const t = makeTelegramPi({ pi: {} as PiLike, getCmdCtx: () => makeFakeCtx(), getSessionCtx: () => undefined, listSessions: async () => [] });
   assert.equal(t.cwd, "/proj");
   assert.equal(t.messageCount(), 2);
   assert.deepEqual(t.contextUsage(), { tokens: 100, contextWindow: 1000, percent: 10 });
@@ -4029,11 +4029,11 @@ test("makeTelegaPi: messageCount, contextUsage, cwd getter", () => {
   assert.equal(t.currentModel()?.id, "a");
 });
 
-test("makeTelegaPi: compact callbacks map to onDone(ok, detail)", () => {
+test("makeTelegramPi: compact callbacks map to onDone(ok, detail)", () => {
   let onComplete: ((r: unknown) => void) | undefined;
   let onError: ((e: Error) => void) | undefined;
   const ctx = makeFakeCtx({ compact: (o) => { onComplete = o?.onComplete; onError = o?.onError; } });
-  const t = makeTelegaPi({ pi: {} as PiLike, getCmdCtx: () => ctx, getSessionCtx: () => undefined, listSessions: async () => [] });
+  const t = makeTelegramPi({ pi: {} as PiLike, getCmdCtx: () => ctx, getSessionCtx: () => undefined, listSessions: async () => [] });
   const results: [boolean, string?][] = [];
   t.compact((ok, detail) => results.push([ok, detail]));
   onComplete!({ summary: "summarized 12 msgs" });
@@ -4043,8 +4043,8 @@ test("makeTelegaPi: compact callbacks map to onDone(ok, detail)", () => {
   assert.deepEqual(results[1], [false, "boom"]);
 });
 
-test("makeTelegaPi: no ctx at all → safe defaults, no throw", () => {
-  const t = makeTelegaPi({ pi: {} as PiLike, getCmdCtx: () => undefined, getSessionCtx: () => undefined, listSessions: async () => [] });
+test("makeTelegramPi: no ctx at all → safe defaults, no throw", () => {
+  const t = makeTelegramPi({ pi: {} as PiLike, getCmdCtx: () => undefined, getSessionCtx: () => undefined, listSessions: async () => [] });
   assert.equal(t.cwd, "");
   assert.equal(t.isIdle(), true);
   assert.throws(() => t.abort()); // no ctx → loud failure (bridge’s dispatch wrapper contains it)
@@ -4062,9 +4062,9 @@ test("makeTelegaPi: no ctx at all → safe defaults, no throw", () => {
 **Step 3: Write `src/wiring.ts`**
 
 ```ts
-import type { Out, TelegaPi, PiContextUsage, PiSessionInfo } from "./session-bridge.ts";
+import type { Out, TelegramPi, PiContextUsage, PiSessionInfo } from "./session-bridge.ts";
 import type { PiModel, PiThinkingLevel } from "./thinking.ts";
-import type { TelegaState } from "./state.ts";
+import type { TelegramState } from "./state.ts";
 
 // ── Local structural mirrors of pi 0.84.4 (keeps wiring.ts pi-free & testable) ──
 
@@ -4108,7 +4108,7 @@ export interface ClientLike {
 
 // ── Out adapter: client + state tracking + persist ──
 
-export function makeOut(client: ClientLike, state: TelegaState, persist: () => Promise<void>): Out {
+export function makeOut(client: ClientLike, state: TelegramState, persist: () => Promise<void>): Out {
   return {
     async send(chatId, text, opts) {
       const parseMode: "HTML" | null = opts && opts.parseMode !== undefined ? opts.parseMode : "HTML";
@@ -4125,16 +4125,16 @@ export function makeOut(client: ClientLike, state: TelegaState, persist: () => P
   };
 }
 
-// ── TelegaPi adapter: pi + latest contexts → the bridge’s structural interface ──
+// ── TelegramPi adapter: pi + latest contexts → the bridge’s structural interface ──
 
-export interface TelegaPiDeps {
+export interface TelegramPiDeps {
   pi: PiLike;
   getCmdCtx(): CtxLike | undefined;
   getSessionCtx(): CtxLike | undefined;
   listSessions(cwd: string): Promise<PiSessionInfo[]>;
 }
 
-export function makeTelegaPi(deps: TelegaPiDeps): TelegaPi {
+export function makeTelegramPi(deps: TelegramPiDeps): TelegramPi {
   const ctx = (): CtxLike | undefined => deps.getCmdCtx() ?? deps.getSessionCtx();
   const requireCtx = (): CtxLike => ctx() ?? (() => { throw new Error("no active pi context"); })();
   return {
@@ -4208,7 +4208,7 @@ export function makeTelegaPi(deps: TelegaPiDeps): TelegaPi {
 
 ```bash
 git add src/wiring.ts tests/wiring.test.ts
-git commit -m "feat: pi adapters (Out over client, TelegaPi over pi + contexts)"
+git commit -m "feat: pi adapters (Out over client, TelegramPi over pi + contexts)"
 ```
 
 ### Task 21: `index.ts` — the extension entry (wiring glue) + boundary test + smoke
@@ -4264,15 +4264,15 @@ import { TelegramClient, pollLoop } from "./src/telegram-client.ts";
 import type { TgUpdate } from "./src/telegram-client.ts";
 import { route } from "./src/router.ts";
 import { encodeInternal, parseInternal } from "./src/command-args.ts";
-import { TelegaState } from "./src/state.ts";
+import { TelegramState } from "./src/state.ts";
 import { SessionBridge } from "./src/session-bridge.ts";
-import type { Out, TelegaPi } from "./src/session-bridge.ts";
+import type { Out, TelegramPi } from "./src/session-bridge.ts";
 import { Mirror } from "./src/mirror.ts";
 import type { MirrorMessage } from "./src/mirror.ts";
 import { renderQr, tokenLooksValid, notAuthorizedText } from "./src/onboarding.ts";
-import { makeOut, makeTelegaPi } from "./src/wiring.ts";
+import { makeOut, makeTelegramPi } from "./src/wiring.ts";
 
-const CFG = { path: join(getAgentDir(), "pi-telega.json") };
+const CFG = { path: join(getAgentDir(), "pi-telegram.json") };
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 const listSessionsImpl = async (cwd: string) => {
@@ -4289,13 +4289,13 @@ const listSessionsImpl = async (cwd: string) => {
   }));
 };
 
-export default function piTelega(pi: ExtensionAPI): void {
+export default function piTelegram(pi: ExtensionAPI): void {
   let cfg = loadConfig(CFG);
-  let state: TelegaState | undefined;
+  let state: TelegramState | undefined;
   let bridge: SessionBridge | undefined;
   let client: TelegramClient | undefined;
   let out: Out | undefined;
-  let piAdapter: TelegaPi | undefined;
+  let piAdapter: TelegramPi | undefined;
   let ownerChatId: number | undefined;
   let cmdCtx: ExtensionCommandContext | undefined;
   let sessionCtx: ExtensionContext | undefined;
@@ -4319,7 +4319,7 @@ export default function piTelega(pi: ExtensionAPI): void {
     client = new TelegramClient(token ?? "", {});
     const outAdapter = makeOut(client, state, persist);
     out = outAdapter;
-    piAdapter = makeTelegaPi({
+    piAdapter = makeTelegramPi({
       pi,
       getCmdCtx: () => cmdCtx,
       getSessionCtx: () => sessionCtx,
@@ -4336,14 +4336,14 @@ export default function piTelega(pi: ExtensionAPI): void {
     };
     bridge = new SessionBridge(deps);
     if (!token) {
-      ui("pi-telega: no bot token — run /tg config <token>", "warning");
+      ui("pi-tg: no bot token — run /tg config <token>", "warning");
       return;
     }
     let username: string | undefined;
     try {
       username = (await client.getMe()).username;
     } catch (err) {
-      ui(`pi-telega: getMe failed: ${String(err)}`, "error");
+      ui(`pi-tg: getMe failed: ${String(err)}`, "error");
       return;
     }
     deps.botUsername = username;
@@ -4360,7 +4360,7 @@ export default function piTelega(pi: ExtensionAPI): void {
       onUpdates: async (updates: TgUpdate[]) => {
         for (const u of updates) await handleUpdate(u);
       },
-      onError: (err) => ui(`pi-telega poll error: ${String(err)}`, "error"),
+      onError: (err) => ui(`pi-tg poll error: ${String(err)}`, "error"),
       shouldStop: () => stopping || gen !== pollGen,
       sleep,
     });
@@ -4395,7 +4395,7 @@ export default function piTelega(pi: ExtensionAPI): void {
 
   function cardLines(): string[] {
     const p = piAdapter;
-    if (!p) return ["pi-telega: not ready yet"];
+    if (!p) return ["pi-tg: not ready yet"];
     const model = p.currentModel();
     const usage = p.contextUsage();
     const thinking = p.currentThinking();
@@ -4411,24 +4411,24 @@ export default function piTelega(pi: ExtensionAPI): void {
 
   function showCard(ctx: ExtensionCommandContext): void {
     const lines = cardLines();
-    if (ctx.mode === "tui" && ctx.hasUI) ctx.ui.setWidget("pi-telega", lines);
+    if (ctx.mode === "tui" && ctx.hasUI) ctx.ui.setWidget("pi-tg", lines);
     else ctx.ui.notify(lines.join("\n"), "info");
   }
 
   async function showQr(ctx: ExtensionCommandContext): Promise<void> {
     const token = getBotToken(cfg, CFG);
     if (!token) {
-      ctx.ui.notify("pi-telega: no token yet — run /tg config <token>", "warning");
+      ctx.ui.notify("pi-tg: no token yet — run /tg config <token>", "warning");
       return;
     }
     const c = client ?? new TelegramClient(token, {});
     try {
       const me = await c.getMe();
       const lines = renderQr(`https://t.me/${me.username}`);
-      if (ctx.mode === "tui" && ctx.hasUI) ctx.ui.setWidget("pi-telega-qr", lines);
+      if (ctx.mode === "tui" && ctx.hasUI) ctx.ui.setWidget("pi-tg-qr", lines);
       else ctx.ui.notify(`open https://t.me/${me.username} in Telegram`, "info");
     } catch (err) {
-      ctx.ui.notify(`pi-telega: getMe failed: ${String(err)}`, "error");
+      ctx.ui.notify(`pi-tg: getMe failed: ${String(err)}`, "error");
     }
   }
 
@@ -4443,7 +4443,7 @@ export default function piTelega(pi: ExtensionAPI): void {
       if (sub === "internal") {
         const action = parseInternal(args.trim());
         if (action && bridge) await bridge.dispatch(action);
-        else ctx.ui.notify("pi-telega: bad /tg internal payload", "error");
+        else ctx.ui.notify("pi-tg: bad /tg internal payload", "error");
         return;
       }
       if (sub === "") {
@@ -4453,7 +4453,7 @@ export default function piTelega(pi: ExtensionAPI): void {
       if (sub === "config") {
         const token = parts.slice(1).join(" ").trim();
         if (!tokenLooksValid(token)) {
-          ctx.ui.notify("pi-telega: invalid token (expected <digits>:<alnum/ -_>, e.g. 123456:AAH…)", "error");
+          ctx.ui.notify("pi-tg: invalid token (expected <digits>:<alnum/ -_>, e.g. 123456:AAH…)", "error");
           return;
         }
         cfg.botToken = token;
@@ -4463,12 +4463,12 @@ export default function piTelega(pi: ExtensionAPI): void {
         if (old) await old.catch(() => {});
         pollPromise = startPolling();
         void pollPromise;
-        ctx.ui.notify("pi-telega: token saved, poller restarted. Run /tg pair to show the QR.", "info");
+        ctx.ui.notify("pi-tg: token saved, poller restarted. Run /tg pair to show the QR.", "info");
         return;
       }
       if (sub === "pair") {
         if (cfg.ownerId) {
-          ctx.ui.notify(`pi-telega: already paired with owner ${cfg.ownerId}. Delete ${CFG.path} to re-pair.`, "info");
+          ctx.ui.notify(`pi-tg: already paired with owner ${cfg.ownerId}. Delete ${CFG.path} to re-pair.`, "info");
           return;
         }
         await showQr(ctx);
@@ -4483,7 +4483,7 @@ export default function piTelega(pi: ExtensionAPI): void {
   pi.on("session_start", (event, ctx) => {
     sessionCtx = ctx;
     cfg = loadConfig(CFG);
-    state = new TelegaState(cfg.lastOffset ?? 0);
+    state = new TelegramState(cfg.lastOffset ?? 0);
     state.restoreSentIds(cfg.sentMessageIds ?? []);
     pollPromise = (async () => {
       await startPolling();
@@ -4533,7 +4533,7 @@ export default function piTelega(pi: ExtensionAPI): void {
 ```bash
 # 1. create a bot in Telegram (@BotFather → /newbot), copy the token
 # 2. from this repo, in a project directory:
-pi -e <abs-path-to>/pi-telega/index.ts
+pi -e <abs-path-to>/pi-tg/index.ts
 # 3. in pi’s TUI: /tg config <token>   → expect “token saved, poller restarted”
 # 4. /tg pair                            → QR widget appears
 # 5. on phone: scan QR → open t.me/<bot> → /start   → “✅ paired”
@@ -4566,15 +4566,15 @@ git commit -m "feat: extension entry (poller lifecycle, /tg command, event wirin
 **Step 1: Write `README.md`**
 
 ````markdown
-# pi-telega
+# pi-tg
 
-Drive your local **Pi Coding Agent** from your phone. pi-telega is a pi extension
+Drive your local **Pi Coding Agent** from your phone. pi-tg is a pi extension
 that bridges a live TUI session to Telegram via Bot API long polling — phone and
 terminal become co-clients of the same live session. No cloud relay; your code
 never leaves your machine.
 
 ```
-phone (Telegram) ⇄ Bot API long polling ⇄ pi-telega (in-process) ⇄ pi TUI session
+phone (Telegram) ⇄ Bot API long polling ⇄ pi-tg (in-process) ⇄ pi TUI session
 ```
 
 ## How it works
@@ -4597,7 +4597,7 @@ phone (Telegram) ⇄ Bot API long polling ⇄ pi-telega (in-process) ⇄ pi TUI 
 ## Setup
 
 1. `npm install` in this repo
-2. Start pi with the extension: `pi -e /abs/path/to/pi-telega/index.ts`
+2. Start pi with the extension: `pi -e /abs/path/to/pi-tg/index.ts`
 3. In the TUI: `/tg config <bot-token>`
 4. `/tg pair` → a QR widget appears
 5. Phone: scan the QR → open the bot → `/start` → ✅ paired.
@@ -4631,8 +4631,8 @@ phone (Telegram) ⇄ Bot API long polling ⇄ pi-telega (in-process) ⇄ pi TUI 
 
 ## Configuration
 
-File: `~/.pi/agent/pi-telega.json` (atomic writes; created on first `/tg config`).
-Env `PI_TELEGA_BOT_TOKEN` overrides the stored token.
+File: `~/.pi/agent/pi-telegram.json` (atomic writes; created on first `/tg config`).
+Env `PI_TELEGRAM_BOT_TOKEN` overrides the stored token.
 
 | Field | Default | Meaning |
 |---|---|---|
@@ -4663,7 +4663,7 @@ node --test tests/router.test.ts   # single file
 
 **Module boundary:** only the root `index.ts` may import
 `@earendil-works/pi-coding-agent`. Every `src/` module is pi-free and takes
-injected interfaces (`TelegaPi`, `Out`, `FetchLike`); `tests/boundary.test.ts`
+injected interfaces (`TelegramPi`, `Out`, `FetchLike`); `tests/boundary.test.ts`
 enforces the rule mechanically.
 
 | Module | Responsibility |
@@ -4674,11 +4674,11 @@ enforces the rule mechanically.
 | `src/thinking.ts` | `supportedThinkingLevels(model)` — mirror of pi’s selection logic (pure) |
 | `src/router.ts` | update → typed action (pure) |
 | `src/command-args.ts` | `/tg internal …` encode/parse (pure) |
-| `src/session-bridge.ts` | all phone-command logic behind the `TelegaPi` interface |
+| `src/session-bridge.ts` | all phone-command logic behind the `TelegramPi` interface |
 | `src/mirror.ts` | pi events → Telegram (working msg, tool lines, finalize, cards) |
 | `src/onboarding.ts` | QR rendering, token validation, pairing texts (pure) |
 | `src/state.ts` | per-instance state: offset, sent ids, working/tool message ids |
-| `src/wiring.ts` | `makeOut` / `makeTelegaPi` adapters (structural pi mirrors) |
+| `src/wiring.ts` | `makeOut` / `makeTelegramPi` adapters (structural pi mirrors) |
 
 ## Known limitations (v1)
 
@@ -4733,7 +4733,7 @@ npx tsc --noEmit     # → clean
 node --test          # → every suite green (smoke, config, markdown, telegram-client,
                      #    router, state, onboarding, thinking, bridge-*, mirror-*,
                      #    command-args, wiring, boundary)
-git log --oneline    # → ~25 small type-classified commits on feat/pi-telega-v1
+git log --oneline    # → ~25 small type-classified commits on feat/pi-tg-v1
 ```
 
 **Step 3: Design coverage checklist** (design doc § → where it lives):
@@ -4766,6 +4766,6 @@ git commit -m "ci: type gate + full test suite on Node 26"
 
 ## Done
 
-All 23 tasks complete. The branch `feat/pi-telega-v1` should now contain the full
+All 23 tasks complete. The branch `feat/pi-tg-v1` should now contain the full
 extension: 11 source modules + entry point, 17 test files, README, and CI —
 with `npx tsc --noEmit && node --test` green at every checkpoint.
