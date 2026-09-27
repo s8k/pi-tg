@@ -607,6 +607,12 @@ export class Mirror {
     // A flag, not a nextDraftAt reset: a reset would be stomped by an
     // in-flight draft call completing in the same tick.
     this.forceNext = true;
+    // Post-dialog re-spawn: pauseForDialog retired the draft — bring it back
+    // NOW, at the moment the model starts a new message, with the spinner.
+    // Waiting for the first visible text delta would leave the phone blind on
+    // thinking-only / tool-only openings (the user asked: the spinner should
+    // appear as soon as the model starts outputting).
+    if (this.draftId === 0) this.requestUpdate();
   }
 
   onAssistantUpdate(msg: MirrorMessage): void {

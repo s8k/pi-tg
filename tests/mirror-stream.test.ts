@@ -483,3 +483,27 @@ test("pauseForDialog: no-op without a live working draft (no run / error end)", 
 test("BottomLine 'paused' renders blocks + tail with no bottom line", () => {
   assert.equal(blocksToMd([{ type: "narration", text: "work" }], { tail: "tail", bottom: { kind: "paused" } }), "work\n\ntail");
 });
+
+test("post-dialog: the fresh draft re-appears (spinner) at the next assistant MESSAGE START — before any visible text (thinking-only output)", async () => {
+  const h = makeMirrorDeps({ streamEditMs: 0 });
+  const m = new Mirror(h.deps);
+  m.onAgentStart();
+  m.onAssistantStart(textMsg(""));
+  m.onAssistantUpdate(textMsg("pre"));
+  await tick();
+  await m.pauseForDialog();
+  const n = draftCalls(h).length;
+
+  // the model starts responding — thinking-only so far (no visible text, no
+  // usage change): the draft must still come back with the spinner
+  m.onAssistantStart(textMsg(""));
+  await tick();
+  const fresh = draftCalls(h).slice(n);
+  assert.ok(fresh.length > 0, "the draft re-appears at message start (not at the first visible text)");
+  assert.match(fresh[fresh.length - 1]?.text ?? "", /<tg-thinking>/, "it carries the spinner");
+
+  // a thinking-only update must not be needed to bring it back
+  m.onAssistantUpdate({ role: "assistant", content: [{ type: "thinking", thinking: "hmm" }] });
+  await tick();
+  assert.equal(draftCalls(h).slice(n).length, fresh.length, "the thinking-only update adds no duplicate re-spawn");
+});
