@@ -789,6 +789,24 @@ export class Mirror {
   }
 
   /**
+   * A LANE-1 auto-compaction ended (index.ts, session_compact /
+   * session_compact_failed, bridge lane — no live draft when it started):
+   * the bridge owns the compact's messaging (standalone draft + persistent
+   * stamp), but if the run is live and its draft is dead (retired by a
+   * dialog segment), respawn the spinner NOW — otherwise the phone sits
+   * blind from compact-end until the model's next message_start (prefill
+   * takes seconds on a local LLM — live report 2026-09-27; the post-dialog
+   * respawn is the contract). No log line: the bridge's persistent stamp is
+   * the record (no duplication). Must be called AFTER the bridge's
+   * persistent send — any message sent to the chat clears the ephemeral
+   * draft, so a spinner sent first would be wiped.
+   */
+  onLane1CompactDone(): void {
+    if (this.phase !== "work" || this.draftId !== 0) return;
+    this.requestUpdate(); // ensureDraft spawns the spinner draft
+  }
+
+  /**
    * pi auto-compaction FAILED (session_compact_failed, auto): the draft
    * reverts to its prior state (spinner / error line). The ⚠️ notification
    * is the caller's job (index.ts — the live draft carries on, C3). The

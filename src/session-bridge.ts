@@ -297,7 +297,13 @@ export class SessionBridge {
    * pi's pre-formatted error message (already ⚠-prefixed — verbatim, no
    * double prefix) and may contain HTML characters.
    */
-  autoCompactFinish(ok: boolean, detail?: string): void {
+  /**
+   * Resolves after the stamp draft AND the persistent send are on the wire
+   * — callers that must land AFTER the persistent message (it clears every
+   * ephemeral draft in the chat) await it (index.ts: the lane-1 spinner
+   * respawn).
+   */
+  async autoCompactFinish(ok: boolean, detail?: string): Promise<void> {
     const s = this.autoCompactState;
     if (!s) return; // no lane-1 compaction in flight (duplicate / raced event)
     this.autoCompactState = undefined;
@@ -305,12 +311,10 @@ export class SessionBridge {
     const text = ok
       ? `${AUTO_COMPACT_DONE_TEXT}${detail ? ` ${detail}` : ""}`
       : `⚠️ ${detail ?? "compaction failed"}`;
-    void (async () => {
-      if (s.draftId !== 0) {
-        await this.deps.out.sendDraft(s.chatId, s.draftId, text, false).catch(() => {});
-      }
-      await this.deps.out.send(s.chatId, text, { parseMode: null }).catch(() => {});
-    })();
+    if (s.draftId !== 0) {
+      await this.deps.out.sendDraft(s.chatId, s.draftId, text, false).catch(() => {});
+    }
+    await this.deps.out.send(s.chatId, text, { parseMode: null }).catch(() => {});
   }
 
   /** Re-send the lane-1 draft every cfg.draftHeartbeatMs (drafts expire after ~30 s). */

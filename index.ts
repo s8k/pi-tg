@@ -566,7 +566,18 @@ export default function piTelega(pi: ExtensionAPI): void {
     const tokensBefore = event.compactionEntry?.tokensBefore;
     const detail = compactTokenDetail(tokensBefore, estimatePostCompactTokens(sessionCtx));
     if (autoCompactLane === "mirror") safeCall(() => currentMirror?.onAutoCompactDone(detail));
-    else if (autoCompactLane === "bridge") bridge?.autoCompactFinish(true, detail);
+    else if (autoCompactLane === "bridge")
+      // Await the bridge's stamp + persistent send BEFORE respawning the
+      // live run's spinner — the persistent send clears every ephemeral
+      // draft in the chat, so a spinner sent first would be wiped.
+      void (async () => {
+        try {
+          if (bridge) await bridge.autoCompactFinish(true, detail);
+          safeCall(() => currentMirror?.onLane1CompactDone());
+        } catch (err) {
+          ui(`pi-telega mirror error: ${String(err)}`, "error");
+        }
+      })();
     autoCompactLane = undefined;
   });
 
@@ -584,7 +595,14 @@ export default function piTelega(pi: ExtensionAPI): void {
       safeCall(() => currentMirror?.onAutoCompactFailed());
       if (out && ownerChatId !== undefined) void out.send(ownerChatId, `⚠️ ${msg}`, { parseMode: null }).catch(() => {});
     } else if (autoCompactLane === "bridge") {
-      bridge?.autoCompactFinish(false, msg);
+      void (async () => {
+        try {
+          if (bridge) await bridge.autoCompactFinish(false, msg);
+          safeCall(() => currentMirror?.onLane1CompactDone());
+        } catch (err) {
+          ui(`pi-telega mirror error: ${String(err)}`, "error");
+        }
+      })();
     }
     autoCompactLane = undefined;
   });

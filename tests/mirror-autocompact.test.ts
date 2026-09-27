@@ -205,3 +205,56 @@ test("lane 2 hooks are no-ops without a live draft (lane 1 owns the messaging)",
   assert.equal(h.out.calls.length, before, "no change on a finalized run");
   assert.equal(m.hasLiveDraft(), false);
 });
+
+// Lane 1 (no live draft when the compact started): the bridge owns the
+// compact's messaging, but a LIVE run whose draft is dead (retired by a
+// dialog segment) must get its spinner back at compact-END — not at the
+// next message_start (prefill can take seconds on a local LLM; the phone
+// would sit blind between the stamped compact message and the first
+// streamed message — live report 2026-09-27, same contract as the
+// post-dialog respawn).
+test("lane 1 done: a live run with a dead draft gets its spinner back immediately", async () => {
+  const h = makeMirrorDeps({ streamEditMs: 0 });
+  const m = new Mirror(h.deps);
+  m.onAgentStart();
+  await tick();
+  await okTool(m, "c1", "read", "Reading the spec.");
+  // a mirrored dialog retires the draft (segment); the run stays live
+  await m.pauseForDialog();
+  await tick();
+  assert.equal(m.hasLiveDraft(), false, "precondition: the draft is retired");
+  const before = drafts(h.out.calls).length;
+  m.onLane1CompactDone();
+  await tick();
+  const after = drafts(h.out.calls).slice(before);
+  assert.equal(after.length, 1, "the spinner draft is re-sent at compact-end");
+  assert.ok(String(after[0].text).includes("<tg-thinking>"), `it is the thinking spinner: ${after[0].text}`);
+});
+
+test("lane 1 done guards: a live draft (lane 2 owns it) or a finalized run → no-op", async () => {
+  // live draft: lane 2's own done/failure hooks manage it — no double send
+  const h2 = makeMirrorDeps({ streamEditMs: 0 });
+  const m2 = new Mirror(h2.deps);
+  m2.onAgentStart();
+  await tick();
+  m2.onAutoCompactStart();
+  await tick();
+  const b2 = drafts(h2.out.calls).length;
+  m2.onLane1CompactDone();
+  await tick();
+  assert.equal(drafts(h2.out.calls).length, b2, "live draft: no extra send");
+
+  // finalized run: nothing to respawn
+  const h1 = makeMirrorDeps({ streamEditMs: 0 });
+  const m1 = new Mirror(h1.deps);
+  m1.onAgentStart();
+  await tick();
+  m1.onAssistantStart(textMsg(""));
+  m1.onAssistantUpdate(textMsg("x"));
+  await m1.onAssistantEnd(textMsg("x", { stopReason: "stop" }));
+  await tick();
+  const b1 = h1.out.calls.length;
+  m1.onLane1CompactDone();
+  await tick();
+  assert.equal(h1.out.calls.length, b1, "finalized: no draft");
+});
