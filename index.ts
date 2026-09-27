@@ -1,23 +1,26 @@
-import { join } from "node:path";
+
 import { SessionManager, getAgentDir, convertToLlm, estimateTokens } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import { loadConfig, saveConfig, getBotToken } from "./src/config.ts";
+import { loadConfig, saveConfig, getBotToken, configPath } from "./src/config.ts";
 import { TelegramClient, pollLoop } from "./src/telegram-client.ts";
 import type { TgUpdate } from "./src/telegram-client.ts";
 import { route } from "./src/router.ts";
 import { encodeInternal, parseInternal } from "./src/command-args.ts";
-import { TelegaState } from "./src/state.ts";
+import { TelegramState } from "./src/state.ts";
 import { SessionBridge } from "./src/session-bridge.ts";
 import { probeGpu } from "./src/gpu.ts";
-import type { Out, TelegaPi } from "./src/session-bridge.ts";
+import type { Out, TelegramPi } from "./src/session-bridge.ts";
 import { Mirror, compactTokenDetail } from "./src/mirror.ts";
 import type { MirrorMessage } from "./src/mirror.ts";
 import { renderQr, qrWidgetFactory, tokenLooksValid, notAuthorizedText } from "./src/onboarding.ts";
-import { makeOut, makeTelegaPi, ctxIsAlive, wrapWaitForIdle, installUiProxy } from "./src/wiring.ts";
+import { makeOut, makeTelegramPi, ctxIsAlive, wrapWaitForIdle, installUiProxy } from "./src/wiring.ts";
 import { PendingDialogs } from "./src/ui-dialogs.ts";
 import { runTgCompaction } from "./src/compact.ts";
 
-const CFG = { path: join(getAgentDir(), "pi-telega.json") };
+// pi's agent dir honors PI_CODING_AGENT_DIR (tests point it at a temp dir).
+// configPath also runs the one-time migration from the legacy `pi-telega.json`
+// filename (token + pairing carry over, no re-pair).
+const CFG = { agentDir: getAgentDir() };
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 /**
@@ -61,13 +64,13 @@ const listSessionsImpl = async (cwd: string) => {
   }));
 };
 
-export default function piTelega(pi: ExtensionAPI): void {
+export default function piTelegram(pi: ExtensionAPI): void {
   let cfg = loadConfig(CFG);
-  let state: TelegaState | undefined;
+  let state: TelegramState | undefined;
   let bridge: SessionBridge | undefined;
   let client: TelegramClient | undefined;
   let out: Out | undefined;
-  let piAdapter: TelegaPi | undefined;
+  let piAdapter: TelegramPi | undefined;
   let ownerChatId: number | undefined;
   let cmdCtx: ExtensionCommandContext | undefined;
   let sessionCtx: ExtensionContext | undefined;
@@ -103,13 +106,13 @@ export default function piTelega(pi: ExtensionAPI): void {
   // become an unhandled rejection (Node ≥15 default = crash the pi process);
   // sync handlers must not throw into pi's emitter at all
   const safe = (p: Promise<unknown> | undefined): void => {
-    void p?.catch((err) => ui(`pi-telega mirror error: ${String(err)}`, "error"));
+    void p?.catch((err) => ui(`pi-tg mirror error: ${String(err)}`, "error"));
   };
   const safeCall = (fn: () => void): void => {
     try {
       fn();
     } catch (err) {
-      ui(`pi-telega mirror error: ${String(err)}`, "error");
+      ui(`pi-tg mirror error: ${String(err)}`, "error");
     }
   };
 
@@ -141,7 +144,7 @@ export default function piTelega(pi: ExtensionAPI): void {
       // original position while streaming — above/below the dialog per client).
       onShown: () => currentMirror?.pauseForDialog(),
     });
-    piAdapter = makeTelegaPi({
+    piAdapter = makeTelegramPi({
       pi,
       getCmdCtx: () => cmdCtx,
       getSessionCtx: () => sessionCtx,
@@ -163,20 +166,20 @@ export default function piTelega(pi: ExtensionAPI): void {
     };
     bridge = new SessionBridge(deps);
     if (!token) {
-      ui("pi-telega: no bot token — run /tg:config <bot_token>", "warning");
+      ui("pi-tg: no bot token — run /tg:config <bot_token>", "warning");
       return gen;
     }
     let username: string | undefined;
     try {
       username = (await client.getMe()).username;
     } catch (err) {
-      ui(`pi-telega: getMe failed: ${String(err)}`, "error");
+      ui(`pi-tg: getMe failed: ${String(err)}`, "error");
       return gen;
     }
     deps.botUsername = username;
     // Set the bot menu (self-healing: runs on every poller start). Best-effort:
     // a failure logs a TUI warning and must never block or stop polling.
-    void client.setMyCommands().catch((err) => ui(`pi-telega: setMyCommands failed: ${String(err)}`, "warning"));
+    void client.setMyCommands().catch((err) => ui(`pi-tg: setMyCommands failed: ${String(err)}`, "warning"));
     const mirror = new Mirror({
       out: outAdapter,
       state,
@@ -210,8 +213,8 @@ export default function piTelega(pi: ExtensionAPI): void {
       onUpdates: async (updates: TgUpdate[]) => {
         for (const u of updates) await handleUpdate(u);
       },
-      onError: (err) => ui(`pi-telega poll error: ${String(err)}`, "error"),
-      onConflict: () => ui("pi-telega: another client is polling this bot token (409 Conflict) — backing off and retrying", "warning"),
+      onError: (err) => ui(`pi-tg poll error: ${String(err)}`, "error"),
+      onConflict: () => ui("pi-tg: another client is polling this bot token (409 Conflict) — backing off and retrying", "warning"),
       shouldStop: () => stopping || gen !== pollGen,
       sleep,
       signal: aborter.signal,
@@ -260,7 +263,7 @@ export default function piTelega(pi: ExtensionAPI): void {
 
   function cardLines(): string[] {
     const p = piAdapter;
-    if (!p) return ["pi-telega: not ready yet"];
+    if (!p) return ["pi-tg: not ready yet"];
     const model = p.currentModel();
     const usage = p.contextUsage();
     const thinking = p.currentThinking();
@@ -276,14 +279,14 @@ export default function piTelega(pi: ExtensionAPI): void {
 
   function showCard(ctx: ExtensionCommandContext): void {
     const lines = cardLines();
-    if (ctx.mode === "tui" && ctx.hasUI) ctx.ui.setWidget("pi-telega", lines);
+    if (ctx.mode === "tui" && ctx.hasUI) ctx.ui.setWidget("pi-tg", lines);
     else ctx.ui.notify(lines.join("\n"), "info");
   }
 
   async function showQr(ctx: ExtensionCommandContext): Promise<void> {
     const token = getBotToken(cfg, CFG);
     if (!token) {
-      ctx.ui.notify("pi-telega: no token yet — run /tg:config <bot_token>", "warning");
+      ctx.ui.notify("pi-tg: no token yet — run /tg:config <bot_token>", "warning");
       return;
     }
     const c = client ?? new TelegramClient(token, {});
@@ -291,10 +294,10 @@ export default function piTelega(pi: ExtensionAPI): void {
       const me = await c.getMe();
       if (!ctxIsAlive(ctx)) return; // session replaced mid-flight → ctx is stale
       const qr = renderQr(`https://t.me/${me.username}`);
-      if (ctx.mode === "tui" && ctx.hasUI) ctx.ui.setWidget("pi-telega-qr", qrWidgetFactory(qr)); // factory form: array form is capped at 10 lines
+      if (ctx.mode === "tui" && ctx.hasUI) ctx.ui.setWidget("pi-tg-qr", qrWidgetFactory(qr)); // factory form: array form is capped at 10 lines
       else ctx.ui.notify(`open https://t.me/${me.username} in Telegram`, "info");
     } catch (err) {
-      ui(`pi-telega: getMe failed: ${String(err)}`, "error");
+      ui(`pi-tg: getMe failed: ${String(err)}`, "error");
     }
   }
 
@@ -304,7 +307,7 @@ export default function piTelega(pi: ExtensionAPI): void {
 
   async function runConfig(token: string, ctx: ExtensionCommandContext): Promise<void> {
     if (!tokenLooksValid(token)) {
-      ctx.ui.notify("pi-telega: invalid token (expected <digits>:<alnum/ -_>, e.g. 123456:AAH…)", "error");
+      ctx.ui.notify("pi-tg: invalid token (expected <digits>:<alnum/ -_>, e.g. 123456:AAH…)", "error");
       return;
     }
     cfg.botToken = token;
@@ -316,14 +319,14 @@ export default function piTelega(pi: ExtensionAPI): void {
     // A session replacement can happen while we were waiting above — in that
     // case this handler's ctx is stale and must not be used any more.
     if (!ctxIsAlive(ctx)) return;
-    pollPromise = startPolling().catch((err) => ui(`pi-telega: ${String(err)}`, "error"));
+    pollPromise = startPolling().catch((err) => ui(`pi-tg: ${String(err)}`, "error"));
     void pollPromise;
-    ctx.ui.notify("pi-telega: token saved, poller restarted. Run /tg:pair to show the QR.", "info");
+    ctx.ui.notify("pi-tg: token saved, poller restarted. Run /tg:pair to show the QR.", "info");
   }
 
   async function runPair(ctx: ExtensionCommandContext): Promise<void> {
     if (cfg.ownerId) {
-      ctx.ui.notify(`pi-telega: already paired with owner ${cfg.ownerId}. Run /tg:unpair to unpair.`, "info");
+      ctx.ui.notify(`pi-tg: already paired with owner ${cfg.ownerId}. Run /tg:unpair to unpair.`, "info");
       return;
     }
     await showQr(ctx);
@@ -331,7 +334,7 @@ export default function piTelega(pi: ExtensionAPI): void {
 
   async function runUnpair(ctx: ExtensionCommandContext): Promise<void> {
     if (!cfg.ownerId) {
-      ctx.ui.notify("pi-telega: not paired — nothing to unpair.", "info");
+      ctx.ui.notify("pi-tg: not paired — nothing to unpair.", "info");
       return;
     }
     cfg.ownerId = undefined;
@@ -339,7 +342,7 @@ export default function piTelega(pi: ExtensionAPI): void {
     ownerChatId = undefined; // Mirror must stop posting to the stale chat
     await persist();
     if (!ctxIsAlive(ctx)) return; // session replaced while persisting
-    ctx.ui.notify("pi-telega: unpaired. Bot is silent until a new account presses /start (/tg:pair shows the QR).", "info");
+    ctx.ui.notify("pi-tg: unpaired. Bot is silent until a new account presses /start (/tg:pair shows the QR).", "info");
   }
 
   // One entry per command in pi's `/` completion list (see pi extensions docs).
@@ -358,7 +361,7 @@ export default function piTelega(pi: ExtensionAPI): void {
         // Machine-only path: the Telegram poller injects these.
         const action = parseInternal(args.trim());
         if (action && bridge) await bridge.dispatch(action);
-        else ctx.ui.notify("pi-telega: bad /tg internal payload", "error");
+        else ctx.ui.notify("pi-tg: bad /tg internal payload", "error");
         return;
       }
       if (sub !== "") {
@@ -406,7 +409,7 @@ export default function piTelega(pi: ExtensionAPI): void {
     cmdCtx = undefined;
     autoCompactLane = undefined; // the old instance's lane choice is stale
     cfg = loadConfig(CFG);
-    state = new TelegaState(cfg.lastOffset ?? 0);
+    state = new TelegramState(cfg.lastOffset ?? 0);
     state.restoreSentIds(cfg.sentMessageIds ?? []);
     // In-process generation swaps ("reload") restore the persisted owner chat
     // so the mirror keeps working seamlessly. A fresh process ("startup") must
@@ -444,7 +447,7 @@ export default function piTelega(pi: ExtensionAPI): void {
           // installUiProxy is defensive and should never throw — this is the
           // final backstop: a hostile ctx.ui must not abort the rest of
           // session_start (pendingAction card, the poll loop await).
-          ui(`pi-telega: dialog patch failed: ${String(err)}`, "warning");
+          ui(`pi-tg: dialog patch failed: ${String(err)}`, "warning");
         }
       }
       // Card + clear question AT arrival for /new and session switches (design
@@ -453,7 +456,7 @@ export default function piTelega(pi: ExtensionAPI): void {
       const pa = cfg.pendingAction;
       if (pa && bridge) await bridge.onSessionReplaced(pa.chatId);
       await loop; // pollPromise lives for the loop's lifetime
-    })().catch((err) => ui(`pi-telega: ${String(err)}`, "error"));
+    })().catch((err) => ui(`pi-tg: ${String(err)}`, "error"));
     void pollPromise;
   });
 
@@ -583,7 +586,7 @@ export default function piTelega(pi: ExtensionAPI): void {
           if (bridge) await bridge.autoCompactFinish(true, detail);
           safeCall(() => currentMirror?.onLane1CompactDone());
         } catch (err) {
-          ui(`pi-telega mirror error: ${String(err)}`, "error");
+          ui(`pi-tg mirror error: ${String(err)}`, "error");
         }
       })();
     autoCompactLane = undefined;
@@ -608,7 +611,7 @@ export default function piTelega(pi: ExtensionAPI): void {
           if (bridge) await bridge.autoCompactFinish(false, msg);
           safeCall(() => currentMirror?.onLane1CompactDone());
         } catch (err) {
-          ui(`pi-telega mirror error: ${String(err)}`, "error");
+          ui(`pi-tg mirror error: ${String(err)}`, "error");
         }
       })();
     }

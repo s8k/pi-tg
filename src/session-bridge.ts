@@ -1,7 +1,7 @@
 import type { TgAction } from "./router.ts";
 import { CB } from "./router.ts";
-import type { OutputLevel, TelegaConfig } from "./config.ts";
-import type { TelegaState, SessionListItem } from "./state.ts";
+import type { OutputLevel, TelegramConfig } from "./config.ts";
+import type { TelegramState, SessionListItem } from "./state.ts";
 import type { PiModel, PiThinkingLevel } from "./thinking.ts";
 import { supportedThinkingLevels } from "./thinking.ts";
 import { pairWelcome, notAuthorizedText } from "./onboarding.ts";
@@ -33,7 +33,7 @@ export interface PiSessionInfo {
 }
 
 /** Structural view of the pi extension context — implemented by index.ts only. */
-export interface TelegaPi {
+export interface TelegramPi {
   cwd: string;
   isIdle(): boolean;
   abort(): void;
@@ -101,10 +101,10 @@ export interface Out {
 }
 
 export interface BridgeDeps {
-  pi: TelegaPi;
+  pi: TelegramPi;
   out: Out;
-  state: TelegaState;
-  cfg: TelegaConfig;
+  state: TelegramState;
+  cfg: TelegramConfig;
   botUsername: string | undefined;
   persist: () => Promise<void>; // save cfg (offset/sentIds/pendingAction/ownerId)
   sleep: (ms: number) => Promise<void>;
@@ -142,7 +142,7 @@ const LEVEL_BADGES: Record<OutputLevel, string> = {
 
 export function helpText(): string {
   return [
-    "<b>pi-telega</b> — drive this pi session from Telegram",
+    "<b>pi-tg</b> — drive this pi session from Telegram",
     "Plain text → prompt (busy → ⚡ queued steer)",
     "<b>/status</b> — session info",
     "<b>/stop</b> — Esc (abort the current turn)",
@@ -346,7 +346,7 @@ export class SessionBridge {
       await this.handle(action);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      this.deps.pi.notifyUi(`telega: ${msg}`, "error");
+      this.deps.pi.notifyUi(`pi-tg: ${msg}`, "error");
       const chatId = "chatId" in action ? (action as { chatId: number }).chatId : undefined;
       if (chatId !== undefined) {
         try {

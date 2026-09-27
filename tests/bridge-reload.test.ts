@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { SessionBridge, helpText, type TelegaPi } from "../src/session-bridge.ts";
+import { SessionBridge, helpText, type TelegramPi } from "../src/session-bridge.ts";
 import type { TgAction } from "../src/router.ts";
 import { FakeOut, FakePi } from "./fake-pi.ts";
 import { makeDeps, lastSend } from "./helpers.ts";
@@ -12,7 +12,7 @@ test("/reload: idle → pendingAction persisted (awaited) BEFORE pi.reload; user
   const out = new FakeOut();
   const order: string[] = [];
   const built = pi.build();
-  const traced: TelegaPi = { ...built, reload: (cb) => { order.push("reload"); built.reload(cb); } };
+  const traced: TelegramPi = { ...built, reload: (cb) => { order.push("reload"); built.reload(cb); } };
   const deps = makeDeps(traced, out);
   deps.persist = async () => { order.push("persist"); };
   const bridge = new SessionBridge(deps);

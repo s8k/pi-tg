@@ -15,7 +15,7 @@ const SENT_CAP = 500;
  * Per-instance runtime state. `sentIds` + `offset` are persisted by index.ts
  * (they must survive restarts and session replacement); the rest is instance-scoped.
  */
-export class TelegaState {
+export class TelegramState {
   private sent: number[] = [];
   private offset: number;
   private sessionList: SessionListItem[] = [];

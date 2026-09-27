@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { SessionBridge, helpText, timeAgo, type TelegaPi } from "../src/session-bridge.ts";
+import { SessionBridge, helpText, timeAgo, type TelegramPi } from "../src/session-bridge.ts";
 import { FakeOut, FakePi } from "./fake-pi.ts";
 import { makeDeps, lastSend } from "./helpers.ts";
 
@@ -171,7 +171,7 @@ test("unknown + help", async () => {
 
 test("dispatch: handler error → ⚠ to chat + TUI notice, never throws", async () => {
   const pi = new FakePi();
-  const evil: TelegaPi = { ...pi.build(), isIdle: () => { throw new Error("boom"); } };
+  const evil: TelegramPi = { ...pi.build(), isIdle: () => { throw new Error("boom"); } };
   const out = new FakeOut();
   const deps = makeDeps(evil, out);
   assert.throws(() => deps.pi.isIdle());

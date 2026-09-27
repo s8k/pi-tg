@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import { notAuthorizedText, pairWelcome, renderQr, tokenLooksValid } from "../src/onboarding.ts";
 
 test("renderQr: uniform width, no ANSI escapes, deterministic, has modules", () => {
-  const q1 = renderQr("https://t.me/pi_telega_bot");
-  const q2 = renderQr("https://t.me/pi_telega_bot");
+  const q1 = renderQr("https://t.me/pi_telegram_bot");
+  const q2 = renderQr("https://t.me/pi_telegram_bot");
   assert.equal(q1, q2);
   assert.ok(!q1.includes("\x1b"));
   const lines = q1.split("\n");

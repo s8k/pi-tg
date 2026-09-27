@@ -1,7 +1,7 @@
-import type { Out, TelegaPi, PiContextUsage, PiSessionInfo } from "./session-bridge.ts";
+import type { Out, TelegramPi, PiContextUsage, PiSessionInfo } from "./session-bridge.ts";
 import { compactTokenDetail } from "./mirror.ts";
 import type { PiModel, PiThinkingLevel } from "./thinking.ts";
-import type { TelegaState } from "./state.ts";
+import type { TelegramState } from "./state.ts";
 
 // ── Local structural mirrors of pi 0.84.4 (keeps wiring.ts pi-free & testable) ──
 
@@ -50,7 +50,7 @@ export interface ClientLike {
 
 // ── Out adapter: client + state tracking + persist ──
 
-export function makeOut(client: ClientLike, state: TelegaState, persist: () => Promise<void>): Out {
+export function makeOut(client: ClientLike, state: TelegramState, persist: () => Promise<void>): Out {
   return {
     async send(chatId, text, opts) {
       const parseMode: "HTML" | null = opts && opts.parseMode !== undefined ? opts.parseMode : "HTML";
@@ -75,7 +75,7 @@ export function makeOut(client: ClientLike, state: TelegaState, persist: () => P
   };
 }
 
-// ── TelegaPi adapter: pi + latest contexts → the bridge’s structural interface ──
+// ── TelegramPi adapter: pi + latest contexts → the bridge’s structural interface ──
 
 /**
  * Wrap `pi.waitForIdle` so it additionally waits for the mirror to finish
@@ -93,7 +93,7 @@ export function wrapWaitForIdle(pi: { waitForIdle(): Promise<void> }, whenSettle
   };
 }
 
-export interface TelegaPiDeps {
+export interface TelegramPiDeps {
   pi: PiLike;
   getCmdCtx(): CtxLike | undefined;
   getSessionCtx(): CtxLike | undefined;
@@ -116,7 +116,7 @@ export function ctxIsAlive(c: { cwd: string } | undefined): c is { cwd: string }
   return true;
 }
 
-export function makeTelegaPi(deps: TelegaPiDeps): TelegaPi {
+export function makeTelegramPi(deps: TelegramPiDeps): TelegramPi {
   // Prefer the command ctx (it adds waitForIdle/newSession/switchSession), but
   // skip any stale one — after /new or /sessions-switch the old command ctx is
   // invalidated while a fresh sessionCtx arrives via the new session_start.
@@ -264,7 +264,7 @@ export interface UiDialogHost {
   tuiAnswered(id: number, value: unknown): void;
 }
 
-export const UI_PROXY_MARKER = Symbol.for("pi-telega.ui-proxy");
+export const UI_PROXY_MARKER = Symbol.for("pi-telegram.ui-proxy");
 
 function specFor(method: UiDialogSpec["kind"], args: unknown[]): UiDialogSpec {
   const [title, a2] = args;
@@ -337,7 +337,7 @@ export function installUiProxy(ui: Record<PropertyKey, unknown>, host: UiDialogH
     }
     if (typeof orig !== "function") continue;
     const wrapped = async (...args: unknown[]): Promise<unknown> => {
-      // Fault isolation: every pi-telega step below is guarded; ANY internal
+      // Fault isolation: every pi-tg step below is guarded; ANY internal
       // failure degrades to the plain TUI call, exactly as unpatched pi would
       // behave. pi's own errors (from `orig`) always propagate untouched.
       let id: number | undefined;
@@ -408,22 +408,22 @@ export function installUiProxy(ui: Record<PropertyKey, unknown>, host: UiDialogH
       ui[m] = wrapped;
     } catch {
       // getter-only property (strict mode): the assignment throws — not patchable
-      warn?.("pi-telega: ctx.ui is not patchable — dialog mirroring disabled (heads-up only)");
+      warn?.("pi-tg: ctx.ui is not patchable — dialog mirroring disabled (heads-up only)");
       return false;
     }
     try {
       if (ui[m] !== wrapped) {
-        warn?.("pi-telega: ctx.ui is not patchable — dialog mirroring disabled (heads-up only)");
+        warn?.("pi-tg: ctx.ui is not patchable — dialog mirroring disabled (heads-up only)");
         return false;
       }
     } catch {
-      warn?.("pi-telega: ctx.ui is not patchable — dialog mirroring disabled (heads-up only)");
+      warn?.("pi-tg: ctx.ui is not patchable — dialog mirroring disabled (heads-up only)");
       return false;
     }
     patched++;
   }
   if (patched === 0) {
-    warn?.("pi-telega: no dialog methods on ctx.ui — dialog mirroring disabled");
+    warn?.("pi-tg: no dialog methods on ctx.ui — dialog mirroring disabled");
     return false;
   }
   try {
@@ -432,7 +432,7 @@ export function installUiProxy(ui: Record<PropertyKey, unknown>, host: UiDialogH
     // The methods are patched but the marker cannot be set: a repeat install on
     // the SAME object could double-wrap. pi creates a fresh ui object per runner
     // swap, so in practice this only costs a heads-up.
-    warn?.("pi-telega: could not mark ctx.ui as patched (re-install may re-wrap)");
+    warn?.("pi-tg: could not mark ctx.ui as patched (re-install may re-wrap)");
   }
   return true;
 }

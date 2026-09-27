@@ -1,9 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { TelegaState } from "../src/state.ts";
+import { TelegramState } from "../src/state.ts";
 
 test("sent ids: add, dedupe, cap 500 (newest kept)", () => {
-  const s = new TelegaState();
+  const s = new TelegramState();
   s.addSent(1);
   s.addSent(1);
   s.addSent(2);
@@ -16,7 +16,7 @@ test("sent ids: add, dedupe, cap 500 (newest kept)", () => {
 });
 
 test("drainSent: newest first + resets", () => {
-  const s = new TelegaState();
+  const s = new TelegramState();
   s.addSent(1);
   s.addSent(2);
   s.addSent(3);
@@ -25,7 +25,7 @@ test("drainSent: newest first + resets", () => {
 });
 
 test("restoreSentIds: capped + copied", () => {
-  const s = new TelegaState();
+  const s = new TelegramState();
   const many = Array.from({ length: 600 }, (_, i) => i + 1);
   s.restoreSentIds(many);
   assert.equal(s.sentIds().length, 500);
@@ -34,14 +34,14 @@ test("restoreSentIds: capped + copied", () => {
 });
 
 test("offset lifecycle", () => {
-  const s = new TelegaState(41);
+  const s = new TelegramState(41);
   assert.equal(s.getOffset(), 41);
   s.setOffset(42);
   assert.equal(s.getOffset(), 42);
 });
 
 test("list caches: index + out of range", () => {
-  const s = new TelegaState();
+  const s = new TelegramState();
   s.setSessionList([{ path: "/a.jsonl", id: "a", modified: 1, messageCount: 3 }]);
   assert.equal(s.sessionAt(0)?.path, "/a.jsonl");
   assert.equal(s.sessionAt(1), undefined);

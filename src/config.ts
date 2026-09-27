@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -24,7 +24,7 @@ export type PendingAction =
  */
 export type OutputLevel = "mute" | "minimal" | "full";
 
-export interface TelegaConfig {
+export interface TelegramConfig {
   botToken?: string;
   ownerId?: number;
   /**
@@ -62,12 +62,14 @@ export interface TelegaConfig {
 export interface ConfigOptions {
   /** Override the config file path (tests). */
   path?: string;
+  /** Override the default config directory (index.ts passes pi's agent dir, which honors PI_CODING_AGENT_DIR). */
+  agentDir?: string;
   /** Process env for the token override (tests). */
   env?: NodeJS.ProcessEnv;
 }
 
 export const DEFAULTS: Pick<
-  TelegaConfig,
+  TelegramConfig,
   "streamEditMs" | "askClearOnSwitch" | "maxSessionList" | "draftHeartbeatMs" | "errorSettleMs" | "codeFoldLines" | "level" | "mirrorDialogs" | "sentMessageIds"
 > = {
   streamEditMs: 1500,
@@ -81,8 +83,26 @@ export const DEFAULTS: Pick<
   sentMessageIds: [],
 };
 
+/** Pre-rename config filename — kept only for the one-time migration below. */
+const LEGACY_CONFIG_FILENAME = "pi-telega.json";
+
 export function configPath(opts?: ConfigOptions): string {
-  return opts?.path ?? join(homedir(), ".pi", "agent", "pi-telega.json");
+  if (opts?.path) return opts.path; // explicit override (tests) — no side effects
+  const dir = opts?.agentDir ?? join(homedir(), ".pi", "agent");
+  const fresh = join(dir, "pi-telegram.json");
+  // One-time migration from the pre-rename filename: move the existing config
+  // (token + pairing) so a rename never forces a re-pair. Idempotent and
+  // self-healing: while the fresh file is absent the attempt repeats.
+  const legacy = join(dir, LEGACY_CONFIG_FILENAME);
+  if (!existsSync(fresh) && existsSync(legacy)) {
+    try {
+      writeFileSync(fresh, readFileSync(legacy, "utf-8"), "utf-8");
+      unlinkSync(legacy);
+    } catch {
+      /* best effort — the next call retries; the old file is never destroyed */
+    }
+  }
+  return fresh;
 }
 
 function clampInt(value: unknown, fallback: number, min: number, max: number): number {
@@ -130,7 +150,7 @@ function parseLevel(obj: Record<string, unknown>): OutputLevel {
 }
 
 /** Repair a raw (possibly hand-edited/corrupt) config object into a valid one. */
-export function sanitize(raw: unknown): TelegaConfig {
+export function sanitize(raw: unknown): TelegramConfig {
   const obj = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
   return {
     botToken: typeof obj.botToken === "string" && obj.botToken.trim() !== "" ? obj.botToken : undefined,
@@ -150,7 +170,7 @@ export function sanitize(raw: unknown): TelegaConfig {
   };
 }
 
-export function loadConfig(opts?: ConfigOptions): TelegaConfig {
+export function loadConfig(opts?: ConfigOptions): TelegramConfig {
   try {
     return sanitize(JSON.parse(readFileSync(configPath(opts), "utf-8")));
   } catch {
@@ -158,16 +178,16 @@ export function loadConfig(opts?: ConfigOptions): TelegaConfig {
   }
 }
 
-/** Effective bot token: env `PI_TELEGA_BOT_TOKEN` (preferred) beats the stored value. */
-export function getBotToken(cfg: TelegaConfig, opts?: ConfigOptions): string | undefined {
+/** Effective bot token: env `PI_TELEGRAM_BOT_TOKEN` (preferred) beats the stored value. */
+export function getBotToken(cfg: TelegramConfig, opts?: ConfigOptions): string | undefined {
   const env = opts?.env ?? process.env;
-  const fromEnv = env.PI_TELEGA_BOT_TOKEN;
+  const fromEnv = env.PI_TELEGRAM_BOT_TOKEN;
   if (typeof fromEnv === "string" && fromEnv.trim() !== "") return fromEnv.trim();
   return cfg.botToken;
 }
 
 /** Atomic-ish write (tmp + rename) so a crash never leaves a torn config file. */
-export function saveConfig(cfg: TelegaConfig, opts?: ConfigOptions): void {
+export function saveConfig(cfg: TelegramConfig, opts?: ConfigOptions): void {
   const path = configPath(opts);
   mkdirSync(dirname(path), { recursive: true });
   const tmp = `${path}.tmp`;

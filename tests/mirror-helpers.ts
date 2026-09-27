@@ -1,17 +1,17 @@
-// Shared fake harness for mirror tests: real Mirror + TelegaState, fake Out,
+// Shared fake harness for mirror tests: real Mirror + TelegramState, fake Out,
 // injectable clock AND timers (heartbeat + throttle drain are fakes — no real
 // sleeps). `advance(ms)` moves the clock and fires every due timer in time
 // order (a firing timer may arm further ones; they fire too if still due).
 import type { MirrorDeps } from "../src/mirror.ts";
-import { TelegaState } from "../src/state.ts";
-import { DEFAULTS, type TelegaConfig } from "../src/config.ts";
+import { TelegramState } from "../src/state.ts";
+import { DEFAULTS, type TelegramConfig } from "../src/config.ts";
 import { FakeOut } from "./fake-pi.ts";
 
 export interface MirrorTestDeps {
   deps: MirrorDeps;
   out: FakeOut;
-  state: TelegaState;
-  cfg: TelegaConfig;
+  state: TelegramState;
+  cfg: TelegramConfig;
   advance(ms: number): void;
   timerCount(): number;
 }
@@ -22,13 +22,13 @@ interface FakeTimer {
   fn: () => void;
 }
 
-export function makeMirrorDeps(cfg: Partial<TelegaConfig> = {}, chatId = 7): MirrorTestDeps {
+export function makeMirrorDeps(cfg: Partial<TelegramConfig> = {}, chatId = 7): MirrorTestDeps {
   const out = new FakeOut();
-  const state = new TelegaState();
+  const state = new TelegramState();
   let t = 0;
   let seq = 0;
   const timers = new Map<number, FakeTimer>();
-  const fullCfg: TelegaConfig = { ...DEFAULTS, botToken: "t", ownerId: 7, ...cfg };
+  const fullCfg: TelegramConfig = { ...DEFAULTS, botToken: "t", ownerId: 7, ...cfg };
   const deps: MirrorDeps = {
     out,
     state,

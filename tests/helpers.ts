@@ -1,13 +1,13 @@
-import type { TelegaPi, BridgeDeps } from "../src/session-bridge.ts";
-import type { TelegaConfig } from "../src/config.ts";
-import { TelegaState } from "../src/state.ts";
+import type { TelegramPi, BridgeDeps } from "../src/session-bridge.ts";
+import type { TelegramConfig } from "../src/config.ts";
+import { TelegramState } from "../src/state.ts";
 import type { FakeOut } from "./fake-pi.ts";
 
-export function makeDeps(pi: TelegaPi, out: FakeOut, cfg: Partial<TelegaConfig> = {}): BridgeDeps {
+export function makeDeps(pi: TelegramPi, out: FakeOut, cfg: Partial<TelegramConfig> = {}): BridgeDeps {
   return {
     pi,
     out,
-    state: new TelegaState(),
+    state: new TelegramState(),
     cfg: {
       botToken: "t",
       ownerId: 7,

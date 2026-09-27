@@ -201,13 +201,13 @@ export class PendingDialogs {
       // A failing pause (mirror bug) must not leave a leaked pending entry or
       // break the caller — degrade to TUI-only exactly like a failed send.
       this.byId.delete(id);
-      this.deps.notify?.(`pi-telega: dialog pause failed: ${String(err)}`, "error");
+      this.deps.notify?.(`pi-tg: dialog pause failed: ${String(err)}`, "error");
       return undefined;
     }
     let sent: number | undefined;
     try { sent = await this.deps.out.send(chatId, text, { replyMarkup: { inline_keyboard: buttons } });
     } catch (err) {
-      this.deps.notify?.(`pi-telega: dialog send failed: ${String(err)}`, "error");
+      this.deps.notify?.(`pi-tg: dialog send failed: ${String(err)}`, "error");
       this.byId.delete(id); // the wrapper never attaches (show returned undefined) — nothing to resolve
       return undefined;
     }

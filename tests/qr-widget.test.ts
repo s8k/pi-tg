@@ -7,7 +7,7 @@ import { qrWidgetFactory, renderQr } from "../src/onboarding.ts";
 // extension must pass the component-factory form of setWidget instead.
 
 test("qrWidgetFactory: factory form escapes pi's 10-line array-widget cap", () => {
-  const qr = renderQr("https://t.me/pi_telega_bot");
+  const qr = renderQr("https://t.me/pi_telegram_bot");
   const lines = qr.split("\n");
   assert.ok(lines.length > 10, "precondition: QR is taller than pi's widget cap");
 
@@ -21,7 +21,7 @@ test("qrWidgetFactory: factory form escapes pi's 10-line array-widget cap", () =
 });
 
 test("qrWidgetFactory: output ends with the quiet-zone pad line, not a truncation marker", () => {
-  const qr = renderQr("https://t.me/pi_telega_bot");
+  const qr = renderQr("https://t.me/pi_telegram_bot");
   const comp = qrWidgetFactory(qr)(null, null);
   const rendered = comp.render(120);
   assert.ok(!rendered.join("\n").includes("widget truncated"));

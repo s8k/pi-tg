@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { SessionBridge, type TelegaPi } from "../src/session-bridge.ts";
+import { SessionBridge, type TelegramPi } from "../src/session-bridge.ts";
 import { FakeOut, FakePi } from "./fake-pi.ts";
 import { makeDeps } from "./helpers.ts";
 
@@ -13,7 +13,7 @@ test("/new: pendingAction persisted (awaited) BEFORE newSession; user notified",
   const out = new FakeOut();
   const order: string[] = [];
   const built = pi.build();
-  const traced: TelegaPi = { ...built, newSession: () => { order.push("newSession"); built.newSession(); } };
+  const traced: TelegramPi = { ...built, newSession: () => { order.push("newSession"); built.newSession(); } };
   const deps = makeDeps(traced, out);
   deps.persist = async () => {
     await new Promise((r) => setTimeout(r, 0)); // simulate the real async disk save

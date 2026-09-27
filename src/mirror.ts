@@ -58,8 +58,8 @@
  * instead of the m1/m2 split (see finalize).
  */
 import type { Out } from "./session-bridge.ts";
-import type { TelegaState } from "./state.ts";
-import type { OutputLevel, TelegaConfig } from "./config.ts";
+import type { TelegramState } from "./state.ts";
+import type { OutputLevel, TelegramConfig } from "./config.ts";
 import { RICH_CAP, tailView, escapeHtml, renderToolBlock, toolArgsJson, extractWhy, foldLongFences, chunkRich, chunkMarkdown, chunkText, toPlainText, type ToolState } from "./markdown.ts";
 import { TgError } from "./telegram-client.ts";
 
@@ -350,8 +350,8 @@ function capEscaped(raw: string, cap: number): string {
 
 export interface MirrorDeps {
   out: Out;
-  state: TelegaState;
-  cfg: TelegaConfig;
+  state: TelegramState;
+  cfg: TelegramConfig;
   getChatId(): number | undefined;
   now(): number;
   setTimer(fn: () => void, ms: number): unknown;

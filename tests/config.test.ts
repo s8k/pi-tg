@@ -1,18 +1,18 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULTS, configPath, getBotToken, loadConfig, sanitize, saveConfig } from "../src/config.ts";
 
 function tempPath(): { opts: { path: string }; path: string } {
-  const dir = mkdtempSync(join(tmpdir(), "telega-cfg-"));
-  const path = join(dir, "pi-telega.json");
+  const dir = mkdtempSync(join(tmpdir(), "pi-tg-cfg-"));
+  const path = join(dir, "pi-telegram.json");
   return { opts: { path }, path };
 }
 
 test("configPath: default under ~/.pi/agent, override honored", () => {
-  assert.equal(configPath(), join(homedir(), ".pi", "agent", "pi-telega.json"));
+  assert.equal(configPath(), join(homedir(), ".pi", "agent", "pi-telegram.json"));
   assert.equal(configPath({ path: "/x/y.json" }), "/x/y.json");
 });
 
@@ -42,9 +42,9 @@ test("saveConfig/loadConfig round-trip", () => {
 test("getBotToken: env override wins, blank env falls through", () => {
   const { opts } = tempPath();
   const cfg = { ...loadConfig(opts), botToken: "file-token" };
-  assert.equal(getBotToken(cfg, { ...opts, env: { PI_TELEGA_BOT_TOKEN: "env-token" } }), "env-token");
+  assert.equal(getBotToken(cfg, { ...opts, env: { PI_TELEGRAM_BOT_TOKEN: "env-token" } }), "env-token");
   assert.equal(getBotToken(cfg, { ...opts, env: {} }), "file-token");
-  assert.equal(getBotToken(cfg, { ...opts, env: { PI_TELEGA_BOT_TOKEN: "  " } }), "file-token");
+  assert.equal(getBotToken(cfg, { ...opts, env: { PI_TELEGRAM_BOT_TOKEN: "  " } }), "file-token");
 });
 
 test("loadConfig: corrupt JSON → defaults, no throw", () => {
@@ -147,4 +147,66 @@ test("loadConfig: malformed ownerChatId → undefined", () => {
   const { opts, path } = tempPath();
   writeFileSync(path, JSON.stringify({ ownerChatId: "chat" }), "utf-8");
   assert.equal(loadConfig(opts).ownerChatId, undefined);
+});
+
+test("configPath: agentDir override is honored (pi's agent dir, PI_CODING_AGENT_DIR)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-tg-cfg-"));
+  assert.equal(configPath({ agentDir: dir }), join(dir, "pi-telegram.json"));
+  assert.equal(configPath({ path: "/x/y.json", agentDir: dir }), "/x/y.json", "explicit path still wins");
+});
+
+// ── one-time migration from the legacy `pi-telega.json` filename ───────────
+
+function withFakeHome(home: string, fn: () => void): void {
+  const oldUp = process.env.USERPROFILE;
+  const oldHome = process.env.HOME;
+  process.env.USERPROFILE = home;
+  process.env.HOME = home;
+  try {
+    fn();
+  } finally {
+    if (oldUp === undefined) delete process.env.USERPROFILE;
+    else process.env.USERPROFILE = oldUp;
+    if (oldHome === undefined) delete process.env.HOME;
+    else process.env.HOME = oldHome;
+  }
+}
+
+test("configPath: migrates a legacy pi-telega.json to pi-telegram.json (content preserved, legacy removed)", () => {
+  const home = mkdtempSync(join(tmpdir(), "pi-tg-migrate-"));
+  const agentDir = join(home, ".pi", "agent");
+  mkdirSync(agentDir, { recursive: true });
+  const legacy = join(agentDir, "pi-telega.json");
+  writeFileSync(legacy, '{"ownerId": 7, "level": "full"}', "utf-8");
+  withFakeHome(home, () => {
+    const p = configPath();
+    assert.equal(p, join(agentDir, "pi-telegram.json"), "default path is the new name");
+    assert.ok(existsSync(p), "the fresh file exists after configPath()");
+    assert.equal(readFileSync(p, "utf-8"), '{"ownerId": 7, "level": "full"}', "content preserved");
+    assert.ok(!existsSync(legacy), "legacy file removed");
+  });
+});
+
+test("configPath: an existing fresh file is never clobbered by the legacy one", () => {
+  const home = mkdtempSync(join(tmpdir(), "pi-tg-migrate-"));
+  const agentDir = join(home, ".pi", "agent");
+  mkdirSync(agentDir, { recursive: true });
+  writeFileSync(join(agentDir, "pi-telegram.json"), '{"ownerId": 99}', "utf-8");
+  writeFileSync(join(agentDir, "pi-telega.json"), '{"ownerId": 1}', "utf-8");
+  withFakeHome(home, () => {
+    const p = configPath();
+    assert.equal(readFileSync(p, "utf-8"), '{"ownerId": 99}', "fresh file wins");
+    assert.ok(existsSync(join(agentDir, "pi-telega.json")), "legacy left in place when fresh exists");
+  });
+});
+
+test("configPath: an explicit override path is returned as-is (no migration side effects)", () => {
+  const home = mkdtempSync(join(tmpdir(), "pi-tg-migrate-"));
+  const agentDir = join(home, ".pi", "agent");
+  mkdirSync(agentDir, { recursive: true });
+  writeFileSync(join(agentDir, "pi-telega.json"), '{"ownerId": 1}', "utf-8");
+  withFakeHome(home, () => {
+    assert.equal(configPath({ path: "/x/y.json" }), "/x/y.json");
+    assert.ok(existsSync(join(agentDir, "pi-telega.json")), "override does not trigger migration");
+  });
 });

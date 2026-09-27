@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { makeOut, makeTelegaPi, ctxIsAlive, installUiProxy, UI_PROXY_MARKER, type CtxLike, type ClientLike, type PiLike, type UiDialogHost, type UiDialogAnswer } from "../src/wiring.ts";
-import { TelegaState } from "../src/state.ts";
+import { makeOut, makeTelegramPi, ctxIsAlive, installUiProxy, UI_PROXY_MARKER, type CtxLike, type ClientLike, type PiLike, type UiDialogHost, type UiDialogAnswer } from "../src/wiring.ts";
+import { TelegramState } from "../src/state.ts";
 
 test("makeOut: send → addSent + persist, default parseMode HTML", async () => {
   const calls: unknown[][] = [];
@@ -12,7 +12,7 @@ test("makeOut: send → addSent + persist, default parseMode HTML", async () => 
     sendRichMessage: async () => { throw new Error("unexpected"); },
     sendRichMessageDraft: async () => true,
   };
-  const state = new TelegaState();
+  const state = new TelegramState();
   let persists = 0;
   const out = makeOut(client, state, async () => { persists++; });
   const id = await out.send(7, "hello");
@@ -31,7 +31,7 @@ test("makeOut: explicit parseMode null survives; edit/delete passthrough", async
     sendRichMessage: async () => { throw new Error("unexpected"); },
     sendRichMessageDraft: async () => true,
   };
-  const out = makeOut(client, new TelegaState(), async () => {});
+  const out = makeOut(client, new TelegramState(), async () => {});
   await out.send(7, "plain", { parseMode: null });
   assert.equal((calls[0][3] as { parseMode?: "HTML" | null }).parseMode, null);
   const edited = await out.edit(7, 8, "x", { parseMode: null });
@@ -65,7 +65,7 @@ function makeFakeCtx(over: Partial<CtxLike> = {}): CtxLike {
   };
 }
 
-test("makeTelegaPi: sendPrompt now/steer mapping", () => {
+test("makeTelegramPi: sendPrompt now/steer mapping", () => {
   const sent: { text: string; opts?: unknown }[] = [];
   const pi: PiLike = {
     sendUserMessage: (text, opts) => { sent.push({ text, opts }); },
@@ -74,19 +74,19 @@ test("makeTelegaPi: sendPrompt now/steer mapping", () => {
     setModel: async () => true,
     setThinkingLevel: () => {},
   };
-  const t = makeTelegaPi({ pi, getCmdCtx: () => makeFakeCtx(), getSessionCtx: () => undefined, listSessions: async () => [] });
+  const t = makeTelegramPi({ pi, getCmdCtx: () => makeFakeCtx(), getSessionCtx: () => undefined, listSessions: async () => [] });
   t.sendPrompt("hi", "now");
   assert.deepEqual(sent[0].opts, { expandPromptTemplates: true });
   t.sendPrompt("hi", "steer");
   assert.deepEqual(sent[1].opts, { deliverAs: "steer", expandPromptTemplates: true });
 });
 
-test("makeTelegaPi: session control goes to cmdCtx (preferred over sessionCtx)", async () => {
+test("makeTelegramPi: session control goes to cmdCtx (preferred over sessionCtx)", async () => {
   let newCalls = 0;
   let switchCalls: string[] = [];
   const cmd = makeFakeCtx({ newSession: async () => { newCalls++; return { cancelled: false }; }, switchSession: async (p) => { switchCalls.push(p); return { cancelled: false }; } });
   const sess = makeFakeCtx({ newSession: async () => { newCalls += 100; return { cancelled: false }; } });
-  const t = makeTelegaPi({ pi: {} as PiLike, getCmdCtx: () => cmd, getSessionCtx: () => sess, listSessions: async () => [] });
+  const t = makeTelegramPi({ pi: {} as PiLike, getCmdCtx: () => cmd, getSessionCtx: () => sess, listSessions: async () => [] });
   t.newSession();
   t.switchSession("/x.jsonl");
   await new Promise((r) => setTimeout(r, 10));
@@ -94,7 +94,7 @@ test("makeTelegaPi: session control goes to cmdCtx (preferred over sessionCtx)",
   assert.deepEqual(switchCalls, ["/x.jsonl"]);
 });
 
-test("makeTelegaPi: setModel scoped-first, registry fallback, unknown → false", async () => {
+test("makeTelegramPi: setModel scoped-first, registry fallback, unknown → false", async () => {
   let calledWith: string[] = [];
   const pi: PiLike = {
     sendUserMessage: () => {},
@@ -105,15 +105,15 @@ test("makeTelegaPi: setModel scoped-first, registry fallback, unknown → false"
   };
   const scopedB = { id: "b", name: "B", provider: "p", reasoning: true, thinkingLevelMap: { xhigh: "9000" } };
   const ctx = makeFakeCtx({ scopedModels: [{ model: scopedB }], modelRegistry: { getAvailable: () => [{ id: "c", name: "C", provider: "p", reasoning: false }, scopedB] } });
-  const t = makeTelegaPi({ pi, getCmdCtx: () => ctx, getSessionCtx: () => undefined, listSessions: async () => [] });
+  const t = makeTelegramPi({ pi, getCmdCtx: () => ctx, getSessionCtx: () => undefined, listSessions: async () => [] });
   assert.equal(await t.setModel("b"), true);
   assert.equal(await t.setModel("c"), true);
   assert.equal(await t.setModel("zz"), false);
   assert.deepEqual(calledWith, ["b", "c"]);
 });
 
-test("makeTelegaPi: messageCount, contextUsage, cwd getter", () => {
-  const t = makeTelegaPi({ pi: {} as PiLike, getCmdCtx: () => makeFakeCtx(), getSessionCtx: () => undefined, listSessions: async () => [] });
+test("makeTelegramPi: messageCount, contextUsage, cwd getter", () => {
+  const t = makeTelegramPi({ pi: {} as PiLike, getCmdCtx: () => makeFakeCtx(), getSessionCtx: () => undefined, listSessions: async () => [] });
   assert.equal(t.cwd, "/proj");
   assert.equal(t.messageCount(), 2);
   assert.deepEqual(t.contextUsage(), { tokens: 100, contextWindow: 1000, percent: 10 });
@@ -121,11 +121,11 @@ test("makeTelegaPi: messageCount, contextUsage, cwd getter", () => {
   assert.equal(t.currentModel()?.id, "a");
 });
 
-test("makeTelegaPi: compact callbacks map to onDone(ok, detail)", () => {
+test("makeTelegramPi: compact callbacks map to onDone(ok, detail)", () => {
   let onComplete: ((r: unknown) => void) | undefined;
   let onError: ((e: Error) => void) | undefined;
   const ctx = makeFakeCtx({ compact: (o) => { onComplete = o?.onComplete; onError = o?.onError; } });
-  const t = makeTelegaPi({ pi: {} as PiLike, getCmdCtx: () => ctx, getSessionCtx: () => undefined, listSessions: async () => [] });
+  const t = makeTelegramPi({ pi: {} as PiLike, getCmdCtx: () => ctx, getSessionCtx: () => undefined, listSessions: async () => [] });
   const results: [boolean, string?][] = [];
   t.compact((ok, detail) => results.push([ok, detail]));
   // detail is a SHORT token note — never the full summary (4096-char limit)
@@ -139,7 +139,7 @@ test("makeTelegaPi: compact callbacks map to onDone(ok, detail)", () => {
   assert.deepEqual(results[2], [false, "boom"]);
 });
 
-test("makeTelegaPi: reload → ctx.reload(), forwards ok/error to onDone (fire-and-forget)", async () => {
+test("makeTelegramPi: reload → ctx.reload(), forwards ok/error to onDone (fire-and-forget)", async () => {
   let reloadCalls = 0;
   let rejectWith: Error | undefined;
   const ctx = makeFakeCtx({
@@ -148,7 +148,7 @@ test("makeTelegaPi: reload → ctx.reload(), forwards ok/error to onDone (fire-a
       if (rejectWith) throw rejectWith;
     },
   });
-  const t = makeTelegaPi({ pi: {} as PiLike, getCmdCtx: () => ctx, getSessionCtx: () => undefined, listSessions: async () => [] });
+  const t = makeTelegramPi({ pi: {} as PiLike, getCmdCtx: () => ctx, getSessionCtx: () => undefined, listSessions: async () => [] });
   const results: [boolean, string?][] = [];
   t.reload((ok, detail) => results.push([ok, detail]));
   await new Promise((r) => setTimeout(r, 10));
@@ -160,14 +160,14 @@ test("makeTelegaPi: reload → ctx.reload(), forwards ok/error to onDone (fire-a
   assert.deepEqual(results[1], [false, "boom"]);
 });
 
-test("makeTelegaPi: reload without a live command-capable ctx → throws", () => {
+test("makeTelegramPi: reload without a live command-capable ctx → throws", () => {
   // sessionCtx is alive but lacks the command-only reload() → loud failure
-  const t = makeTelegaPi({ pi: {} as PiLike, getCmdCtx: () => undefined, getSessionCtx: () => makeFakeCtx(), listSessions: async () => [] });
+  const t = makeTelegramPi({ pi: {} as PiLike, getCmdCtx: () => undefined, getSessionCtx: () => makeFakeCtx(), listSessions: async () => [] });
   assert.throws(() => t.reload(() => {}));
 });
 
-test("makeTelegaPi: no ctx at all → safe defaults, no throw", () => {
-  const t = makeTelegaPi({ pi: {} as PiLike, getCmdCtx: () => undefined, getSessionCtx: () => undefined, listSessions: async () => [] });
+test("makeTelegramPi: no ctx at all → safe defaults, no throw", () => {
+  const t = makeTelegramPi({ pi: {} as PiLike, getCmdCtx: () => undefined, getSessionCtx: () => undefined, listSessions: async () => [] });
   assert.equal(t.cwd, "");
   assert.equal(t.isIdle(), true);
   assert.throws(() => t.abort()); // no ctx → loud failure (bridge’s dispatch wrapper contains it)
@@ -210,11 +210,11 @@ test("ctxIsAlive: live ctx passes, stale (throwing) ctx fails, undefined fails",
   assert.equal(ctxIsAlive(undefined), false);
 });
 
-test("makeTelegaPi: stale cmdCtx (post /new) falls back to live sessionCtx — the /new crash", () => {
+test("makeTelegramPi: stale cmdCtx (post /new) falls back to live sessionCtx — the /new crash", () => {
   // /new: the /tg internal command captures cmdCtx of the old session, the
   // replacement invalidates it, session_start installs a fresh sessionCtx.
   // The adapter must ignore the stale cmdCtx and serve from sessionCtx.
-  const t = makeTelegaPi({ pi: {} as PiLike, getCmdCtx: () => makeStaleCtx(), getSessionCtx: () => makeFakeCtx(), listSessions: async () => [] });
+  const t = makeTelegramPi({ pi: {} as PiLike, getCmdCtx: () => makeStaleCtx(), getSessionCtx: () => makeFakeCtx(), listSessions: async () => [] });
   assert.equal(t.cwd, "/proj");
   assert.equal(t.isIdle(), true);
   assert.equal(t.currentModel()?.id, "a");
@@ -226,18 +226,18 @@ test("makeTelegaPi: stale cmdCtx (post /new) falls back to live sessionCtx — t
   assert.equal(t.allModels().length, 2);
 });
 
-test("makeTelegaPi: live cmdCtx still preferred over sessionCtx (capability: newSession/switchSession/waitForIdle)", async () => {
+test("makeTelegramPi: live cmdCtx still preferred over sessionCtx (capability: newSession/switchSession/waitForIdle)", async () => {
   let newCalls = 0;
   const cmd = makeFakeCtx({ newSession: async () => { newCalls++; return { cancelled: false }; } });
   const sess = makeFakeCtx(); // no newSession
-  const t = makeTelegaPi({ pi: {} as PiLike, getCmdCtx: () => cmd, getSessionCtx: () => sess, listSessions: async () => [] });
+  const t = makeTelegramPi({ pi: {} as PiLike, getCmdCtx: () => cmd, getSessionCtx: () => sess, listSessions: async () => [] });
   t.newSession();
   await new Promise((r) => setTimeout(r, 10));
   assert.equal(newCalls, 1);
 });
 
-test("makeTelegaPi: ALL ctxs stale → safe defaults, no throw (teardown window)", () => {
-  const t = makeTelegaPi({ pi: {} as PiLike, getCmdCtx: () => makeStaleCtx(), getSessionCtx: () => makeStaleCtx(), listSessions: async () => [] });
+test("makeTelegramPi: ALL ctxs stale → safe defaults, no throw (teardown window)", () => {
+  const t = makeTelegramPi({ pi: {} as PiLike, getCmdCtx: () => makeStaleCtx(), getSessionCtx: () => makeStaleCtx(), listSessions: async () => [] });
   assert.equal(t.cwd, "");
   assert.equal(t.isIdle(), true);
   assert.equal(t.currentModel(), undefined);
@@ -255,7 +255,7 @@ test("makeOut: sendRich → client.sendRichMessage + addSent + persist", async (
     sendRichMessage: async (chatId, rich) => { calls.push(["rich", chatId, rich]); return { message_id: 888 }; },
     sendRichMessageDraft: async () => true,
   };
-  const state = new TelegaState();
+  const state = new TelegramState();
   const out = makeOut(client, state, async () => {});
   const id = await out.sendRich(7, "a table");
   assert.equal(id, 888);
@@ -272,7 +272,7 @@ test("makeOut: sendRich disableNotification → client.sendRichMessage opts (und
     sendRichMessage: async (chatId, rich, opts) => { calls.push(["rich", chatId, rich, opts]); return { message_id: 889 }; },
     sendRichMessageDraft: async () => true,
   };
-  const state = new TelegaState();
+  const state = new TelegramState();
   const out = makeOut(client, state, async () => {});
   await out.sendRich(7, "silent table", { disableNotification: true });
   assert.deepEqual(calls[0], ["rich", 7, { markdown: "silent table" }, { disableNotification: true }]);
@@ -289,14 +289,14 @@ test("makeOut: sendDraft → passthrough (draftId + canStop + keepOnStop), no ad
     sendRichMessage: async () => { throw new Error("unexpected"); },
     sendRichMessageDraft: async (chatId, draftId, rich, canStop, keepOnStop) => { calls.push(["draft", chatId, draftId, rich, canStop, keepOnStop]); return true; },
   };
-  const state = new TelegaState();
+  const state = new TelegramState();
   const out = makeOut(client, state, async () => {});
   assert.equal(await out.sendDraft(7, 3, "working", true, true), true);
   assert.deepEqual(calls[0], ["draft", 7, 3, { markdown: "working" }, true, true]);
   assert.deepEqual(state.sentIds(), []);
 });
 
-test("makeTelegaPi: sessionUsage sums assistant usage across the session branch", () => {
+test("makeTelegramPi: sessionUsage sums assistant usage across the session branch", () => {
   const ctx = makeFakeCtx({
     sessionManager: {
       getSessionFile: () => "/proj/s.jsonl",
@@ -310,7 +310,7 @@ test("makeTelegaPi: sessionUsage sums assistant usage across the session branch"
       ],
     },
   });
-  const t = makeTelegaPi({ pi: {} as PiLike, getCmdCtx: () => ctx, getSessionCtx: () => undefined, listSessions: async () => [] });
+  const t = makeTelegramPi({ pi: {} as PiLike, getCmdCtx: () => ctx, getSessionCtx: () => undefined, listSessions: async () => [] });
   assert.deepEqual(t.sessionUsage(), { input: 150, output: 275 });
 });
 
@@ -510,7 +510,7 @@ test("wrapped select: caller-provided signal is COMBINED (caller abort still dis
   assert.deepEqual(calls.tuiAnswered, [[1, undefined]]);
 });
 
-// ── Fault isolation: pi-telega's machinery must never break pi or the calling
+// ── Fault isolation: pi-tg's machinery must never break pi or the calling
 // plugin — every internal failure degrades to the plain TUI call ─────────────
 
 test("wrapper: a hostile title (throwing toString) → plain TUI call, no throw, no TG twin", async () => {

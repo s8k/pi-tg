@@ -1,4 +1,4 @@
-import type { TelegaPi, PiModelInfo, PiSessionInfo, PiContextUsage } from "../src/session-bridge.ts";
+import type { TelegramPi, PiModelInfo, PiSessionInfo, PiContextUsage } from "../src/session-bridge.ts";
 import type { PiModel, PiThinkingLevel } from "../src/thinking.ts";
 
 export interface FakePiOptions {
@@ -38,9 +38,9 @@ export class FakePi {
     this.opts = opts;
   }
 
-  build(): TelegaPi {
+  build(): TelegramPi {
     const self = this;
-    const impl: TelegaPi = {
+    const impl: TelegramPi = {
       cwd: self.opts.cwd ?? "/proj",
       isIdle: () => !self.opts.busy,
       // a real abort ends the current turn → the agent goes idle again

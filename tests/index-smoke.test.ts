@@ -15,14 +15,14 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const agentDir = mkdtempSync(join(tmpdir(), "pi-telega-smoke-"));
+const agentDir = mkdtempSync(join(tmpdir(), "pi-tg-smoke-"));
 process.env.PI_CODING_AGENT_DIR = agentDir;
-process.env.PI_TELEGA_BOT_TOKEN = "TEST-TOKEN";
+process.env.PI_TELEGRAM_BOT_TOKEN = "TEST-TOKEN";
 // paired config: the mirror only works for the owner's chat, and the chat id
 // is learned from the first owner update (below)
-writeFileSync(join(agentDir, "pi-telega.json"), JSON.stringify({ botToken: "TEST-TOKEN", ownerId: 123456 }));
+writeFileSync(join(agentDir, "pi-telegram.json"), JSON.stringify({ botToken: "TEST-TOKEN", ownerId: 123456 }));
 
-const { default: piTelega } = await import("../index.ts");
+const { default: piTelegram } = await import("../index.ts");
 
 interface WireCall {
   method: string;
@@ -47,7 +47,7 @@ const handlers = new Map<string, (...a: unknown[]) => unknown>();
 // The fake pi replays `/tg …` sendUserMessage calls through the captured
 // command handler — exactly what real pi does (the poller's dispatch path).
 let tgCommand: { handler: (args: string, ctx: unknown) => Promise<void> } | undefined;
-piTelega({
+piTelegram({
   registerCommand: (name: string, def: unknown) => {
     if (name === "tg") tgCommand = def as typeof tgCommand;
   },

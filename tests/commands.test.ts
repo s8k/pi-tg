@@ -7,11 +7,11 @@ import { join } from "node:path";
 // Point pi's agent dir at a temp dir BEFORE index.ts's module scope runs —
 // index.ts calls getAgentDir() on import to build the config path, and the
 // /tg:config handler would otherwise read/write the user's real config.
-const agentDir = mkdtempSync(join(tmpdir(), "pi-telega-cmd-"));
-const CFG_PATH = join(agentDir, "pi-telega.json");
+const agentDir = mkdtempSync(join(tmpdir(), "pi-tg-cmd-"));
+const CFG_PATH = join(agentDir, "pi-telegram.json");
 process.env.PI_CODING_AGENT_DIR = agentDir;
 
-const { default: piTelega } = await import("../index.ts");
+const { default: piTelegram } = await import("../index.ts");
 
 // ── minimal structural fakes (no pi import in tests — see boundary.test.ts) ──
 
@@ -63,7 +63,7 @@ function makeFakePi() {
       cap.sent.push(text);
     },
   };
-  return { pi: pi as unknown as Parameters<typeof piTelega>[0], cap };
+  return { pi: pi as unknown as Parameters<typeof piTelegram>[0], cap };
 }
 
 function makeCtx() {
@@ -89,13 +89,13 @@ const USAGE = "Usage: /tg | /tg:config <bot_token> | /tg:pair | /tg:unpair";
 
 test("registers exactly the user-facing commands: tg, tg:config, tg:pair, tg:unpair", () => {
   const { pi, cap } = makeFakePi();
-  piTelega(pi);
+  piTelegram(pi);
   assert.deepEqual([...cap.commands.keys()].sort(), ["tg", "tg:config", "tg:pair", "tg:unpair"]);
 });
 
 test("command descriptions follow pi's `<args> — Description` format", () => {
   const { pi, cap } = makeFakePi();
-  piTelega(pi);
+  piTelegram(pi);
   // pi renders the completion line as `/<name>  <description>`; built-ins such
   // as /thinking combine their arg hint and description as
   // `<level> — Set thinking level`. Extension commands expose only `description`,
@@ -120,16 +120,16 @@ test("command descriptions follow pi's `<args> — Description` format", () => {
 
 test("/tg with no args → session card widget", async () => {
   const { pi, cap } = makeFakePi();
-  piTelega(pi);
+  piTelegram(pi);
   const { ctx, widgets } = makeCtx();
   await cap.commands.get("tg")!.handler("", ctx);
   // piAdapter is only built on session_start, so the card reports not-ready
-  assert.deepEqual(widgets["pi-telega"], ["pi-telega: not ready yet"]);
+  assert.deepEqual(widgets["pi-tg"], ["pi-tg: not ready yet"]);
 });
 
 test("/tg with legacy `config` subcommand → usage error (subcommand removed)", async () => {
   const { pi, cap } = makeFakePi();
-  piTelega(pi);
+  piTelegram(pi);
   const { ctx, notices } = makeCtx();
   await cap.commands.get("tg")!.handler("config 123456:AAAAAAAAAAAAAAAAAAAAAA", ctx);
   const last = notices.at(-1)!;
@@ -140,7 +140,7 @@ test("/tg with legacy `config` subcommand → usage error (subcommand removed)",
 
 test("/tg with legacy `pair` subcommand → usage error (subcommand removed)", async () => {
   const { pi, cap } = makeFakePi();
-  piTelega(pi);
+  piTelegram(pi);
   const { ctx, notices } = makeCtx();
   await cap.commands.get("tg")!.handler("pair", ctx);
   const last = notices.at(-1)!;
@@ -152,7 +152,7 @@ test("/tg with legacy `pair` subcommand → usage error (subcommand removed)", a
 
 test("/tg internal with a bad payload → error notice", async () => {
   const { pi, cap } = makeFakePi();
-  piTelega(pi);
+  piTelegram(pi);
   const { ctx, notices } = makeCtx();
   await cap.commands.get("tg")!.handler("internal bogus 42", ctx);
   assert.match(notices.at(-1)!.text, /bad \/tg internal payload/);
@@ -161,7 +161,7 @@ test("/tg internal with a bad payload → error notice", async () => {
 
 test("/tg internal with a valid action but no bridge (pre-session_start) → error, no crash", async () => {
   const { pi, cap } = makeFakePi();
-  piTelega(pi);
+  piTelegram(pi);
   const { ctx, notices } = makeCtx();
   await cap.commands.get("tg")!.handler("internal start 42", ctx);
   assert.match(notices.at(-1)!.text, /bad \/tg internal payload/);
@@ -172,7 +172,7 @@ test("/tg internal with a valid action but no bridge (pre-session_start) → err
 
 test("/tg getArgumentCompletions: suggests `internal` (machine dispatch) only", () => {
   const { pi, cap } = makeFakePi();
-  piTelega(pi);
+  piTelegram(pi);
   const f = cap.commands.get("tg")!.getArgumentCompletions!;
   const i = f("i");
   assert.equal(i!.length, 1);
@@ -187,7 +187,7 @@ test("/tg getArgumentCompletions: suggests `internal` (machine dispatch) only", 
 
 test("/tg:config with an invalid token → error notice, nothing persisted", async () => {
   const { pi, cap } = makeFakePi();
-  piTelega(pi);
+  piTelegram(pi);
   const { ctx, notices } = makeCtx();
   await cap.commands.get("tg:config")!.handler("not-a-token", ctx);
   const last = notices.at(-1)!;
@@ -198,7 +198,7 @@ test("/tg:config with an invalid token → error notice, nothing persisted", asy
 
 test("/tg:config with no args → invalid token error", async () => {
   const { pi, cap } = makeFakePi();
-  piTelega(pi);
+  piTelegram(pi);
   const { ctx, notices } = makeCtx();
   await cap.commands.get("tg:config")!.handler("", ctx);
   assert.match(notices.at(-1)!.text, /invalid token/);
@@ -210,7 +210,7 @@ test("/tg:config with no args → invalid token error", async () => {
 
 test("/tg:pair unpaired, no token → points at /tg:config (new copy)", async () => {
   const { pi, cap } = makeFakePi();
-  piTelega(pi);
+  piTelegram(pi);
   const { ctx, notices } = makeCtx();
   await cap.commands.get("tg:pair")!.handler("", ctx);
   const last = notices.at(-1)!;
@@ -222,7 +222,7 @@ test("/tg:pair already paired → guard message, no QR attempt", async () => {
   // Seed a paired config, then fire session_start so the handler re-reads cfg.
   writeFileSync(CFG_PATH, JSON.stringify({ ownerId: 42 }), "utf-8");
   const { pi, cap } = makeFakePi();
-  piTelega(pi);
+  piTelegram(pi);
   const session = makeCtx();
   await cap.events.get("session_start")![0]!({ reason: "startup" }, session.ctx);
   const { ctx, notices } = makeCtx();
@@ -237,7 +237,7 @@ test("/tg:pair already paired → guard message, no QR attempt", async () => {
 test("/tg:unpair paired → clears ownerId, persists, confirms", async () => {
   writeFileSync(CFG_PATH, JSON.stringify({ ownerId: 42 }), "utf-8");
   const { pi, cap } = makeFakePi();
-  piTelega(pi);
+  piTelegram(pi);
   const session = makeCtx();
   await cap.events.get("session_start")![0]!({ reason: "startup" }, session.ctx);
   const { ctx, notices } = makeCtx();
@@ -252,7 +252,7 @@ test("/tg:unpair paired → clears ownerId, persists, confirms", async () => {
 test("/tg:unpair unpaired → notice, no crash", async () => {
   writeFileSync(CFG_PATH, JSON.stringify({}), "utf-8");
   const { pi, cap } = makeFakePi();
-  piTelega(pi);
+  piTelegram(pi);
   const session = makeCtx();
   await cap.events.get("session_start")![0]!({ reason: "startup" }, session.ctx);
   const { ctx, notices } = makeCtx();
