@@ -1035,6 +1035,16 @@ export class Mirror {
     this.forceNext = true; // the first post-dialog draft send breaks through the stream window
     this.stopHeartbeat();
     this.clearErrorSettle();
+    // Settle the draft pipeline BEFORE the segment: a draft update still in
+    // flight (or waiting on the drain timer) that would land AFTER the segment
+    // revives the draft (same stable id) in its ORIGINAL position — above the
+    // dialog that follows (live bug, 2026-09-27). The agent is blocked on the
+    // dialog, so no new mirror events can start another draft send meanwhile.
+    if (this.drainTimer !== undefined) {
+      this.deps.clearTimer(this.drainTimer);
+      this.drainTimer = undefined;
+    }
+    if (this.inflight) await this.inflight;
     if (md.trim()) {
       try {
         await this.sendPersistent(chatId, md, { disableNotification: true }); // this send also clears the draft

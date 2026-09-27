@@ -511,3 +511,35 @@ test("post-dialog: the fresh draft re-appears (spinner) at the next assistant ME
   await tick();
   assert.equal(draftCalls(h).slice(n).length, fresh.length, "the thinking-only update adds no duplicate re-spawn");
 });
+
+test("pauseForDialog waits for an in-flight draft send — the segment must land AFTER it (a late draft would revive the old draft above the dialog)", async () => {
+  const h = makeMirrorDeps({ streamEditMs: 0 });
+  const m = new Mirror(h.deps);
+  m.onAgentStart();
+  m.onAssistantStart(textMsg(""));
+  m.onAssistantUpdate(textMsg("pre"));
+  await tick();
+  // make the NEXT draft send slow (gated)
+  let rel: () => void = () => {};
+  const realSendDraft = h.out.sendDraft;
+  h.out.sendDraft = async (chatId: number, draftId: number, md: string, canStop?: boolean, keepOnStop?: boolean) => {
+    await new Promise<void>((r) => {
+      rel = r;
+    });
+    return realSendDraft(chatId, draftId, md, canStop, keepOnStop);
+  };
+  // trigger an update → the draft send goes in flight (the gate arms)
+  m.onAssistantUpdate(textMsg("pre2"));
+  await new Promise((r) => setImmediate(r)); // let the pump enter the slow send
+  const pauseP = m.pauseForDialog(); // must NOT pass the segment before the in-flight draft settles
+  rel(); // the in-flight draft send completes
+  await pauseP;
+  const calls = h.out.calls;
+  const segIdx = calls.findIndex((c) => c.kind === "sendRich");
+  let lastDraftIdx = -1;
+  calls.forEach((c, i) => {
+    if (c.kind === "sendDraft") lastDraftIdx = i;
+  });
+  assert.notEqual(segIdx, -1, "the segment was sent");
+  assert.ok(segIdx > lastDraftIdx, `the segment landed after the in-flight draft (seg=${segIdx}, lastDraft=${lastDraftIdx})`);
+});
