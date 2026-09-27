@@ -621,3 +621,116 @@ test("dialog mirroring E2E: extension select → TG buttons → owner tap wins (
     "no ⚠️ work-log line for the mirrored dialog (the TG dialog is the notification)",
   );
 });
+
+test("dialog mirroring follows the output level: mute suppresses, minimal/full mirror (live re-read)", async (t) => {
+  const calls: WireCall[] = [];
+  const realFetch = globalThis.fetch;
+  t.after(() => {
+    handlers.get("session_shutdown")!(); // stop THIS test's poller — it would steal the next test's fake fetch
+    globalThis.fetch = realFetch;
+  });
+  let batch = 0;
+  let msgId = 500;
+  let resolveLongPoll: ((updates: unknown[]) => void) | undefined;
+  globalThis.fetch = (async (url: string, init?: RequestInit): Promise<Response> => {
+    const method = String(url).split("/").pop() ?? "";
+    const body = (init?.body ? JSON.parse(String(init.body)) : {}) as Record<string, unknown>;
+    calls.push({ method, body, markdown: "" });
+    if (method === "getMe")
+      return new Response(JSON.stringify({ ok: true, result: { id: 1, is_bot: true, first_name: "Tg", username: "tgb" } }), { status: 200 });
+    if (method === "getUpdates") {
+      batch++;
+      if (batch === 1)
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            result: [
+              { update_id: 1, message: { message_id: 1, date: 1, chat: { id: 42, type: "private" }, from: { id: 123456, is_bot: false, first_name: "O" }, text: "hi" } },
+            ],
+          }),
+          { status: 200 },
+        );
+      return new Promise<Response>((resolve, reject) => {
+        const sig = init?.signal;
+        const onAbort = () => reject(new DOMException("Aborted", "AbortError"));
+        if (sig) {
+          if (sig.aborted) onAbort();
+          else sig.addEventListener("abort", onAbort, { once: true });
+        }
+        resolveLongPoll = (updates) => resolve(new Response(JSON.stringify({ ok: true, result: updates }), { status: 200 }));
+      });
+    }
+    if (method === "sendMessage")
+      return new Response(JSON.stringify({ ok: true, result: { message_id: ++msgId } }), { status: 200 });
+    return new Response(JSON.stringify({ ok: true, result: true }), { status: 200 });
+  }) as typeof fetch;
+
+  const lvlCtx = {
+    cwd: "/tmp",
+    mode: "tui",
+    hasUI: true,
+    isIdle: () => true,
+    ui: {
+      notify: () => {},
+      select: (_title: string, _options?: string[], opts?: { signal?: AbortSignal }) =>
+        new Promise<string | undefined>((resolve) => {
+          if (opts?.signal?.aborted) return resolve(undefined);
+          const onAbort = () => resolve(undefined);
+          opts?.signal?.addEventListener("abort", onAbort, { once: true });
+          lvlOpened++;
+          lvlPress = (v?: string) => {
+            opts?.signal?.removeEventListener("abort", onAbort);
+            resolve(v);
+          };
+        }),
+      confirm: () => Promise.resolve(false),
+      input: () => Promise.resolve(undefined),
+      editor: () => Promise.resolve(undefined),
+    },
+    sessionManager: fakeCtx.sessionManager,
+  };
+  let lvlOpened = 0;
+  let lvlPress: ((v?: string) => void) | undefined;
+
+  handlers.get("session_start")!({}, lvlCtx);
+  await waitFor(() => calls.filter((c) => c.method === "getUpdates").length >= 2, "owner chat learned");
+
+  const ownerMsg = (updateId: number, text: string) => ({
+    update_id: updateId,
+    message: { message_id: 600 + updateId, date: 1, chat: { id: 42, type: "private" }, from: { id: 123456, is_bot: false }, text },
+  });
+  const hasDialog = (id: number) => calls.some((c) => c.method === "sendMessage" && JSON.stringify(c.body.reply_markup ?? "").includes(`da:${id}:0`));
+  // Resolve the Nth getUpdates batch — but only after the poller has actually
+  // issued it (resolving an already-consumed promise loses the update).
+  // Batches: 1 = "hi" (auto), 2 = tap da:1:0, 3 = /level_mute, 4 = /level_minimal, 5 = tap da:2:1.
+  const resolveBatch = async (n: number, updates: unknown[]) => {
+    await waitFor(() => calls.filter((c) => c.method === "getUpdates").length >= n, `getUpdates batch ${n} issued`);
+    resolveLongPoll!(updates);
+  };
+
+  // 1) default level=full: the dialog IS mirrored
+  const p1 = lvlCtx.ui.select("L-full", ["x", "y"]);
+  await waitFor(() => hasDialog(1), "full: TG dialog on the wire");
+  await resolveBatch(2, [{ update_id: 10, callback_query: { id: "cb1", from: { id: 123456, is_bot: false }, data: "da:1:0", message: { message_id: 200, date: 1, chat: { id: 42, type: "private" } } } }]);
+  assert.equal(await p1, "x", "full: the tapped option reaches the extension");
+
+  // 2) /level_mute (LIVE): the next dialog is NOT mirrored — TUI stays the only interface
+  await resolveBatch(3, [ownerMsg(11, "/level_mute")]);
+  await waitFor(() => calls.some((c) => c.method === "sendMessage" && String(c.body.text ?? "").includes("🔇")), "/level_mute confirmed");
+  const p2 = lvlCtx.ui.select("L-mute", ["a", "b"]);
+  await waitFor(() => lvlOpened >= 1, "TUI dialog opened (pass-through at mute)");
+  await sleep(150); // a mirror send (there must not be one) would have landed by now
+  assert.ok(!hasDialog(2), "mute: no TG dialog for a new prompt");
+  lvlPress!("a");
+  assert.equal(await p2, "a", "mute: the TUI dialog still works (answer in the terminal)");
+
+  // 3) /level_minimal (LIVE): dialogs are mirrored again
+  await resolveBatch(4, [ownerMsg(12, "/level_minimal")]);
+  await waitFor(() => calls.some((c) => c.method === "sendMessage" && String(c.body.text ?? "").includes("🔉")), "/level_minimal confirmed");
+  // NOTE: the muted p2 consumed no dialog id (show() gates BEFORE nextId++),
+  // so this dialog is id 2, not 3.
+  const p3 = lvlCtx.ui.select("L-minimal", ["m", "n"]);
+  await waitFor(() => hasDialog(2), "minimal: TG dialog on the wire");
+  await resolveBatch(5, [{ update_id: 13, callback_query: { id: "cb3", from: { id: 123456, is_bot: false }, data: "da:2:1", message: { message_id: 200, date: 1, chat: { id: 42, type: "private" } } } }]);
+  assert.equal(await p3, "n", "minimal: the tapped option reaches the extension");
+});

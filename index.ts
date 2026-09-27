@@ -126,7 +126,14 @@ export default function piTelega(pi: ExtensionAPI): void {
     dialogs = new PendingDialogs({
       out: outAdapter,
       getChatId: () => ownerChatId,
-      enabled: () => cfg.mirrorDialogs,
+      // Dialogs follow the output level: mute suppresses them (mute = commands
+      // in, command responses out — a phone that only gets /reload ✔️ must not
+      // also get ❓ dialogs it cannot contextually understand); minimal and
+      // full both mirror (otherwise the owner is blocked on a TUI prompt with
+      // no idea how to proceed). Live re-read: /level_* takes effect on the
+      // very next dialog; already-shown dialogs stay answerable (answering is
+      // never gated).
+      enabled: () => cfg.mirrorDialogs && cfg.level !== "mute",
       notify: (m, l) => ui(m, l),
       // The mirror's live draft is finalized as a persistent segment BEFORE
       // the dialog message lands, so the dialog + the post-answer draft sit
