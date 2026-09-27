@@ -217,6 +217,9 @@ export default function piTelega(pi: ExtensionAPI): void {
         ownerChatId = msg.chat.id;
         cfg.ownerChatId = msg.chat.id;
         void persist(); // survive the next reload/restart
+        // A run that started while the chat was unknown (fresh generation +
+        // TUI prompt) never spawned its draft — spawn it now.
+        safeCall(() => currentMirror?.onChatLearned());
       }
     }
     if (action.kind === "notAuthorized") {

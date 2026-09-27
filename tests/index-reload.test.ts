@@ -122,3 +122,68 @@ test("owner chat survives a reload: gen2 (fresh module) mirrors a dialog to the 
     "gen2 dialog mirrored to the learned chat (no new owner message)",
   );
 });
+
+test("run started before the chat was learned: the draft appears when the owner message lands mid-run", async (t) => {
+  const calls: { method: string; body: Record<string, unknown> }[] = [];
+  const realFetch = globalThis.fetch;
+  t.after(() => (globalThis.fetch = realFetch));
+  let batch = 0;
+  let msgId = 900;
+  let resolveLongPoll: ((updates: unknown[]) => void) | undefined;
+  globalThis.fetch = (async (url: string, init?: RequestInit): Promise<Response> => {
+    const method = String(url).split("/").pop() ?? "";
+    const body = (init?.body ? JSON.parse(String(init.body)) : {}) as Record<string, unknown>;
+    calls.push({ method, body });
+    if (method === "getMe")
+      return new Response(JSON.stringify({ ok: true, result: { id: 1, is_bot: true, first_name: "Tg", username: "tgb" } }), { status: 200 });
+    if (method === "getUpdates") {
+      batch++;
+      if (batch === 1)
+        return new Response(JSON.stringify({ ok: true, result: [] }), { status: 200 }); // NO owner message — chat unknown
+      return new Promise<Response>((resolve, reject) => {
+        const sig = init?.signal;
+        const onAbort = () => reject(new DOMException("Aborted", "AbortError"));
+        if (sig) {
+          if (sig.aborted) onAbort();
+          else sig.addEventListener("abort", onAbort, { once: true });
+        }
+        resolveLongPoll = (updates) => resolve(new Response(JSON.stringify({ ok: true, result: updates }), { status: 200 }));
+      });
+    }
+    if (method === "sendMessage" || method === "sendRichMessage")
+      return new Response(JSON.stringify({ ok: true, result: { message_id: ++msgId } }), { status: 200 });
+    return new Response(JSON.stringify({ ok: true, result: true }), { status: 200 });
+  }) as typeof fetch;
+
+  // The previous test's generation persisted ownerChatId into the shared temp
+  // config file — wipe it to recreate the real gap: a fresh generation whose
+  // config has NO learned chat (the pre-fix state the upgrade lands in).
+  writeFileSync(join(agentDir, "pi-telega.json"), JSON.stringify({ botToken: "TEST-TOKEN", ownerId: 123456 }));
+
+  // fresh module: ownerChatId starts undefined (no ownerChatId in the config file)
+  // @ts-expect-error -- query-string import: fresh module instance (the /reload equivalent)
+  const modC = await import("../index.ts?reload2");
+  const handlersC = new Map<string, Handler>();
+  boot(modC as { default: (pi: unknown) => void }, handlersC);
+  const ctx = freshCtx();
+  handlersC.get("session_start")!({}, ctx);
+  await waitFor(() => calls.filter((c) => c.method === "getUpdates").length >= 1, "gen polling");
+
+  // a TUI prompt starts the run — no owner Telegram message has arrived yet
+  handlersC.get("agent_start")!({}, ctx);
+  handlersC.get("message_start")!({ message: { role: "assistant", content: [{ type: "text", text: "" }] } }, ctx);
+  handlersC.get("message_update")!({ message: { role: "assistant", content: [{ type: "text", text: "working on it" }] } }, ctx);
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(calls.filter((c) => c.method === "sendRichMessageDraft").length, 0, "no draft while the chat is unknown");
+
+  // an owner message lands mid-run — the learn path must spawn the draft
+  resolveLongPoll!([
+    { update_id: 2, message: { message_id: 2, date: 2, chat: { id: 42, type: "private" }, from: { id: 123456, is_bot: false, first_name: "O" }, text: "hey" } },
+  ]);
+  await waitFor(() => calls.some((c) => c.method === "sendRichMessageDraft" && c.body.chat_id === 42), "draft spawned mid-run after the chat was learned");
+
+  // the run ends cleanly — the final messages go out too
+  handlersC.get("message_end")!({ message: { role: "assistant", content: [{ type: "text", text: "working on it" }], stopReason: "stop" } }, ctx);
+  handlersC.get("agent_settled")!({}, ctx);
+  await waitFor(() => calls.filter((c) => c.method === "sendRichMessage" && c.body.chat_id === 42).length >= 1, "final message sent after mid-run chat learning");
+});

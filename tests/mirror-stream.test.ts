@@ -340,3 +340,54 @@ test("a drain firing early (window extended after arming) does not kill the pipe
     throw e;
   });
 });
+
+// ── mid-run chat learning (post-reload gap) ────────────────────────────────
+// A fresh generation (after /reload or restart) may start a run BEFORE the
+// owner chat is learned (the owner types in the terminal; the chat arrives
+// later with some owner update). The draft must then spawn LATE (when the
+// chat becomes known) instead of the run going silent on Telegram.
+
+test("run started without a learned chat: the draft spawns when onChatLearned fires mid-run, and the run finalizes normally", async () => {
+  const h = makeMirrorDeps({ streamEditMs: 0 });
+  let chat: number | undefined; // not learned yet (fresh generation)
+  h.deps.getChatId = () => chat;
+  const m = new Mirror(h.deps);
+  m.onAgentStart();
+  await tick();
+  assert.equal(draftCalls(h).length, 0, "no draft — the chat is unknown");
+  m.onAssistantStart(textMsg(""));
+  m.onAssistantUpdate(textMsg("working on it"));
+  await tick();
+  assert.equal(draftCalls(h).length, 0, "still no draft while unlearned");
+
+  chat = 7; // an owner update just taught the chat (index.ts learn path)
+  m.onChatLearned();
+  await tick();
+  assert.equal(draftCalls(h).length, 1, "the draft spawned late");
+  assert.equal(draftCalls(h)[0]?.draftId, 1);
+  assert.match(draftCalls(h)[0]?.text ?? "", /working on it/);
+
+  await m.onAssistantEnd(textMsg("working on it", { stopReason: "stop" }));
+  await tick();
+  const rich = h.out.calls.filter((c) => c.kind === "sendRich");
+  assert.equal(rich.length, 2, "m1 + m2 still go out on the clean end");
+});
+
+test("onChatLearned is a no-op: no run in progress / a draft is already live", async () => {
+  const h = makeMirrorDeps({ streamEditMs: 0 });
+  let chat: number | undefined;
+  h.deps.getChatId = () => chat;
+  const m = new Mirror(h.deps);
+  m.onChatLearned(); // no run ever started
+  chat = 7;
+  m.onChatLearned(); // still no run in progress
+  await tick();
+  assert.equal(draftCalls(h).length, 0);
+
+  m.onAgentStart(); // chat known now — the draft spawns normally
+  await tick();
+  assert.equal(draftCalls(h).length, 1);
+  m.onChatLearned(); // a live draft exists — no second draft
+  await tick();
+  assert.deepEqual(draftIds(h), [1]);
+});

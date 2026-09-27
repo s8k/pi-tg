@@ -532,6 +532,19 @@ export class Mirror {
   }
 
   /**
+   * The owner chat just became known mid-run (index.ts learn path — e.g. a
+   * fresh generation after /reload started a run from a TUI prompt before any
+   * owner Telegram message arrived). If the run is live but its draft was
+   * never spawned (startRunDraft early-returned on the unknown chat), spawn
+   * it NOW with the content accumulated so far. No-op otherwise: no live run,
+   * a draft already exists, or the chat is still unknown.
+   */
+  onChatLearned(): void {
+    if (this.phase !== "work") return;
+    this.startRunDraft();
+  }
+
+  /**
    * The owner's prompt was accepted and dispatched (bridge, BEFORE pi's
    * agent_start): the run's draft (spinner) goes out immediately — the user
    * sees "working" without waiting for the model's first event. A steer into
