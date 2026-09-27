@@ -31,6 +31,8 @@ export function encodeInternal(action: TgAction): string | null {
       return `internal dialogCancel ${action.chatId} ${action.dialogId}`;
     case "dialogText":
       return `internal dialogText ${action.chatId} ${JSON.stringify({ r: action.replyToMessageId, t: action.text })}`;
+    case "dialogNumber":
+      return `internal dialogNumber ${action.chatId} ${action.dialogId} ${JSON.stringify(action.text)}`;
     default: {
       const a = action as { kind: string; chatId: number; index?: number };
       return `internal ${a.kind} ${a.chatId}${INDEX.has(a.kind) ? ` ${a.index}` : ""}`;
@@ -87,6 +89,19 @@ export function parseInternal(args: string): TgAction | null {
       } catch {
         return null;
       }
+    }
+    case "dialogNumber": {
+      const pr = rest.split(/\s+/);
+      if (pr.length !== 2) return null;
+      const dialogId = Number(pr[0]);
+      let text: unknown;
+      try {
+        text = JSON.parse(pr[1]);
+      } catch {
+        return null;
+      }
+      if (!Number.isInteger(dialogId) || dialogId <= 0 || typeof text !== "string") return null;
+      return { kind: "dialogNumber", chatId, dialogId, text };
     }
     case "nameSet":
     case "prompt": {

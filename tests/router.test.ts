@@ -109,3 +109,11 @@ test("reply to a dialog message → dialogText (even command-looking); reply els
   assert.deepEqual(route(replyUpdate(4, 5, "hello", 100), 5), { kind: "prompt", chatId: 7, text: "hello" }); // no mapper → prompt
   assert.equal(route(replyUpdate(5, 9, "hello", 100), 5, { isDialogMessage: isDialog }).kind, "notAuthorized"); // non-owner
 });
+
+test("bare number with an active numbered dialog → dialogNumber (no reply-to needed)", () => {
+  const numberedAnswer = (t: string) => (t.trim() === "17" ? 9 : undefined);
+  assert.deepEqual(route(msgUpdate(1, 5, "17"), 5, { numberedAnswer }), { kind: "dialogNumber", chatId: 7, dialogId: 9, text: "17" });
+  assert.equal(route(msgUpdate(2, 5, "17"), 5).kind, "prompt", "no mapper → prompt");
+  assert.equal(route(msgUpdate(3, 5, "5"), 5, { numberedAnswer }).kind, "prompt", "mapper says no match → prompt");
+  assert.equal(route(msgUpdate(4, 5, "17"), 9, { numberedAnswer }).kind, "notAuthorized"); // non-owner never answers dialogs
+});

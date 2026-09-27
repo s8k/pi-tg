@@ -668,6 +668,11 @@ export class SessionBridge {
         if (id !== undefined) this.deps.dialogs?.tgAnswer(id, { kind: "text", text: action.text });
         return;
       }
+      case "dialogNumber":
+        // Bare-number fallback (no reply-to): the router already matched the
+        // text against a pending numbered dialog — deliver as its text answer.
+        this.deps.dialogs?.tgAnswer(action.dialogId, { kind: "text", text: action.text });
+        return;
     }
   }
 

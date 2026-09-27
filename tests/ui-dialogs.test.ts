@@ -111,6 +111,27 @@ test("numbered select (>20 options): numbered list, numeric reply → option, no
   assert.deepEqual(await answer, { kind: "option", index: 24 });
 });
 
+test("numberedAnswerFor: a bare in-range number routes to the pending numbered dialog (plain-message fallback)", async () => {
+  const made = deps();
+  const p = new PendingDialogs(made.deps);
+  assert.equal(p.numberedAnswerFor("17"), undefined, "nothing pending");
+  const id = await p.show({ kind: "select", title: "Many", options: Array.from({ length: 25 }, (_, i) => `opt${i}`) });
+  assert.ok(id !== undefined, "chat known → dialog shown");
+  assert.equal(p.numberedAnswerFor("17"), id, "bare number in range → the dialog");
+  assert.equal(p.numberedAnswerFor(" 17 "), id, "whitespace ok");
+  assert.equal(p.numberedAnswerFor("0"), undefined, "below range");
+  assert.equal(p.numberedAnswerFor("26"), undefined, "above range");
+  assert.equal(p.numberedAnswerFor("1.5"), undefined, "not an integer");
+  assert.equal(p.numberedAnswerFor("pick 17"), undefined, "embedded number is a prompt, not an answer");
+  // a button select (≤20 options) never takes the number path
+  await p.show({ kind: "select", title: "Few", options: ["a", "b"] });
+  assert.equal(p.numberedAnswerFor("2"), id, "only the NUMBERED dialog matches");
+  const a = new Promise<unknown>((res) => p.answer(id, res));
+  p.tgAnswer(id, { kind: "cancel" });
+  await a;
+  assert.equal(p.numberedAnswerFor("17"), undefined, "released dialog no longer matches");
+});
+
 test("reply routing: isDialogMessage / dialogIdForMessage track the SENT message id", async () => {
   const made = deps();
   const p = new PendingDialogs(made.deps);

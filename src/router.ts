@@ -41,6 +41,7 @@ export type TgAction =
   | { kind: "dialogAnswer"; chatId: number; dialogId: number; index: number }
   | { kind: "dialogCancel"; chatId: number; dialogId: number }
   | { kind: "dialogText"; chatId: number; replyToMessageId: number; text: string }
+  | { kind: "dialogNumber"; chatId: number; dialogId: number; text: string }
   | { kind: "unknown"; chatId: number; text: string };
 
 const CMD_RE = /^\/([a-zA-Z0-9_]+)(?:@[a-zA-Z0-9_]+)?\s*(.*)$/;
@@ -54,7 +55,11 @@ const CMD_RE = /^\/([a-zA-Z0-9_]+)(?:@[a-zA-Z0-9_]+)?\s*(.*)$/;
 export function route(
   update: TgUpdate,
   ownerId: number | undefined,
-  opts?: { isDialogMessage?: (messageId: number) => boolean },
+  opts?: {
+    isDialogMessage?: (messageId: number) => boolean;
+    /** Bare-number fallback: returns a dialog id when `text` is a valid option number for a pending numbered dialog. */
+    numberedAnswer?: (text: string) => number | undefined;
+  },
 ): TgAction {
   // The rich draft's native Stop button (Bot API 10.2). Reuses the existing
   // `stop` action: the bridge aborts the turn and mirrors a ⏹️ message.
@@ -109,6 +114,11 @@ export function route(
   const replyTo = msg.reply_to_message?.message_id;
   if (replyTo !== undefined && opts?.isDialogMessage?.(replyTo))
     return { kind: "dialogText", chatId, replyToMessageId: replyTo, text };
+  // Bare-number fallback (no reply-to): a plain "17" while a numbered dialog is
+  // active answers that dialog — the owner may have skipped the reply gesture
+  // or replied to the pause segment above the dialog (live bug, 2026-09-27).
+  const numDlg = opts?.numberedAnswer?.(text);
+  if (numDlg !== undefined) return { kind: "dialogNumber", chatId, dialogId: numDlg, text };
   const cmd = CMD_RE.exec(text);
   if (cmd) {
     const rest = cmd[2].trim();

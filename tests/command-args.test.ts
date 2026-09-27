@@ -64,6 +64,10 @@ test("dialog actions round-trip", () => {
   assert.deepEqual(parseInternal(encodeInternal(a2)!), a2);
   const a3: TgAction = { kind: "dialogText", chatId: 42, replyToMessageId: 100, text: 'it\'s a "reply" /stop' };
   assert.deepEqual(parseInternal(encodeInternal(a3)!), a3);
+  const a4: TgAction = { kind: "dialogNumber", chatId: 42, dialogId: 9, text: "17" };
+  assert.deepEqual(parseInternal(encodeInternal(a4)!), a4);
+  assert.equal(parseInternal("internal dialogNumber 42 x 17"), null); // dialogId must be int
+  assert.equal(parseInternal("internal dialogNumber 42 9"), null); // missing text
   // malformed → null (never crash)
   assert.equal(parseInternal("internal dialogAnswer 42 x 1"), null);
   assert.equal(parseInternal("internal dialogAnswer 42 3 -1"), null);

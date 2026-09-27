@@ -138,6 +138,24 @@ export class PendingDialogs {
     return this.byIdMessage(messageId);
   }
 
+  /**
+   * Bare-number fallback for numbered dialogs (live bug, 2026-09-27): the
+   * owner answers a numbered dialog by sending the number as a PLAIN message
+   * (no reply-to) — or replies to the wrong message (e.g. the pause segment
+   * right above the dialog) — and the reply-to routing misses, so the number
+   * lands as a queued prompt while the dialog sits unanswered. Only a bare
+   * integer in range matches; free text never does (input/editor keep the
+   * reply-to contract).
+   */
+  numberedAnswerFor(text: string): number | undefined {
+    const n = Number(text.trim());
+    if (!Number.isInteger(n) || n < 1) return undefined;
+    for (const [id, p] of this.byId) {
+      if (p.numbered && n <= (p.spec.options?.length ?? 0)) return id;
+    }
+    return undefined;
+  }
+
   private byIdMessage(messageId: number): number | undefined {
     return this.byMessageId.get(messageId);
   }

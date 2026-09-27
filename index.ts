@@ -214,7 +214,14 @@ export default function piTelega(pi: ExtensionAPI): void {
 
   async function handleUpdate(update: TgUpdate): Promise<void> {
     if (!bridge || !out || !state) return;
-    const action = route(update, cfg.ownerId, { isDialogMessage: (id) => dialogs?.isDialogMessage(id) ?? false });
+    const action = route(
+      update,
+      cfg.ownerId,
+      {
+        isDialogMessage: (id) => dialogs?.isDialogMessage(id) ?? false,
+        numberedAnswer: (t) => dialogs?.numberedAnswerFor(t),
+      },
+    );
     if (action.kind === "ignore") return;
     const msg = update.message;
     if (msg && msg.from && cfg.ownerId !== undefined && msg.from.id === cfg.ownerId) {
