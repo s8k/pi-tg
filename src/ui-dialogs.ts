@@ -115,6 +115,13 @@ export class PendingDialogs {
     return this.deps.enabled();
   }
 
+  /** A dialog with this exact title is pending on Telegram right now (the
+   *  mirrored twin of a TUI prompt that is still open). */
+  hasActive(title: string): boolean {
+    for (const p of this.byId.values()) if (p.spec.title === title) return true;
+    return false;
+  }
+
   dialogIdForMessage(messageId: number): number | undefined {
     return this.byIdMessage(messageId);
   }

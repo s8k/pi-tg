@@ -453,6 +453,11 @@ export default function piTelega(pi: ExtensionAPI): void {
     safeCall(() => currentMirror?.onToolEnd(event.toolCallId, event.isError, event.result));
   });
   pi.on("ui_prompt_start", (event) => {
+    // A mirrored dialog is the notification itself — the “⚠️ terminal prompt”
+    // work-log line would be a redundant duplicate. TUI-only prompts (custom,
+    // mirroring disabled, send failed) keep the line.
+    const title = typeof event.title === "string" ? event.title : undefined;
+    if (title && dialogs?.hasActive(title)) return;
     safeCall(() => currentMirror?.onUiPromptStart(event.title));
   });
 

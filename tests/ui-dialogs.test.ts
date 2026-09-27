@@ -211,3 +211,18 @@ test("in-flight: tuiAnswered during the send is deferred — stamp uses the real
   await new Promise((r) => setTimeout(r, 0));
   assert.equal(p.size, 0, "no leaked entry");
 });
+
+test("hasActive: true while a dialog with the title is pending, false after resolution", async () => {
+  const made = deps();
+  const p = new PendingDialogs(made.deps);
+  const out = made.out;
+  await p.show({ kind: "select", title: "Pick", options: ["a", "b"] });
+  assert.equal(p.hasActive("Pick"), true, "a pending dialog with the title is active");
+  assert.equal(p.hasActive("Other"), false, "unknown title is not active");
+  const answer = new Promise<unknown>((res) => p.answer(1, res));
+  p.tuiAnswered(1, "a");
+  await answer;
+  assert.equal(p.size, 0);
+  assert.equal(p.hasActive("Pick"), false, "a resolved dialog is no longer active");
+  void out;
+});

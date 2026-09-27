@@ -68,6 +68,7 @@ const fakeCtx = {
   cwd: "/tmp",
   mode: "tui",
   hasUI: true,
+  isIdle: () => true, // the bridge's prompt gate calls ctx.isIdle()
   ui: {
     notify: () => {},
     // mimics pi's showExtensionSelector: resolves on keypress OR opts.signal abort
@@ -541,6 +542,7 @@ test("dialog mirroring E2E: extension select → TG buttons → owner tap wins (
     cwd: "/tmp",
     mode: "tui",
     hasUI: true,
+    isIdle: () => true,
     ui: {
       notify: () => {},
       select: (_title: string, _options?: string[], opts?: { signal?: AbortSignal }) =>
@@ -549,6 +551,8 @@ test("dialog mirroring E2E: extension select → TG buttons → owner tap wins (
           const onAbort = () => resolve(undefined);
           opts?.signal?.addEventListener("abort", onAbort, { once: true });
           e2eOpened++;
+          // mimic pi's wrapUIPromptContext: the TUI dialog opening emits ui_prompt_start
+          handlers.get("ui_prompt_start")?.({ title: _title });
           e2ePress = (v?: string) => {
             opts?.signal?.removeEventListener("abort", onAbort);
             resolve(v);
@@ -598,5 +602,22 @@ test("dialog mirroring E2E: extension select → TG buttons → owner tap wins (
   await waitFor(
     () => calls.some((c) => c.method === "editMessageText" && String(c.body.text ?? "").includes("terminal")),
     "💻 terminal stamp on the wire",
+  );
+
+  // 3) ⚠️ dedupe: a TUI-only prompt keeps the “⚠️ terminal prompt” work-log line
+  //    (positive control — proves the mirror is in the work phase), but a MIRROR-ed
+  //    dialog must not add one (the TG dialog is the notification itself).
+  // The work-log line lives in the LIVE DRAFT (rich_message.markdown), not in
+  // plain sends — look at both shapes.
+  const wireText = (c: WireCall): string =>
+    String((c.body.rich_message as { markdown?: string } | undefined)?.markdown ?? c.body.text ?? "");
+  handlers.get("ui_prompt_start")!({ title: "unmirrored prompt" });
+  await waitFor(
+    () => calls.some((c) => wireText(c).includes("⚠️ terminal prompt: unmirrored prompt")),
+    "⚠️ line for the unmirrored prompt (positive control)",
+  );
+  assert.ok(
+    !calls.some((c) => wireText(c).includes("⚠️ terminal prompt: Pick flavor")),
+    "no ⚠️ work-log line for the mirrored dialog (the TG dialog is the notification)",
   );
 });
