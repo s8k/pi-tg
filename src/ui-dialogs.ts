@@ -30,6 +30,13 @@ export interface PendingDialogsDeps {
   /** cfg.mirrorDialogs — the master switch. */
   enabled(): boolean;
   notify?: (msg: string, level?: "info" | "warning" | "error") => void;
+  /**
+   * Awaited AFTER the dialog is registered (hasActive is live) but BEFORE the
+   * dialog message is sent — the mirror finalizes its live draft as a
+   * persistent segment here, so the segment lands first and the dialog (and
+   * the re-spawned post-answer draft) sit in chronological order below it.
+   */
+  onShown?: () => Promise<void> | void;
 }
 
 interface Pending {
@@ -156,6 +163,7 @@ export class PendingDialogs {
       resolve: NOOP, // placeholder until answer() attaches the race resolver
     };
     this.byId.set(id, p);
+    await this.deps.onShown?.(); // the mirror's draft segment must land before the dialog message
     let sent: number | undefined;
     try { sent = await this.deps.out.send(chatId, text, { replyMarkup: { inline_keyboard: buttons } });
     } catch (err) {

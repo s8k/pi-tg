@@ -180,6 +180,7 @@ test("in-flight: tgAnswer during the send is deferred — stamp uses the real id
   const p = new PendingDialogs(d);
   const showP = p.show({ kind: "select", title: "Pick", options: ["a", "b"] });
   assert.equal(p.size, 1);
+  await new Promise((r) => setImmediate(r)); // let show() pass the (absent) onShown and enter the slow send (the gate arms there)
   assert.equal(p.tgAnswer(1, { kind: "option", index: 0 }), true, "accepted while in flight");
   release();
   assert.equal(await showP, 1, "show still resolves the id");
@@ -200,6 +201,7 @@ test("in-flight: tuiAnswered during the send is deferred — stamp uses the real
   const { deps: d } = deps({ out });
   const p = new PendingDialogs(d);
   const showP = p.show({ kind: "select", title: "Pick", options: ["a", "b"] });
+  await new Promise((r) => setImmediate(r)); // let show() pass the (absent) onShown and enter the slow send (the gate arms there)
   p.tuiAnswered(1, "a"); // the TUI side wins while the send is in flight
   release();
   await showP;
@@ -316,4 +318,23 @@ test("stamp: TUI cancel and cancelAll read as status lines", async () => {
   p2.cancelAll();
   lastEdit = made2.out.calls.filter((c) => c.kind === "edit").pop();
   assert.equal(lastEdit?.text, "❓ <b>Again?</b>\nn\n⚠️ Expired");
+});
+
+test("onShown is awaited BEFORE the dialog message is sent (the mirror's draft segment must land first)", async () => {
+  const out = new FakeOut();
+  const order: string[] = [];
+  const d: PendingDialogsDeps = {
+    out,
+    getChatId: () => 42,
+    enabled: () => true,
+    onShown: async () => {
+      await new Promise((r) => setTimeout(r, 20)); // simulate the segment's persistent send
+      order.push("shown");
+    },
+  };
+  const p = new PendingDialogs(d);
+  await p.show({ kind: "confirm", title: "t", message: "m" });
+  order.push("sent");
+  assert.deepEqual(order, ["shown", "sent"], "onShown completes before the dialog send");
+  assert.equal(out.calls.filter((c) => c.kind === "send").length, 1);
 });

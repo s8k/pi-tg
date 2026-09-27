@@ -5,7 +5,7 @@
 // confirmed text stays as the answer under the final marker.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { Mirror, type MirrorMessage } from "../src/mirror.ts";
+import { Mirror, blocksToMd, type MirrorMessage } from "../src/mirror.ts";
 import { makeMirrorDeps, tick } from "./mirror-helpers.ts";
 
 type H = ReturnType<typeof makeMirrorDeps>;
@@ -412,4 +412,74 @@ test("the run draft id is STABLE across runs (always 1) — clients follow one d
     [1, 1, 1, 1],
     "every run streams into the same stable draft id 1",
   );
+});
+
+// ── dialog pause (2026-09-27): a mirrored dialog finalizes the live draft as a
+// persistent segment BEFORE the dialog message lands, so the dialog + its
+// stamped answer sit after the segment and the post-answer continuation
+// streams in a fresh draft BELOW the dialog (live-verified on PC + Android).
+test("pauseForDialog: working draft → persistent segment; log segmented; next content re-spawns a fresh draft with only the new content", async () => {
+  const h = makeMirrorDeps({ streamEditMs: 0 });
+  const m = new Mirror(h.deps);
+  m.onAgentStart();
+  // pre-dialog work: a tool-carrying message commits text to the log
+  m.onAssistantStart({ role: "assistant", content: [] });
+  m.onAssistantUpdate({ role: "assistant", content: [{ type: "text", text: "pre-dialog work" }] });
+  await m.onAssistantEnd({
+    role: "assistant",
+    content: [
+      { type: "text", text: "pre-dialog work" },
+      { type: "toolCall", id: "t1", name: "bash", arguments: { command: "ls" } },
+    ],
+  });
+  await tick();
+  const before = h.out.calls.length;
+  const draftsBefore = draftCalls(h).length;
+
+  await m.pauseForDialog();
+
+  const seg = h.out.calls.slice(before).filter((c) => c.kind === "sendRich");
+  assert.equal(seg.length, 1, "the segment is one persistent rich message");
+  assert.ok((seg[0]?.text ?? "").includes("pre-dialog work"), "the segment carries the pre-dialog log");
+  assert.ok(!(seg[0]?.text ?? "").includes("Completed ✔️"), "the segment has no run-end marker");
+  assert.ok(seg[0]?.opts?.disableNotification, "the segment is silent (the dialog is the notification)");
+
+  // the answer arrives — the agent continues: the next content event re-spawns
+  // the draft with ONLY the post-dialog content
+  m.onAssistantStart(textMsg(""));
+  m.onAssistantUpdate(textMsg("post-dialog"));
+  await tick();
+  const after = draftCalls(h).slice(draftsBefore);
+  assert.ok(after.length > 0, "a fresh draft is re-spawned after the dialog");
+  assert.equal(after[after.length - 1]?.draftId, 1, "same stable draft id");
+  const cont = after[after.length - 1]?.text ?? "";
+  assert.ok(cont.includes("post-dialog"), "the continuation streams");
+  assert.ok(!cont.includes("pre-dialog work"), "the pre-dialog content was segmented out (no duplication)");
+});
+
+test("pauseForDialog: no-op without a live working draft (no run / error end)", async () => {
+  // no run at all
+  {
+    const h = makeMirrorDeps({ streamEditMs: 0 });
+    const m = new Mirror(h.deps);
+    await m.pauseForDialog();
+    assert.equal(h.out.calls.length, 0);
+  }
+  // error end: the draft is live but carries retry-carryover semantics — never segmented
+  {
+    const h = makeMirrorDeps({ streamEditMs: 0 });
+    const m = new Mirror(h.deps);
+    m.onAgentStart();
+    m.onAssistantStart(textMsg(""));
+    m.onAssistantUpdate(textMsg("partial"));
+    await m.onAssistantEnd(textMsg("partial", { stopReason: "error", errorMessage: "boom" }));
+    await tick();
+    const before = h.out.calls.length;
+    await m.pauseForDialog();
+    assert.equal(h.out.calls.length, before, "no segment for an error-end draft");
+  }
+});
+
+test("BottomLine 'paused' renders blocks + tail with no bottom line", () => {
+  assert.equal(blocksToMd([{ type: "narration", text: "work" }], { tail: "tail", bottom: { kind: "paused" } }), "work\n\ntail");
 });

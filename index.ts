@@ -128,6 +128,11 @@ export default function piTelega(pi: ExtensionAPI): void {
       getChatId: () => ownerChatId,
       enabled: () => cfg.mirrorDialogs,
       notify: (m, l) => ui(m, l),
+      // The mirror's live draft is finalized as a persistent segment BEFORE
+      // the dialog message lands, so the dialog + the post-answer draft sit
+      // in chronological order (a pre-dialog draft would otherwise keep its
+      // original position while streaming — above/below the dialog per client).
+      onShown: () => currentMirror?.pauseForDialog(),
     });
     piAdapter = makeTelegaPi({
       pi,

@@ -99,7 +99,8 @@ export type BottomLine =
   | { kind: "compact"; status: string } // auto-compact in flight (lane 2): <tg-thinking>status</tg-thinking>
   | { kind: "done" } // clean end: Completed ✔️
   | { kind: "error"; text: string; thinking?: boolean; word?: string } // error end: ⚠️ error: <text> (text pre-escaped; "" → no line); thinking → stream still open (pi may retry): `---` divider + spinner below the ⚠️ line
-  | { kind: "aborted" }; // stop end: ⚠️ Request was aborted
+  | { kind: "aborted" } // stop end: ⚠️ Request was aborted
+  | { kind: "paused" }; // dialog segment (pauseForDialog): no bottom line — blocks + tail only
 
 /**
  * Render the single mirror message: committed blocks + the in-flight tail
@@ -238,6 +239,8 @@ export function bottomLineText(bottom: BottomLine): string {
       return bottom.text ? `⚠️ error: ${bottom.text}` : ""; // no message → no line
     case "aborted":
       return "⚠️ Request was aborted";
+    case "paused":
+      return ""; // the dialog-segment message ends after the tail — the dialog follows
   }
 }
 
@@ -523,16 +526,30 @@ export class Mirror {
    * the live error-end draft.
    */
   private startRunDraft(): void {
-    if (this.deps.cfg.level === "mute" || this.deps.getChatId() === undefined) return;
-    if (this.draftId !== 0) return; // a draft is already live for this run — reuse it
-    // STABLE draft id (always 1): one draft stream per chat. Telegram clients
-    // follow a single draft per chat and do not reliably pick up a NEW draft
-    // id from a later run (live-verified: a per-run id 1..7 was invisible
-    // while a probe on a different id rendered). Reusing id 1 re-creates the
-    // draft each run — clients re-follow it (verified with a re-sent probe).
-    this.draftId = 1;
+    if (this.draftId !== 0) return; // a draft is already live (takeover: early draft / retry continuation) — no second send
+    if (!this.ensureDraft()) return;
     this.requestUpdate();
+  }
+
+  /**
+   * Ensure the run's draft exists, spawning it when missing. false = nothing
+   * to spawn (no live run / mute level / chat not paired yet). STABLE draft
+   * id (always 1): one draft stream per chat. Telegram clients follow a
+   * single draft per chat and do not reliably pick up a NEW draft id from a
+   * later run (live-verified: a per-run id 1..7 was invisible while a probe
+   * on a different id rendered). Reusing id 1 re-creates the draft — clients
+   * re-follow it (verified with a re-sent probe). Also the post-dialog
+   * re-spawn path: pauseForDialog retires the draft, and the next content
+   * event's requestUpdate re-spawns it — the fresh draft lands BELOW the
+   * stamped dialog (live-verified on PC + Android, probe 2026-09-27).
+   */
+  private ensureDraft(): boolean {
+    if (this.draftId !== 0) return true; // a draft is already live for this run — reuse it
+    if (this.phase !== "work") return false;
+    if (this.deps.cfg.level === "mute" || this.deps.getChatId() === undefined) return false;
+    this.draftId = 1;
     this.armHeartbeat();
+    return true;
   }
 
   /**
@@ -977,10 +994,48 @@ export class Mirror {
     return tailView(this.content(bottom), RICH_CAP);
   }
 
-  /** Request a single-draft update (latest wins; paced by the shared window). */
+  /** Request a single-draft update (latest wins; paced by the shared window). Re-spawns the run's draft when it was retired (dialog pause). */
   private requestUpdate(): void {
-    if (!this.draftId) return;
+    if (!this.ensureDraft()) return;
     this.requestDraftUpdate(this.draftId, this.draftContent(), true);
+  }
+
+  /**
+   * A mirrored TUI dialog is about to be shown (ui-dialogs' show, BEFORE the
+   * dialog message is sent): the live WORKING draft is finalized as a silent
+   * persistent segment (blocks + tail, no bottom line), the log is
+   * SEGMENTED, and the draft is retired. Why: a draft that predates the
+   * dialog keeps its original position while it keeps streaming (above the
+   * dialog on PC, below on Android — client-controlled, no Bot API lever:
+   * there is no position parameter and no stop-draft method). The segment
+   * send clears the ephemeral draft (any message sent to the chat clears it —
+   * live-verified), so the dialog message lands right after the segment, and
+   * the post-answer continuation streams in the re-spawned draft (same
+   * stable id 1) BELOW the stamped dialog. The segment is the pre-dialog
+   * part of the run's story; the continuation's final message carries only
+   * the post-dialog content (no duplication). Only a purely working draft is
+   * segmented (endKind undefined) — an error-end draft has retry-carryover
+   * semantics that must not be touched.
+   */
+  async pauseForDialog(): Promise<void> {
+    if (!this.hasLiveDraft() || this.endKind !== undefined) return;
+    const chatId = this.deps.getChatId();
+    if (chatId === undefined) return;
+    const md = this.content({ kind: "paused" }); // blocks + tail, no bottom line
+    this.log = [];
+    this.tail = "";
+    this.draftId = 0; // retire — the next content event re-spawns via requestUpdate
+    this.pending.clear();
+    this.forceNext = true; // the first post-dialog draft send breaks through the stream window
+    this.stopHeartbeat();
+    this.clearErrorSettle();
+    if (md.trim()) {
+      try {
+        await this.sendPersistent(chatId, md, { disableNotification: true }); // this send also clears the draft
+      } catch {
+        // best effort — the dialog and the continuation work regardless
+      }
+    }
   }
 
   // ─────────────────── pacing (shared by both drafts) ───────────────────

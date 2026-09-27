@@ -262,3 +262,98 @@ test("process start (reason startup): the persisted chat is NOT restored — the
     "dialog mirrored after the owner spoke first",
   );
 });
+
+test("mid-run dialog: the live draft is segmented BEFORE the dialog message, and the post-answer draft is fresh", async (t) => {
+  const calls: { method: string; body: Record<string, unknown> }[] = [];
+  const realFetch = globalThis.fetch;
+  t.after(() => (globalThis.fetch = realFetch));
+  let handlersERef: Map<string, Handler> | undefined;
+  t.after(() => handlersERef?.get("session_shutdown")!()); // stop this test's poller
+  let batch = 0;
+  let msgId = 3000;
+  globalThis.fetch = (async (url: string, init?: RequestInit): Promise<Response> => {
+    const method = String(url).split("/").pop() ?? "";
+    const body = (init?.body ? JSON.parse(String(init.body)) : {}) as Record<string, unknown>;
+    calls.push({ method, body });
+    if (method === "getMe")
+      return new Response(JSON.stringify({ ok: true, result: { id: 1, is_bot: true, first_name: "Tg", username: "tgb" } }), { status: 200 });
+    if (method === "getUpdates") {
+      batch++;
+      if (batch === 1)
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            result: [
+              { update_id: 1, message: { message_id: 1, date: 1, chat: { id: 42, type: "private" }, from: { id: 123456, is_bot: false, first_name: "O" }, text: "hi" } },
+            ],
+          }),
+          { status: 200 },
+        );
+      return new Promise<Response>((resolve, reject) => {
+        const sig = init?.signal;
+        const onAbort = () => reject(new DOMException("Aborted", "AbortError"));
+        if (sig) {
+          if (sig.aborted) onAbort();
+          else sig.addEventListener("abort", onAbort, { once: true });
+        }
+        void resolve;
+      });
+    }
+    return new Response(JSON.stringify({ ok: true, result: { message_id: ++msgId } }), { status: 200 });
+  }) as typeof fetch;
+
+  // self-contained config: no learned chat in the file (the restart gate keeps
+  // it out at startup anyway — the first owner message teaches the chat)
+  writeFileSync(join(agentDir, "pi-telega.json"), JSON.stringify({ botToken: "TEST-TOKEN", ownerId: 123456 }));
+  // @ts-expect-error -- query-string import: fresh module instance (the /reload equivalent)
+  const modE = await import("../index.ts?seg");
+  const handlersE = new Map<string, Handler>();
+  handlersERef = handlersE;
+  boot(modE, handlersE);
+  // the TUI side resolves immediately (the terminal wins the dialog race)
+  const ctx = {
+    cwd: "/tmp",
+    mode: "tui",
+    hasUI: true,
+    isIdle: () => true,
+    ui: { notify: () => {}, select: (_t?: string, _o?: string[]) => Promise.resolve("x"), confirm: () => Promise.resolve(false), input: () => Promise.resolve(undefined), editor: () => Promise.resolve(undefined) },
+    sessionManager: {},
+  };
+  handlersE.get("session_start")!({}, ctx);
+  await waitFor(() => calls.filter((c) => c.method === "getUpdates").length >= 1, "gen polling");
+
+  // the run starts before the chat is known — the first owner message (batch 1)
+  // learns it mid-run and the draft spawns then (the onChatLearned path)
+  handlersE.get("agent_start")!({}, ctx);
+  handlersE.get("message_start")!({ message: { role: "assistant", content: [{ type: "text", text: "" }] } }, ctx);
+  handlersE.get("message_update")!({ message: { role: "assistant", content: [{ type: "text", text: "working on it" }] } }, ctx);
+  await waitFor(() => calls.some((c) => c.method === "sendRichMessageDraft" && c.body.chat_id === 42), "draft live (after mid-run chat learning)");
+
+  // a mid-run dialog (mirrored)
+  void ctx.ui.select("Mid-run dialog", ["x", "y"]);
+  await waitFor(
+    () => calls.some((c) => c.method === "sendMessage" && JSON.stringify(c.body.reply_markup ?? "").includes("da:")),
+    "dialog mirrored",
+  );
+
+  // THE FIX: the draft segment (persistent rich message) landed BEFORE the dialog
+  const segIdx = calls.findIndex((c) => c.method === "sendRichMessage" && c.body.chat_id === 42);
+  const dlgIdx = calls.findIndex((c) => c.method === "sendMessage" && JSON.stringify(c.body.reply_markup ?? "").includes("da:"));
+  assert.notEqual(segIdx, -1, "the segment was sent");
+  assert.ok(segIdx < dlgIdx, "the segment landed before the dialog message (chronological order)");
+  assert.ok(
+    String((calls[segIdx]?.body.rich_message as { markdown?: string })?.markdown ?? "").includes("working on it"),
+    "the segment carries the pre-dialog work",
+  );
+
+  // the TUI side resolved ("x") — the agent continues: a FRESH draft with only
+  // the post-dialog content (the pre-dialog part lives in the segment)
+  handlersE.get("message_start")!({ message: { role: "assistant", content: [{ type: "text", text: "" }] } }, ctx);
+  handlersE.get("message_update")!({ message: { role: "assistant", content: [{ type: "text", text: "post-dialog" }] } }, ctx);
+  await waitFor(
+    () => calls.some((c) => c.method === "sendRichMessageDraft" && String((c.body.rich_message as { markdown?: string })?.markdown ?? "").includes("post-dialog")),
+    "post-answer draft re-spawned",
+  );
+  const lastDraft = [...calls].reverse().find((c) => c.method === "sendRichMessageDraft")!;
+  assert.ok(!String((lastDraft.body.rich_message as { markdown?: string })?.markdown ?? "").includes("working on it"), "the pre-dialog content was segmented out");
+});
