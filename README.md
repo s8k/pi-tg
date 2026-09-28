@@ -5,7 +5,7 @@ via Bot API long polling — phone and terminal become co-clients of the same
 live session. No cloud relay; your code never leaves your machine.
 
 ```
-phone (Telegram) ⇄ Bot API long polling ⇄ pi-tg (in-process) ⇄ pi TUI session
+Telegram (phone) ⇄ Bot API long polling ⇄ pi-tg (extension) ⇄ pi harness
 ```
 
 ## Requirements
