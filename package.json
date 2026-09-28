@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "description": "pi extension: drive your local Pi Coding Agent from Telegram (Bot API, long polling)",
+  "license": "MIT",
   "dependencies": {
     "qrcode": "^1.5.4"
   },
