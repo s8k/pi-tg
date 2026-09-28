@@ -1,0 +1,16 @@
+{
+  "name": "pi-tg",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "pi extension: drive your local Pi Coding Agent from Telegram (Bot API, long polling)",
+  "license": "MIT",
+  "dependencies": {
+    "qrcode": "^1.5.4"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.84.4",
+    "@types/node": "^26.4.0",
+    "typescript": "^5.9.3"
+  }
+}

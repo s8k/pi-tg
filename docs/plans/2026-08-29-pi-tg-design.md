@@ -1,4 +1,4 @@
-# pi-telega — Design & Technical Spec
+# pi-tg — Design & Technical Spec
 
 > A pi extension that bridges a locally running Pi Coding Agent (local LLM via Docker model runner) to Telegram, so the agent can be driven from a mobile Telegram client. Terminal TUI and phone are **co-clients of the same live pi session**.
 
@@ -40,7 +40,7 @@
  ┌────────────┐   Telegram cloud (Bot API)   ┌──────────────────────────────────┐
  │  Smartphone │◄──────── long polling ─────►│  pi TUI process (project dir)    │
  │ (mobile)   │   outbound HTTPS only        │  ├─ TUI                        │◄─ client #1 (you, at PC)
- └────────────┘                              │  └─ pi-telega extension        │◄─ client #2 (you, on phone)
+ └────────────┘                              │  └─ pi-tg extension        │◄─ client #2 (you, on phone)
                                              │      ├─ telegram-client         │
                                              │      ├─ router                  │
                                              │      ├─ session-bridge  ◄───────┼── the ONLY module touching pi/ctx
@@ -50,10 +50,10 @@
                                              └──────────────────────────────────┘
 ```
 
-**Repo layout** (`C:\tmp\pi-telega`):
+**Repo layout** (`C:\tmp\pi-tg`):
 
 ```
-pi-telega/
+pi-tg/
 ├── index.ts                 # extension entry: wires modules, registers /tg terminal command,
 │                            #   subscribes to pi events, starts poller on session_start
 ├── package.json             # "type": "module"; one runtime dep: qrcode (terminal QR strings)
@@ -61,7 +61,7 @@ pi-telega/
 ├── .gitignore               # node_modules, .pi (session state)
 ├── README.md                # setup: BotFather, /tg config, QR pairing, install into pi
 ├── src/
-│   ├── config.ts            # load/save ~/.pi/agent/pi-telega.json; env PI_TELEGA_BOT_TOKEN overrides
+│   ├── config.ts            # load/save ~/.pi/agent/pi-telegram.json; env PI_TELEGRAM_BOT_TOKEN overrides
 │   ├── telegram-client.ts   # Bot API over global fetch (Node ≥ 18): getMe, setMyCommands,
 │   │                        #   getUpdates (long poll, offset mgmt), sendMessage, editMessageText,
 │   │                        #   deleteMessage, answerCallbackQuery; 429→retry_after, network
@@ -166,7 +166,7 @@ One pi process has exactly **one active session**:
 
 ```
 1. @BotFather → /newbot → copy token
-2. pi terminal:  /tg config 123456:ABC-...     (saved to ~/.pi/agent/pi-telega.json)
+2. pi terminal:  /tg config 123456:ABC-...     (saved to ~/.pi/agent/pi-telegram.json)
 3. pi terminal:  /tg
    → getMe() validates token (fast, clear error if bad)
    → TUI widget above editor: QR (terminal Unicode blocks) + "or open t.me/<bot>"
@@ -208,13 +208,13 @@ Afterwards: zero onboarding. Token persisted ⇒ poller auto-starts on every `se
 ## 9. Security
 
 - **Single-owner allowlist**: `ownerId` from first `/start`; every update from any other ID is rejected.
-- **Token at rest**: env `PI_TELEGA_BOT_TOKEN` (preferred) or `~/.pi/agent/pi-telega.json` inside the user profile (private to the user account on Windows by default). Never logged, never sent anywhere except `api.telegram.org`.
+- **Token at rest**: env `PI_TELEGRAM_BOT_TOKEN` (preferred) or `~/.pi/agent/pi-telegram.json` inside the user profile (private to the user account on Windows by default). Never logged, never sent anywhere except `api.telegram.org`.
 - **Outbound-only network**: long polling means no inbound ports; nothing is exposed on the LAN.
 - **cc-safety-net stays in charge**: its confirmations are answered in the terminal (native TUI dialog); the extension observes `tool_call` events and pushes a best-effort heads-up to the phone ("🛡 safety net is asking about: `rm -rf …`") — it does not bypass or duplicate the policy.
 
 ## 10. Configuration
 
-`~/.pi/agent/pi-telega.json` (env `PI_TELEGA_BOT_TOKEN` overrides `botToken`):
+`~/.pi/agent/pi-telegram.json` (env `PI_TELEGRAM_BOT_TOKEN` overrides `botToken`):
 
 ```json
 {
@@ -240,8 +240,8 @@ Afterwards: zero onboarding. Token persisted ⇒ poller auto-starts on every `se
 
 ## 12. Operations
 
-- **Dev install**: `npm install` in repo; add `C:/tmp/pi-telega/index.ts` to `~/.pi/agent/settings.json` → `extensions`; `/reload`.
-- **Later**: publish as a pi package (`npm:pi-telega`) so it installs with one line.
+- **Dev install**: `npm install` in repo; add `C:/tmp/pi-tg/index.ts` to `~/.pi/agent/settings.json` → `extensions`; `/reload`.
+- **Later**: publish as a pi package (`npm:pi-tg`) so it installs with one line.
 - **Restart semantics**: `pi -c` (or `/resume`) restores the session; the extension reconnects automatically.
 - **Windows**: pure JS, no native deps; runs in Windows Terminal / any terminal that hosts pi.
 
