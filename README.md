@@ -9,6 +9,21 @@ never leaves your machine.
 phone (Telegram) ⇄ Bot API long polling ⇄ pi-tg (in-process) ⇄ pi TUI session
 ```
 
+## Requirements
+
+- Node ≥ 22.18 (native TS type-stripping for `node --test`; dev on Node 26)
+- pi ≥ 0.84 (TUI running)
+- A Telegram bot token (free: @BotFather → `/newbot`)
+
+## Setup
+
+1. `npm install` in this repo
+2. Start pi with the extension: `pi -e /abs/path/to/pi-tg/index.ts`
+3. In the TUI: `/tg:config <bot_token>`
+4. `/tg:pair` → a QR widget appears
+5. Phone: scan the QR → open the bot → `/start` → ✅ paired.
+   From now on only your Telegram user ID is served.
+
 ## How it works
 
 - The extension runs **inside** the live TUI process (`pi -e index.ts`).
@@ -26,20 +41,17 @@ phone (Telegram) ⇄ Bot API long polling ⇄ pi-tg (in-process) ⇄ pi TUI sess
   marker. If Telegram rejects a rich message, the answer is re-sent through
   the legacy 4096-char HTML path, then plain text.
 
-## Requirements
+## Pi harness commands
 
-- Node ≥ 22.18 (native TS type-stripping for `node --test`; dev on Node 26)
-- pi ≥ 0.84 (TUI running)
-- A Telegram bot token (free: @BotFather → `/newbot`)
+| Command | Action |
+|---|---|
+| `/tg` | session card (TUI widget or notification) |
+| `/tg:config <bot_token>` | save bot token, restart poller |
+| `/tg:pair` | show QR (only while unpaired) |
+| `/tg:unpair` | unpair the phone (bot silent until a new `/start`) |
 
-## Setup
-
-1. `npm install` in this repo
-2. Start pi with the extension: `pi -e /abs/path/to/pi-tg/index.ts`
-3. In the TUI: `/tg:config <bot_token>`
-4. `/tg:pair` → a QR widget appears
-5. Phone: scan the QR → open the bot → `/start` → ✅ paired.
-   From now on only your Telegram user ID is served.
+All four appear in the TUI’s `/` completion list (type `/tg` and Tab).
+The poller also injects `/tg internal …` (machine-only, not listed).
 
 ## Telegram bot commands
 
@@ -66,18 +78,6 @@ phone (Telegram) ⇄ Bot API long polling ⇄ pi-tg (in-process) ⇄ pi TUI sess
 The Telegram `/` command menu shows these commands — set via `setMyCommands`
 on every poller start (self-healing; single source of truth in
 `src/bot-commands.ts`).
-
-## Terminal commands
-
-| Command | Action |
-|---|---|
-| `/tg` | session card (TUI widget or notification) |
-| `/tg:config <bot_token>` | save bot token, restart poller |
-| `/tg:pair` | show QR (only while unpaired) |
-| `/tg:unpair` | unpair the phone (bot silent until a new `/start`) |
-
-All four appear in the TUI’s `/` completion list (type `/tg` and Tab).
-The poller also injects `/tg internal …` (machine-only, not listed).
 
 ## Configuration
 
