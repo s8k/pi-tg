@@ -41,7 +41,7 @@ phone (Telegram) ⇄ Bot API long polling ⇄ pi-tg (in-process) ⇄ pi TUI sess
 5. Phone: scan the QR → open the bot → `/start` → ✅ paired.
    From now on only your Telegram user ID is served.
 
-## Phone commands
+## Telegram bot commands
 
 | Command | Action |
 |---|---|
@@ -88,11 +88,13 @@ Env `PI_TELEGRAM_BOT_TOKEN` overrides the stored token.
 |---|---|---|
 | `botToken` | — | Bot API token |
 | `ownerId` | — | Telegram user ID allowed to drive the bot |
+| `ownerChatId` | — | owner’s chat id, persisted on first message so the bot can post right after `/reload` (restored on `/reload` only, not on process start — after a restart the bot stays silent until the owner writes) |
 | `streamEditMs` | `1500` | throttle for rich-draft updates |
 | `askClearOnSwitch` | `true` | ask “clear?” when switching sessions |
 | `level` | `"full"` | agent output level: `mute` / `minimal` / `full` (set from the phone; legacy `muted` still migrates: true → `mute`, false → `full`) |
 | `maxSessionList` | `20` | `/sessions` list cap |
 | `draftHeartbeatMs` | `17000` | rich-draft re-send cadence in ms (keeps the ephemeral draft alive; out-of-range 5000..25000 → default) |
+| `errorSettleMs` | `5000` | grace before an error-ended run’s un-persisted work log is posted as its own “⚠️ error” message; must exceed pi’s retry backoff (2 s) so an auto-retry carries the log over instead of double-posting |
 | `codeFoldLines` | `25` | code fences whose body has more than N lines collapse into a closed `<details>` (out-of-range 5..500 → default) |
 | `sentMessageIds` | `[]` | recent sent message ids (dedupe; capped at 500) |
 | `lastOffset` | `0` | long-poll offset (survives restarts) |
@@ -107,7 +109,15 @@ to the chat at the same time:
 
 - **select / confirm** → inline buttons (one per option, plus ✖ Cancel);
   more than 20 options → a numbered list, answer by replying with the number.
-- **input / editor** → “reply to this message with your answer”.
+- **input / editor** → “reply to this message with your answer” (a plain
+  message that misses the reply-to still lands on the oldest pending
+  input/editor dialog — so you can just type your answer).
+- **numbered selects** → a bare number reply works even if it misses the
+  reply-to (free text is not a valid numbered answer and stays a prompt).
+- **live draft pause:** if a dialog appears while the agent is streaming, the
+  draft is finalized first as a persistent segment ending in
+  `⏸️ Paused — answer the dialog below`; after you answer, the draft
+  re-spawns below it in chronological order.
 
 **First answer wins:**
 
@@ -122,8 +132,10 @@ Caveats:
   terminal-only, with the usual “⚠️ terminal prompt” line in the work log.
 - `editor` has no programmatic dismiss in pi: if the phone answers first, the
   terminal editor stays open until Esc (its late result is discarded).
-- Mirroring is independent of the output level — it follows `mirrorDialogs`
-  only. Set `"mirrorDialogs": false` in the config file to turn it off.
+- Dialogs follow the output level: `mute` suppresses them (commands still
+  work), `minimal` and `full` mirror them live. The `mirrorDialogs` config
+  field is the master switch — set `"mirrorDialogs": false` in the config
+  file to turn mirroring off at any level.
 
 ## Security model
 
@@ -152,6 +164,10 @@ enforces the rule mechanically.
 | `src/telegram-client.ts` | Bot API calls, 429 retry, poller loop + offset management |
 | `src/markdown.ts` | rich pipeline (`richUnits` / `foldLongFences` / `chunkRich` @32k / `tailView`) + legacy HTML (≤4096) / plain fallback |
 | `src/thinking.ts` | `supportedThinkingLevels(model)` — mirror of pi’s selection logic (pure) |
+| `src/bot-commands.ts` | Telegram bot menu (`setMyCommands`) — single source of truth for the bot command list (pure) |
+| `src/ui-dialogs.ts` | in-flight mirrored dialogs: render, reply/number routing, first-answer-wins stamps (pure) |
+| `src/compact.ts` | stoppable manual compaction for `/compact` — replays pi’s default summarization with its own abort controller |
+| `src/gpu.ts` | NVIDIA GPU temp/util/memory probe for `/status` (never throws, bounded timeout) |
 | `src/router.ts` | update → typed action (pure) |
 | `src/command-args.ts` | `/tg internal …` encode/parse (pure) |
 | `src/session-bridge.ts` | all phone-command logic behind the `TelegramPi` interface |
