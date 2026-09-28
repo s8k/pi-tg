@@ -208,11 +208,12 @@ export default function piTelegram(pi: ExtensionAPI): void {
       setOffset: (n) => {
         state!.setOffset(n);
         cfg.lastOffset = n;
+        cfg.seenUpdateIds = state!.seenIds(); // persisted with the offset (replay guard)
         void persist();
       },
-      onUpdates: async (updates: TgUpdate[]) => {
-        for (const u of updates) await handleUpdate(u);
-      },
+      onUpdate: (u: TgUpdate) => handleUpdate(u),
+      isSeen: (id) => state!.isSeen(id),
+      markSeen: (id) => state!.markSeen(id),
       onError: (err) => ui(`pi-tg poll error: ${String(err)}`, "error"),
       onConflict: () => ui("pi-tg: another client is polling this bot token (409 Conflict) — backing off and retrying", "warning"),
       shouldStop: () => stopping || gen !== pollGen,
@@ -411,6 +412,7 @@ export default function piTelegram(pi: ExtensionAPI): void {
     cfg = loadConfig(CFG);
     state = new TelegramState(cfg.lastOffset ?? 0);
     state.restoreSentIds(cfg.sentMessageIds ?? []);
+    state.restoreSeenIds(cfg.seenUpdateIds ?? [], cfg.lastOffset ?? 0);
     // In-process generation swaps ("reload") restore the persisted owner chat
     // so the mirror keeps working seamlessly. A fresh process ("startup") must
     // NOT: after a pi restart the bot stays silent on Telegram until the owner

@@ -51,3 +51,38 @@ test("list caches: index + out of range", () => {
   s.setThinkingList(["off", "high"]);
   assert.equal(s.thinkingAt(0), "off");
 });
+
+test("seen update ids: mark, isSeen, dedupe, cap 200 (newest kept)", () => {
+  const s = new TelegramState();
+  assert.equal(s.isSeen(7), false);
+  s.markSeen(7);
+  s.markSeen(7); // re-mark is a no-op
+  s.markSeen(8);
+  assert.equal(s.isSeen(7), true);
+  assert.equal(s.isSeen(8), true);
+  assert.equal(s.isSeen(9), false);
+  assert.deepEqual(s.seenIds(), [7, 8]);
+  for (let i = 100; i <= 304; i++) s.markSeen(i);
+  const ids = s.seenIds();
+  assert.equal(ids.length, 200);
+  assert.equal(ids[0], 105);
+  assert.equal(s.isSeen(104), false, "oldest evicted beyond the cap");
+  assert.equal(s.isSeen(304), true);
+});
+
+test("restoreSeenIds: capped + copied", () => {
+  const s = new TelegramState(0);
+  const many = Array.from({ length: 250 }, (_, i) => i + 1);
+  s.restoreSeenIds(many, 0);
+  assert.equal(s.seenIds().length, 200);
+  assert.equal(s.isSeen(50), false);
+  assert.equal(s.isSeen(250), true);
+});
+
+test("restoreSeenIds: ids at/below the restored offset are dropped (never redeliverable)", () => {
+  const s = new TelegramState(14);
+  s.restoreSeenIds([10, 11, 14, 15, 16], 14);
+  assert.deepEqual(s.seenIds(), [15, 16], "only ids above the offset remain as replay guard");
+  assert.equal(s.isSeen(14), false);
+  assert.equal(s.isSeen(15), true);
+});

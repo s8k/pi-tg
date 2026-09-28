@@ -47,6 +47,10 @@ const handlers = new Map<string, (...a: unknown[]) => unknown>();
 // The fake pi replays `/tg …` sendUserMessage calls through the captured
 // command handler — exactly what real pi does (the poller's dispatch path).
 let tgCommand: { handler: (args: string, ctx: unknown) => Promise<void> } | undefined;
+// The ctx the fake pi hands to the /tg command handler (the handler stores it
+// as the adapter's cmdCtx). Minimal by default; a test whose action reads ctx
+// (e.g. stop → isIdle) swaps in a fuller one for its duration.
+let cmdCtxFake: unknown = { ui: { notify: () => {} } };
 piTelegram({
   registerCommand: (name: string, def: unknown) => {
     if (name === "tg") tgCommand = def as typeof tgCommand;
@@ -54,7 +58,7 @@ piTelegram({
   on: (name: string, fn: (...a: unknown[]) => unknown) => handlers.set(name, fn),
   sendUserMessage: (text: string, _opts?: unknown) => {
     if (typeof text === "string" && text.startsWith("/tg ") && tgCommand)
-      void tgCommand.handler(text.slice(4), { ui: { notify: () => {} } });
+      void tgCommand.handler(text.slice(4), cmdCtxFake);
   },
 } as never);
 // The fake ctx exposes the post-compact session context so index.ts can
@@ -733,4 +737,64 @@ test("dialog mirroring follows the output level: mute suppresses, minimal/full m
   await waitFor(() => hasDialog(2), "minimal: TG dialog on the wire");
   await resolveBatch(5, [{ update_id: 13, callback_query: { id: "cb3", from: { id: 123456, is_bot: false }, data: "da:2:1", message: { message_id: 200, date: 1, chat: { id: 42, type: "private" } } } }]);
   assert.equal(await p3, "n", "minimal: the tapped option reaches the extension");
+});
+
+// Incident 2026-09-27: after a network outage the SAME update batch was
+// redelivered (regressed offset) and one /stop produced THREE "Nothing to stop"
+// replies. With update_id dedupe the replay must be answered exactly once.
+test("replayed /stop update (regressed offset) is answered exactly once", async (t) => {
+  const calls: WireCall[] = [];
+  const realFetch = globalThis.fetch;
+  t.after(() => {
+    handlers.get("session_shutdown")!(); // stop THIS test's poller
+    globalThis.fetch = realFetch;
+    cmdCtxFake = { ui: { notify: () => {} } }; // restore the minimal default
+  });
+  let batch = 0;
+  let msgId = 800;
+  let resolveLongPoll: ((updates: unknown[]) => void) | undefined;
+  const stopUpdate = {
+    update_id: 900,
+    message: { message_id: 900, date: 1, chat: { id: 42, type: "private" }, from: { id: 123456, is_bot: false }, text: "/stop" },
+  };
+  globalThis.fetch = (async (url: string, init?: RequestInit): Promise<Response> => {
+    const method = String(url).split("/").pop() ?? "";
+    const body = (init?.body ? JSON.parse(String(init.body)) : {}) as Record<string, unknown>;
+    calls.push({ method, body, markdown: "" });
+    if (method === "getMe")
+      return new Response(JSON.stringify({ ok: true, result: { id: 1, is_bot: true, first_name: "Tg", username: "tgb" } }), { status: 200 });
+    if (method === "getUpdates") {
+      batch++;
+      // Batches 1 AND 2 carry the SAME update (the replay); batch 3+ long-polls.
+      if (batch <= 2)
+        return new Response(JSON.stringify({ ok: true, result: [stopUpdate] }), { status: 200 });
+      return new Promise<Response>((resolve, reject) => {
+        const sig = init?.signal;
+        const onAbort = () => reject(new DOMException("Aborted", "AbortError"));
+        if (sig) {
+          if (sig.aborted) onAbort();
+          else sig.addEventListener("abort", onAbort, { once: true });
+        }
+        resolveLongPoll = (updates) => resolve(new Response(JSON.stringify({ ok: true, result: updates }), { status: 200 }));
+      });
+    }
+    if (method === "sendMessage")
+      return new Response(JSON.stringify({ ok: true, result: { message_id: ++msgId } }), { status: 200 });
+    return new Response(JSON.stringify({ ok: true, result: true }), { status: 200 });
+  }) as typeof fetch;
+
+  const ctx = {
+    cwd: "/tmp",
+    mode: "tui",
+    hasUI: true,
+    isIdle: () => true,
+    ui: { notify: () => {} },
+    sessionManager: fakeCtx.sessionManager,
+  };
+  cmdCtxFake = ctx; // the stop dispatch reads ctx.isIdle() through the adapter
+  handlers.get("session_start")!({}, ctx);
+  const idleAcks = () => calls.filter((c) => c.method === "sendMessage" && String(c.body.text ?? "").includes("Nothing to stop"));
+  await waitFor(() => idleAcks().length >= 1, "first idle-ack sent");
+  await sleep(400); // a duplicate dispatch from the replayed update would have landed by now
+  assert.equal(idleAcks().length, 1, "the replayed /stop update must NOT be answered a second time");
 });

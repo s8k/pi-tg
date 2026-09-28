@@ -128,7 +128,7 @@ async function waitFor(cond: () => boolean, timeoutMs = 2000): Promise<void> {
 }
 
 test("pollLoop: delivers batches, advances offset, stops on flag", async () => {
-  const delivered: number[][] = [];
+  const delivered: number[] = [];
   let offset = 0;
   let stop = false;
   const ff = makeFakeFetch();
@@ -140,21 +140,24 @@ test("pollLoop: delivers batches, advances offset, stops on flag", async () => {
     { status: 200, body: { ok: true, result: [] } },
   );
   const client = new TelegramClient("T", { fetchImpl: ff.fetchImpl, sleep: async () => {} });
+  const seen = new Set<number>();
   const p = pollLoop({
     client,
     getOffset: () => offset,
     setOffset: (n) => (offset = n),
-    onUpdates: async (u) => { delivered.push(u.map((x) => x.update_id)); },
+    onUpdate: async (u) => { delivered.push(u.update_id); },
+    isSeen: (id) => seen.has(id),
+    markSeen: (id) => seen.add(id),
     onError: () => {},
     onConflict: () => {},
     shouldStop: () => stop,
     // real (short) timer: a no-op sleep would spin in microtasks and starve the event loop
     sleep: (ms) => new Promise((r) => setTimeout(r, Math.min(ms, 5))),
   });
-  await waitFor(() => delivered.length === 1);
+  await waitFor(() => delivered.length === 2); // per-update now: the whole batch lands in one tick
   stop = true;
   await p;
-  assert.deepEqual(delivered, [[1, 2]]);
+  assert.deepEqual(delivered, [1, 2]);
   assert.equal(offset, 3);
 });
 
@@ -174,13 +177,15 @@ test("pollLoop: network error → backoff(1s) then retry succeeds", async () => 
   });
   let offset = 0;
   let stop = false;
-  const delivered: number[][] = [];
+  const delivered: number[] = [];
   const client = new TelegramClient("T", { fetchImpl: ff.fetchImpl, sleep: async () => {} });
   const p = pollLoop({
     client,
     getOffset: () => offset,
     setOffset: (m) => (offset = m),
-    onUpdates: async (u) => { delivered.push(u.map((x) => x.update_id)); },
+    onUpdate: async (u) => { delivered.push(u.update_id); },
+    isSeen: () => false,
+    markSeen: () => {},
     onError: (e) => errors.push(e),
     onConflict: (e) => { throw new Error("no conflicts expected"); },
     shouldStop: () => stop,
@@ -190,7 +195,7 @@ test("pollLoop: network error → backoff(1s) then retry succeeds", async () => 
   await waitFor(() => delivered.length === 1);
   stop = true;
   await p;
-  assert.deepEqual(delivered, [[9]]);
+  assert.deepEqual(delivered, [9]);
   assert.equal(offset, 10);
   assert.equal(errors.length, 1);
   assert.ok(sleeps.includes(1000));
@@ -215,12 +220,15 @@ test("pollLoop: 409 conflict → onConflict (not onError), backoff, retry — ne
   const client = new TelegramClient("T", { fetchImpl: ff.fetchImpl, sleep: async () => {} });
   let offset = 0;
   let stop = false;
-  const delivered: number[][] = [];
+  const delivered: number[] = [];
+  const seen = new Set<number>();
   const p = pollLoop({
     client,
     getOffset: () => offset,
     setOffset: (m) => (offset = m),
-    onUpdates: async (u) => { delivered.push(u.map((x) => x.update_id)); },
+    onUpdate: async (u) => { delivered.push(u.update_id); },
+    isSeen: (id) => seen.has(id),
+    markSeen: (id) => seen.add(id),
     onError: (e) => errors.push(e),
     onConflict: (e) => conflicts.push(e),
     shouldStop: () => stop,
@@ -229,7 +237,7 @@ test("pollLoop: 409 conflict → onConflict (not onError), backoff, retry — ne
   await waitFor(() => delivered.length === 1);
   stop = true;
   await p;
-  assert.deepEqual(delivered, [[4]], "the loop survives the conflicts and delivers the later update");
+  assert.deepEqual(delivered, [4], "the loop survives the conflicts and delivers the later update");
   assert.equal(offset, 5);
   assert.equal(conflicts.length, 2);
   assert.ok(conflicts[0] instanceof TgError && (conflicts[0] as TgError).code === 409);
@@ -261,7 +269,9 @@ test("pollLoop: generation signal aborted → in-flight long-poll dies at once, 
     client,
     getOffset: () => 0,
     setOffset: () => {},
-    onUpdates: async () => {},
+    onUpdate: async () => {},
+    isSeen: () => false,
+    markSeen: () => {},
     onError: (e) => errors.push(e),
     onConflict: (e) => conflicts.push(e),
     shouldStop: () => false, // the ONLY stop path here is the signal
@@ -300,7 +310,9 @@ test("pollLoop: already stopping → returns without any call", async () => {
     client,
     getOffset: () => 0,
     setOffset: () => {},
-    onUpdates: async () => {},
+    onUpdate: async () => {},
+    isSeen: () => false,
+    markSeen: () => {},
     onError: () => {},
     onConflict: () => {},
     shouldStop: () => true,
@@ -383,4 +395,86 @@ test("setMyCommands: posts the full menu (global scope, no language_code)", asyn
   assert.deepEqual(body, { commands: BOT_COMMANDS });
   assert.equal("scope" in body, false);
   assert.equal("language_code" in body, false);
+});
+
+// ── replay protection + per-update isolation (incident 2026-09-27: one /stop
+// answered three times after an outage redelivered the same update batch) ──
+
+test("pollLoop: replayed updates (regressed offset) are skipped — handled exactly once, offset never regresses", async () => {
+  // Telegram redelivers the SAME batch twice (offset regressed after a crash /
+  // 409 twin), then goes quiet like a real long poll.
+  let n = 0;
+  const batch = [
+    { update_id: 5, message: { message_id: 5, chat: { id: 7, type: "private" }, date: 5 } },
+    { update_id: 6, message: { message_id: 6, chat: { id: 7, type: "private" }, date: 6 } },
+  ];
+  const ff = makeFakeFetch(async () => {
+    n++;
+    if (n > 2) await new Promise((r) => setTimeout(r, 5));
+    return { status: 200, body: { ok: true, result: n <= 2 ? batch : [] } };
+  });
+  let offset = 0;
+  let stop = false;
+  const seen = new Set<number>();
+  const handled: number[] = [];
+  const client = new TelegramClient("T", { fetchImpl: ff.fetchImpl, sleep: async () => {} });
+  const p = pollLoop({
+    client,
+    getOffset: () => offset,
+    setOffset: (m) => (offset = m),
+    onUpdate: async (u) => { handled.push(u.update_id); },
+    isSeen: (id) => seen.has(id),
+    markSeen: (id) => seen.add(id),
+    onError: () => { throw new Error("no errors expected"); },
+    onConflict: () => {},
+    shouldStop: () => stop,
+    sleep: (ms) => new Promise((r) => setTimeout(r, Math.min(ms, 5))),
+  });
+  await waitFor(() => handled.length === 2);
+  stop = true;
+  await p;
+  assert.deepEqual(handled, [5, 6], "each update handled exactly once despite the replay");
+  assert.equal(offset, 7, "offset advanced past the batch");
+});
+
+test("pollLoop: a throwing update is contained — error surfaced, batch continues, offset advances past it", async () => {
+  let n = 0;
+  const ff = makeFakeFetch(async () => {
+    n++;
+    if (n > 1) await new Promise((r) => setTimeout(r, 5));
+    const updates = n === 1
+      ? [
+          { update_id: 10, message: { message_id: 10, chat: { id: 7, type: "private" }, date: 10 } },
+          { update_id: 11, message: { message_id: 11, chat: { id: 7, type: "private" }, date: 11 } },
+        ]
+      : [];
+    return { status: 200, body: { ok: true, result: updates } };
+  });
+  let offset = 0;
+  let stop = false;
+  const seen = new Set<number>();
+  const errors: unknown[] = [];
+  const handled: number[] = [];
+  const client = new TelegramClient("T", { fetchImpl: ff.fetchImpl, sleep: async () => {} });
+  const p = pollLoop({
+    client,
+    getOffset: () => offset,
+    setOffset: (m) => (offset = m),
+    onUpdate: async (u) => {
+      if (u.update_id === 10) throw new Error("handler boom");
+      handled.push(u.update_id);
+    },
+    isSeen: (id) => seen.has(id),
+    markSeen: (id) => seen.add(id),
+    onError: (e) => errors.push(e),
+    onConflict: () => {},
+    shouldStop: () => stop,
+    sleep: (ms) => new Promise((r) => setTimeout(r, Math.min(ms, 5))),
+  });
+  await waitFor(() => handled.length === 1 && errors.length === 1);
+  stop = true;
+  await p;
+  assert.deepEqual(handled, [11], "the healthy update after the bad one was still processed");
+  assert.equal(offset, 12, "offset advanced past BOTH updates — the bad one cannot wedge the batch");
+  assert.equal(String(errors[0]), "Error: handler boom");
 });

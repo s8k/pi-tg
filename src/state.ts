@@ -10,6 +10,7 @@ export interface SessionListItem {
 }
 
 const SENT_CAP = 500;
+const SEEN_CAP = 200;
 
 /**
  * Per-instance runtime state. `sentIds` + `offset` are persisted by index.ts
@@ -17,6 +18,9 @@ const SENT_CAP = 500;
  */
 export class TelegramState {
   private sent: number[] = [];
+  /** update_ids already handled — replay guard (the offset can regress after a
+   * crash or a 409 twin, and Telegram redelivers unconfirmed updates). */
+  private seen: number[] = [];
   private offset: number;
   private sessionList: SessionListItem[] = [];
   private modelList: string[] = [];
@@ -49,6 +53,26 @@ export class TelegramState {
   }
   setOffset(n: number): void {
     this.offset = n;
+  }
+  /**
+   * Restore the replay guard. Only ids ABOVE the restored offset can ever be
+   * redelivered (getUpdates returns ids ≥ offset), so ids ≤ offset are
+   * dropped — a fresh stream reusing low ids (tests) is never shadowed by a
+   * stale guard, while a regressed-offset replay (ids above it) is still caught.
+   */
+  restoreSeenIds(ids: number[], offset: number): void {
+    this.seen = ids.filter((id) => id > offset).slice(-SEEN_CAP);
+  }
+  seenIds(): number[] {
+    return [...this.seen];
+  }
+  isSeen(id: number): boolean {
+    return this.seen.includes(id);
+  }
+  markSeen(id: number): void {
+    if (this.seen.includes(id)) return;
+    this.seen.push(id);
+    if (this.seen.length > SEEN_CAP) this.seen = this.seen.slice(-SEEN_CAP);
   }
 
   // instance-scoped

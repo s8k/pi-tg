@@ -20,6 +20,7 @@ export function makeDeps(pi: TelegramPi, out: FakeOut, cfg: Partial<TelegramConf
       level: "full",
       mirrorDialogs: true,
       sentMessageIds: [],
+      seenUpdateIds: [],
       ...cfg,
     },
     botUsername: "testbot",

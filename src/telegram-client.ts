@@ -109,7 +109,15 @@ export interface PollerDeps {
   client: TelegramClient;
   getOffset(): number;
   setOffset(n: number): void;
-  onUpdates(updates: TgUpdate[]): Promise<void>;
+  /**
+   * One update (replays already filtered by the loop). THROWING is contained:
+   * the loop reports it via onError and moves on — one bad update must not
+   * wedge the offset and force endless redelivery of the whole batch.
+   */
+  onUpdate(update: TgUpdate): Promise<void>;
+  /** update_id already handled (replay guard — see pollLoop). */
+  isSeen(id: number): boolean;
+  markSeen(id: number): void;
   /** Network/other errors (red toast, backoff + retry). */
   onError(err: unknown): void;
   /** 409 Conflict — another poller is active (warning toast, backoff + retry). */
@@ -126,12 +134,19 @@ const BACKOFF_START_MS = 1000;
 const BACKOFF_CAP_MS = 30_000;
 
 /**
- * Long-poll loop. 409 ("terminated by other getUpdates request") means
- * another poller is active — warn and retry with backoff; NEVER die on it:
- * a single conflict (including our own dying twin during a restart) must not
- * deafen the bot. Other errors back off 1s→30s and retry. Aborting `signal`
- * rejects the in-flight long poll → quiet exit (not an error, no toast).
- * `shouldStop` is checked between iterations.
+ * Long-poll loop. Per update: a REPLAYED `update_id` (isSeen) is skipped —
+ * the offset can regress after a crash or a 409 twin, and Telegram
+ * redelivers unconfirmed updates, so handling must be idempotent via the
+ * caller's seen-tracker. A handler that THROWS is contained (onError) and
+ * the offset still advances past it — one bad update cannot wedge the batch
+ * into endless redelivery (incident 2026-09-27: one /stop answered three
+ * times after an outage). The offset advances per update, never backwards.
+ * 409 ("terminated by other getUpdates request") means another poller is
+ * active — warn and retry with backoff; NEVER die on it: a single conflict
+ * (including our own dying twin during a restart) must not deafen the bot.
+ * Other errors back off 1s→30s and retry. Aborting `signal` rejects the
+ * in-flight long poll → quiet exit (not an error, no toast). `shouldStop`
+ * is checked between iterations.
  */
 export async function pollLoop(deps: PollerDeps): Promise<void> {
   let backoff = BACKOFF_START_MS;
@@ -139,9 +154,17 @@ export async function pollLoop(deps: PollerDeps): Promise<void> {
     if (deps.shouldStop()) return;
     try {
       const updates = await deps.client.getUpdates(deps.getOffset(), 50, deps.signal);
-      if (updates.length > 0) {
-        await deps.onUpdates(updates);
-        deps.setOffset(updates[updates.length - 1].update_id + 1);
+      for (const u of updates) {
+        if (deps.isSeen(u.update_id)) continue; // replay — already handled
+        deps.markSeen(u.update_id);
+        try {
+          await deps.onUpdate(u);
+        } catch (err) {
+          if (deps.shouldStop() || deps.signal?.aborted) return;
+          deps.onError(err); // contained — the offset still advances past it
+        }
+        const next = u.update_id + 1;
+        if (next > deps.getOffset()) deps.setOffset(next); // never regress
       }
       backoff = BACKOFF_START_MS;
     } catch (err) {

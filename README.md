@@ -96,6 +96,7 @@ Env `PI_TELEGRAM_BOT_TOKEN` overrides the stored token.
 | `codeFoldLines` | `25` | code fences whose body has more than N lines collapse into a closed `<details>` (out-of-range 5..500 → default) |
 | `sentMessageIds` | `[]` | recent sent message ids (dedupe; capped at 500) |
 | `lastOffset` | `0` | long-poll offset (survives restarts) |
+| `seenUpdateIds` | `[]` | recently handled update ids (replay guard: if the offset ever regresses — crash, 409 twin — Telegram redelivers those updates and they are skipped, not re-processed; capped at 200) |
 | `mirrorDialogs` | `true` | mirror other extensions’ TUI dialogs to the chat (see below) |
 
 ## Dialog mirroring

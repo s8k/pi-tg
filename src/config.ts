@@ -55,6 +55,12 @@ export interface TelegramConfig {
   sentMessageIds: number[];
   /** Polling cursor, persisted so a restart/instance-swap resumes without re-read. */
   lastOffset?: number;
+  /**
+   * Recently handled update_ids (capped at 200, newest last) — replay guard:
+   * when the offset regresses (crash, 409 twin) Telegram redelivers those
+   * updates and they must NOT be processed a second time.
+   */
+  seenUpdateIds: number[];
   /** Set before newSession/switchSession; consumed by the replacement instance. */
   pendingAction?: PendingAction;
 }
@@ -70,7 +76,7 @@ export interface ConfigOptions {
 
 export const DEFAULTS: Pick<
   TelegramConfig,
-  "streamEditMs" | "askClearOnSwitch" | "maxSessionList" | "draftHeartbeatMs" | "errorSettleMs" | "codeFoldLines" | "level" | "mirrorDialogs" | "sentMessageIds"
+  "streamEditMs" | "askClearOnSwitch" | "maxSessionList" | "draftHeartbeatMs" | "errorSettleMs" | "codeFoldLines" | "level" | "mirrorDialogs" | "sentMessageIds" | "seenUpdateIds"
 > = {
   streamEditMs: 1500,
   askClearOnSwitch: true,
@@ -81,6 +87,7 @@ export const DEFAULTS: Pick<
   level: "full",
   mirrorDialogs: true,
   sentMessageIds: [],
+  seenUpdateIds: [],
 };
 
 /** Pre-rename config filename — kept only for the one-time migration below. */
@@ -113,7 +120,7 @@ function clampInt(value: unknown, fallback: number, min: number, max: number): n
   return fallback;
 }
 
-function capSentIds(value: unknown): number[] {
+function capIdList(value: unknown, cap: number): number[] {
   if (!Array.isArray(value)) return [];
   const seen = new Set<number>();
   const ids: number[] = [];
@@ -123,8 +130,11 @@ function capSentIds(value: unknown): number[] {
       ids.push(item);
     }
   }
-  return ids.slice(-500);
+  return ids.slice(-cap);
 }
+
+const capSentIds = (value: unknown): number[] => capIdList(value, 500);
+const capSeenIds = (value: unknown): number[] => capIdList(value, 200);
 
 function sanitizePending(value: unknown): PendingAction | undefined {
   if (!value || typeof value !== "object") return undefined;
@@ -165,6 +175,7 @@ export function sanitize(raw: unknown): TelegramConfig {
     level: parseLevel(obj),
     mirrorDialogs: typeof obj.mirrorDialogs === "boolean" ? obj.mirrorDialogs : DEFAULTS.mirrorDialogs,
     sentMessageIds: capSentIds(obj.sentMessageIds),
+    seenUpdateIds: capSeenIds(obj.seenUpdateIds),
     lastOffset: typeof obj.lastOffset === "number" && Number.isFinite(obj.lastOffset) ? obj.lastOffset : undefined,
     pendingAction: sanitizePending(obj.pendingAction),
   };

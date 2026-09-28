@@ -210,3 +210,15 @@ test("configPath: an explicit override path is returned as-is (no migration side
     assert.ok(existsSync(join(agentDir, "pi-telega.json")), "override does not trigger migration");
   });
 });
+
+test("sanitize: seenUpdateIds capped at 200 (newest kept) + deduped + invalid dropped", () => {
+  const ids = Array.from({ length: 250 }, (_, i) => i + 1); // 1..250
+  const cfg = sanitize({ seenUpdateIds: [...ids, 250, "nope", -5] });
+  assert.equal(cfg.seenUpdateIds.length, 200);
+  assert.equal(cfg.seenUpdateIds[0], 51);   // oldest 1..50 dropped
+  assert.equal(cfg.seenUpdateIds[199], 250); // newest kept
+});
+
+test("sanitize: seenUpdateIds default []", () => {
+  assert.deepEqual(sanitize({}).seenUpdateIds, []);
+});
