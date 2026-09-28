@@ -1,11 +1,11 @@
 # pi-tg — Pi Coding Agent ⇄ Telegram: drive it from your phone
 
-Drive your local **Pi Coding Agent** from your phone. `pi-tg` is a pi harness extension that bridges the live TUI session to Telegram
+Drive your local **Pi Coding Agent** from your phone. `pi-tg` is a Pi harness extension that bridges the live TUI session to Telegram
 via Bot API long polling — phone and terminal become co-clients of the same
 live session. No cloud relay; your code never leaves your machine.
 
 ```
-Telegram (phone) ⇄ Bot API long polling ⇄ pi-tg (extension) ⇄ pi harness
+Telegram (phone) ⇄ Bot API long polling ⇄ pi-tg (extension) ⇄ Pi harness
 ```
 
 ## Requirements
