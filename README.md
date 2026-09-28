@@ -27,7 +27,8 @@ Telegram (phone) ⇄ Bot API long polling ⇄ pi-tg (extension) ⇄ Pi harness
 
 - The extension runs **inside** the live TUI process (`pi -e index.ts`).
 - A long-poll loop reads Telegram updates; only the paired owner is served.
-- Free text is delivered as agent prompts (auto-queued as *steer* when busy).
+- Free text is delivered as agent prompts (busy → queued as *steer*, “⚡️ Message
+  queued” confirmation).
 - Session controls (`/new`, `/sessions`, `/stop`, …) execute through pi’s own
   command context, so they behave exactly like typing them in the terminal.
 - While the agent works you get one **live rich draft** (native Telegram
@@ -56,7 +57,7 @@ The poller also injects `/tg internal …` (machine-only, not listed).
 
 | Command | Action |
 |---|---|
-| free text | send a prompt (busy → queued as steer + “⏡ queued”) |
+| free text | send a prompt (busy → queued as steer + “⚡️ Message queued”) |
 | `/start` | session card (name, cwd, model, thinking, messages, context %, session file) |
 | `/new` | new session (confirm; the old one stays in the list) |
 | `/sessions` | list recent sessions (≤ 20) with buttons |
