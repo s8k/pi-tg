@@ -1,6 +1,6 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { blocksLen, blockCount, inlineToRichText, mdToBlocks, richTextLen } from "../src/rich-blocks.ts";
+import { blocksLen, blockCount, blocksToPlainText, chunkBlocks, foldBlocks, inlineToRichText, mdToBlocks, richTextLen, tailBlocks } from "../src/rich-blocks.ts";
 import type { TgBlock, TgRichText } from "../src/rich-blocks.ts";
 
 describe("richTextLen", () => {
@@ -361,5 +361,228 @@ describe("mdToBlocks", () => {
       { type: "divider" },
       { type: "list", items: [{ blocks: [{ type: "paragraph", text: "one" }] }] },
     ]);
+  });
+});
+
+const PRE = (text: string, language?: string): TgBlock => language
+  ? { type: "pre", text, language }
+  : { type: "pre", text };
+
+describe("foldBlocks", () => {
+  test("short fence untouched", () => {
+    const inB: TgBlock[] = [PRE("a\nb\n", "js")];
+    assert.deepEqual(foldBlocks(inB, 5), inB.map((b) => ({ ...b })));
+  });
+  test("long fence → closed details, lang + line count in summary", () => {
+    const body = Array.from({ length: 30 }, (_, i) => `line ${i}`).join("\n");
+    const out = foldBlocks([PRE(body, "js")], 25);
+    assert.equal(out.length, 1);
+    const d = out[0];
+    assert.equal(d.type, "details");
+    if (d.type !== "details") return;
+    assert.equal(d.is_open, false);
+    assert.deepEqual(d.summary, "code, js (30 lines)");
+    assert.deepEqual(d.blocks, [PRE(body, "js")]);
+  });
+  test("long fence without language → summary without lang", () => {
+    const body = Array.from({ length: 30 }, (_, i) => `l${i}`).join("\n");
+    const out = foldBlocks([PRE(body)], 25);
+    const d = out[0];
+    assert.equal(d.type, "details");
+    if (d.type !== "details") return;
+    assert.deepEqual(d.summary, "code (30 lines)");
+  });
+  test("non-pre blocks pass through untouched", () => {
+    const inB: TgBlock[] = [{ type: "paragraph", text: "x" }, { type: "divider" }];
+    assert.deepEqual(foldBlocks(inB, 1), inB);
+  });
+});
+
+describe("tailBlocks", () => {
+  const many = (n: number): TgBlock[] =>
+    Array.from({ length: n }, (_, i) => ({ type: "paragraph", text: `p${i} `.padEnd(20, "x") }));
+
+  test("under cap: untouched", () => {
+    const inB = many(3);
+    assert.deepEqual(tailBlocks(inB), inB);
+  });
+  test("over cap: suffix kept + leading ⋯ paragraph", () => {
+    const inB = many(100);
+    const out = tailBlocks(inB, 200);
+    assert.equal(out[0]?.type, "paragraph");
+    if (out[0]?.type !== "paragraph") return;
+    assert.equal(out[0].text, "⋯");
+    assert.ok(out.length < inB.length);
+    assert.deepEqual(out[out.length - 1], inB[inB.length - 1]);
+    assert.ok(blocksLen(out) <= 200);
+  });
+  test("thinking block (last) always kept", () => {
+    const inB = [...many(100), { type: "thinking" as const, text: "Working…" }];
+    const out = tailBlocks(inB, 200);
+    assert.deepEqual(out[out.length - 1], { type: "thinking", text: "Working…" });
+  });
+  test("single oversized pre → hard-cut to last lines", () => {
+    const body = Array.from({ length: 200 }, (_, i) => `line-${i}`).join("\n");
+    const out = tailBlocks([PRE(body, "js")], 200);
+    assert.equal(out[0]?.type, "paragraph");
+    const pre = out[out.length - 1];
+    assert.equal(pre.type, "pre");
+    if (pre.type !== "pre") return;
+    assert.equal(pre.language, "js");
+    assert.ok(pre.text.length <= 200);
+    assert.ok(pre.text.endsWith("line-199"));
+  });
+  test("over block budget: suffix kept within count", () => {
+    const inB = many(600);
+    const out = tailBlocks(inB, 1_000_000, 480);
+    assert.ok(blockCount(out) <= 480);
+    assert.equal(out[0]?.type, "paragraph");
+  });
+});
+
+describe("chunkBlocks", () => {
+  const P = (s: string): TgBlock => ({ type: "paragraph", text: s });
+
+  test("fits in one chunk: no marker", () => {
+    const out = chunkBlocks([P("a"), P("b")]);
+    assert.equal(out.length, 1);
+    assert.deepEqual(out[0], [P("a"), P("b")]);
+  });
+  test("two chunks: second gets (continued) marker paragraph", () => {
+    const big = P("x".repeat(100));
+    const out = chunkBlocks([big, big], 150);
+    assert.equal(out.length, 2);
+    assert.equal(out[1][0]?.type, "paragraph");
+    if (out[1][0]?.type !== "paragraph") return;
+    assert.equal(out[1][0].text, "(continued)");
+    assert.ok(blocksLen(out[1]) <= 150);
+    assert.ok(blocksLen(out[0]) <= 150);
+  });
+  test("oversized pre splits at line boundaries, language re-emitted", () => {
+    const body = Array.from({ length: 50 }, (_, i) => `line-${i} padding padding`).join("\n");
+    const out = chunkBlocks([PRE(body, "py")], 200);
+    assert.ok(out.length >= 2);
+    for (const c of out) {
+      for (const b of c) {
+        if (b.type === "pre") {
+          assert.equal(b.language, "py");
+          assert.ok(blocksLen([b]) <= 200);
+        }
+      }
+    }
+    const all = out
+      .flatMap((c) => c.filter((b): b is Extract<TgBlock, { type: "pre" }> => b.type === "pre").map((b) => b.text))
+      .join("\n");
+    assert.ok(all.includes("line-0"));
+    assert.ok(all.includes("line-49"));
+  });
+  test("oversized table splits at row boundaries, header repeated", () => {
+    const cells: TgRichText[][] = [
+      [{ type: "bold", text: "h1" }, { type: "bold", text: "h2" }],
+      ...Array.from({ length: 30 }, (_, i) => [
+        { type: "code" as const, text: `row-${i}-aaaaaaaaaaaaaaaaaaaa` },
+        { type: "code" as const, text: `data-${i}-bbbbbbbbbbbbbbbbbbbb` },
+      ]),
+    ];
+    const out = chunkBlocks([{ type: "table", is_bordered: true, cells }], 200);
+    assert.ok(out.length >= 2);
+    for (const c of out) {
+      for (const b of c) {
+        if (b.type === "table") {
+          assert.deepEqual(b.cells[0], cells[0]);
+          assert.ok(blocksLen([b]) <= 200);
+        }
+      }
+    }
+  });
+  test("oversized ordered list splits at item boundaries, value continuation", () => {
+    const items = Array.from({ length: 40 }, (_, i) => ({
+      blocks: [P(`item-${i} aaaaaaaaaaaaa`)], type: "1" as const, value: i + 1,
+    }));
+    const out = chunkBlocks([{ type: "list", items }], 200);
+    assert.ok(out.length >= 2);
+    const lists = out.flatMap((c) => c.filter((b) => b.type === "list"));
+    assert.equal(lists[1].items[0].value, lists[0].items.length + 1);
+  });
+  test("oversized details unwraps: summary becomes leading paragraph", () => {
+    const inner = Array.from({ length: 40 }, (_, i) => P(`body-${i} aaaaaaaaaaaaa`));
+    const out = chunkBlocks([{ type: "details", summary: "the summary", blocks: inner }], 200);
+    assert.ok(out.length >= 1);
+    const first = out[0][0];
+    assert.equal(first?.type, "paragraph");
+    if (first?.type !== "paragraph") return;
+    assert.equal(first.text, "the summary");
+    assert.ok(!out.flat().some((b) => b.type === "details"));
+  });
+  test("every chunk respects BOTH budgets", () => {
+    const blocks: TgBlock[] = [];
+    for (let i = 0; i < 300; i++) blocks.push(P(`para ${i} ${"z".repeat(50)}`));
+    const out = chunkBlocks(blocks, 500, 40);
+    for (const c of out) {
+      assert.ok(blocksLen(c) <= 500, `len ${blocksLen(c)}`);
+      assert.ok(blockCount(c) <= 40, `count ${blockCount(c)}`);
+    }
+  });
+});
+
+describe("blocksToPlainText", () => {
+  const P = (s: string): TgBlock => ({ type: "paragraph", text: s });
+
+  test("paragraph/heading", () => {
+    assert.equal(blocksToPlainText([P("hello")]), "hello");
+    assert.equal(blocksToPlainText([{ type: "heading", text: "T", size: 2 }]), "T");
+  });
+  test("pre: bare lines", () => {
+    assert.equal(blocksToPlainText([PRE("a\nb", "js")]), "a\nb");
+  });
+  test("divider: line of dashes", () => {
+    const out = blocksToPlainText([{ type: "divider" }]);
+    assert.ok(/─{4,}/.test(out));
+  });
+  test("list: bullets, ordered numbers, checkboxes", () => {
+    const out = blocksToPlainText([
+      { type: "list", items: [
+        { blocks: [P("a")] },
+        { blocks: [P("b")], has_checkbox: true, is_checked: true },
+      ] },
+      { type: "list", items: [
+        { blocks: [P("x")], type: "1", value: 3 },
+      ] },
+    ]);
+    const lines = out.split("\n");
+    assert.ok(lines[0].includes("a"));
+    assert.ok(lines[1].includes("[x]") && lines[1].includes("b"));
+    assert.ok(lines[2].startsWith("3."));
+  });
+  test("table: pipe rows", () => {
+    const out = blocksToPlainText([
+      { type: "table", is_bordered: true, cells: [
+        [{ type: "bold", text: "h1" }, { type: "bold", text: "h2" }],
+        [{ type: "code", text: "a" }, { type: "code", text: "b" }],
+      ] },
+    ]);
+    const lines = out.split("\n");
+    assert.ok(lines[0].includes("| h1") && lines[0].includes("h2 |"));
+    assert.ok(lines[1].includes("| a") && lines[1].includes("b |"));
+  });
+  test("details: summary line + inner", () => {
+    const out = blocksToPlainText([
+      { type: "details", summary: "sum", blocks: [P("body")] },
+    ]);
+    const lines = out.split("\n");
+    assert.equal(lines[0], "sum");
+    assert.equal(lines[1], "body");
+  });
+  test("blockquote: inner text", () => {
+    assert.equal(blocksToPlainText([{ type: "blockquote", blocks: [P("q")] }]), "q");
+  });
+  test("link entity: text (href)", () => {
+    const out = blocksToPlainText([
+      { type: "paragraph", text: [{ type: "url", text: "t", url: "http://x.y" }] },
+    ]);
+    assert.equal(out, "t (http://x.y)");
+  });
+  test("thinking: its text (defensive)", () => {
+    assert.equal(blocksToPlainText([{ type: "thinking", text: "W" }]), "W");
   });
 });

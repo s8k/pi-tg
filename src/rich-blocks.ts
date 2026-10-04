@@ -356,3 +356,297 @@ export function blockCount(blocks: TgBlock[]): number {
   }
   return n;
 }
+
+// ─────────────────────────── Blocks pipeline ───────────────────────────
+
+const ELLIPSIS = "⋯";
+const CONTINUED = "(continued)";
+const HR_PLAIN = "────────";
+
+/**
+ * Fold long `pre` blocks (> foldLines lines) into closed `details`
+ * (summary: "code[, lang] (N lines)"). Short fences and non-pre blocks pass
+ * through. Structural replacement for the legacy foldLongFences string hack.
+ */
+export function foldBlocks(blocks: TgBlock[], foldLines = 25): TgBlock[] {
+  return blocks.map((b) => {
+    if (b.type !== "pre") return b;
+    const lines = b.text.split("\n");
+    if (lines.length <= foldLines) return b;
+    const summary = `code${b.language ? `, ${b.language}` : ""} (${lines.length} lines)`;
+    return { type: "details", summary, blocks: [b], is_open: false };
+  });
+}
+
+/**
+ * Draft overflow view: keep the SUFFIX of the block array within BOTH budgets
+ * (rendered chars AND block count), prefix a single "⋯" paragraph. The last
+ * block (typically `thinking`) is always kept. A single oversized `pre` is
+ * hard-cut to its last lines (the draft is a live preview).
+ */
+export function tailBlocks(blocks: TgBlock[], capChars = 32_000, capBlocks = 480): TgBlock[] {
+  if (blocksLen(blocks) <= capChars && blockCount(blocks) <= capBlocks) return blocks.slice();
+  const budget = Math.max(1, capChars - ELLIPSIS.length);
+  const keep: TgBlock[] = [];
+  let len = 0;
+  let cnt = 0;
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    const b = blocks[i];
+    const bl = blocksLen([b]);
+    const bc = blockCount([b]);
+    if (len + bl <= budget && cnt + bc <= capBlocks - 1) {
+      keep.unshift(b);
+      len += bl;
+      cnt += bc;
+    } else {
+      break;
+    }
+  }
+  if (keep.length === 0) {
+    // Single oversized last block: hard-cut a `pre` to its last lines;
+    // anything else (e.g. `thinking`) is kept whole — it is cheap and last.
+    const last = blocks[blocks.length - 1];
+    if (last && last.type === "pre") {
+      const lines = last.text.split("\n");
+      const tail: string[] = [];
+      let tl = 0;
+      for (let i = lines.length - 1; i >= 0; i--) {
+        const add = (tail.length > 0 ? 1 : 0) + lines[i].length;
+        if (tl + add > budget) break;
+        tail.unshift(lines[i]);
+        tl += add;
+      }
+      keep.push(tail.length > 0
+        ? (last.language ? { type: "pre", text: tail.join("\n"), language: last.language } : { type: "pre", text: tail.join("\n") })
+        : last);
+    } else if (last) {
+      keep.push(last);
+    }
+  }
+  return [{ type: "paragraph", text: ELLIPSIS }, ...keep];
+}
+
+/**
+ * Pack whole blocks into chunks within BOTH budgets (rendered chars AND block
+ * count; a fresh chunk starts a fresh count). Chunks ≥ 2 get a leading
+ * "(continued)" marker paragraph (its cost is reserved from chunk 2 on).
+ * An oversized single block is split structurally by type:
+ *  - pre → line boundaries (language re-emitted per piece)
+ *  - table → row boundaries (header row repeated per piece)
+ *  - list → item boundaries (ordered `value` carries the continuation)
+ *  - details → unwrapped (summary becomes a leading paragraph, inner re-packed)
+ *  - anything else → hard character cut (last resort)
+ */
+export function chunkBlocks(blocks: TgBlock[], capChars = 32_000, capBlocks = 480): TgBlock[][] {
+  const expanded = expandBlocks(blocks, capChars, capBlocks);
+  const raw: TgBlock[][] = [];
+  let cur: TgBlock[] = [];
+  let curLen = 0;
+  let curCnt = 0;
+  for (const b of expanded) {
+    const first = raw.length === 0 && cur.length === 0;
+    const capC = first ? capChars : capChars - CONTINUED.length - 1;
+    const capB = first ? capBlocks : capBlocks - 1;
+    const bl = blocksLen([b]);
+    const bc = blockCount([b]);
+    if (cur.length > 0 && (curLen + bl > capC || curCnt + bc > capB)) {
+      raw.push(cur);
+      cur = [];
+      curLen = 0;
+      curCnt = 0;
+    }
+    cur.push(b);
+    curLen += bl;
+    curCnt += bc;
+  }
+  if (cur.length > 0) raw.push(cur);
+  return raw.map((c, i) => (i === 0 ? c : [{ type: "paragraph", text: CONTINUED }, ...c]));
+}
+
+/** Replace each over-budget block with its structural split (recursively). */
+function expandBlocks(blocks: TgBlock[], capChars: number, capBlocks: number): TgBlock[] {
+  const out: TgBlock[] = [];
+  for (const b of blocks) {
+    const oversized = blocksLen([b]) > capChars || blockCount([b]) > capBlocks;
+    if (!oversized) { out.push(b); continue; }
+    switch (b.type) {
+      case "pre":
+        out.push(...splitPre(b, capChars));
+        break;
+      case "table":
+        out.push(...splitTable(b, capChars));
+        break;
+      case "list":
+        out.push(...splitList(b, capChars, capBlocks));
+        break;
+      case "details":
+        out.push({ type: "paragraph", text: b.summary });
+        out.push(...expandBlocks(b.blocks, capChars, capBlocks));
+        break;
+      default:
+        out.push(...hardSplitBlock(b, capChars));
+        break;
+    }
+  }
+  return out;
+}
+
+/** Split a pre at line boundaries; each piece re-emits the language. */
+function splitPre(b: Extract<TgBlock, { type: "pre" }>, cap: number): TgBlock[] {
+  const lines = b.text.split("\n");
+  const pieces: TgBlock[] = [];
+  let cur: string[] = [];
+  let len = 0;
+  const flush = () => {
+    if (cur.length > 0) {
+      pieces.push(b.language ? { type: "pre", text: cur.join("\n"), language: b.language } : { type: "pre", text: cur.join("\n") });
+      cur = [];
+      len = 0;
+    }
+  };
+  for (const line of lines) {
+    if (line.length > cap) {
+      flush();
+      for (let i = 0; i < line.length; i += cap) {
+        const piece = line.slice(i, i + cap);
+        pieces.push(b.language ? { type: "pre", text: piece, language: b.language } : { type: "pre", text: piece });
+      }
+      continue;
+    }
+    const add = (cur.length > 0 ? 1 : 0) + line.length;
+    if (len + add <= cap) { cur.push(line); len += add; }
+    else { flush(); cur = [line]; len = line.length; }
+  }
+  flush();
+  return pieces.length > 0 ? pieces : [b];
+}
+
+/** Split a table at row boundaries; the header row repeats per piece. */
+function splitTable(b: Extract<TgBlock, { type: "table" }>, cap: number): TgBlock[] {
+  const header = b.cells[0] ?? [];
+  const rows = b.cells.slice(1);
+  const headerLen = rows.length === 0 ? 0 : b.cells[0].reduce((n, c) => n + richTextLen(c), 0);
+  const pieces: TgBlock[] = [];
+  let cur: TgRichText[][] = [];
+  let len = 0;
+  const flush = () => {
+    if (cur.length > 0) {
+      pieces.push({ type: "table", is_bordered: b.is_bordered, cells: [header, ...cur] });
+      cur = [];
+      len = 0;
+    }
+  };
+  for (const row of rows) {
+    const rl = row.reduce((n, c) => n + richTextLen(c), 0);
+    if (rl + headerLen > cap) {
+      // One over-long row: emit as its own piece (cell-splitting is not a
+      // block-tier operation; the plain rung is the backstop).
+      flush();
+      pieces.push({ type: "table", is_bordered: b.is_bordered, cells: [header, row] });
+      continue;
+    }
+    if (len + rl > cap) flush();
+    cur.push(row);
+    len += rl;
+  }
+  flush();
+  return pieces.length > 0 ? pieces : [b];
+}
+
+/** Split a list at item boundaries; ordered `value`s carry the continuation. */
+function splitList(b: Extract<TgBlock, { type: "list" }>, cap: number, capB: number): TgBlock[] {
+  const pieces: TgBlock[] = [];
+  let cur: TgListItem[] = [];
+  let len = 0;
+  let cnt = 0;
+  const flush = () => {
+    if (cur.length > 0) {
+      pieces.push({ type: "list", items: cur });
+      cur = [];
+      len = 0;
+      cnt = 0;
+    }
+  };
+  for (const it of b.items) {
+    const il = blocksLen(it.blocks);
+    const ic = blockCount(it.blocks) + 1;
+    if (cur.length > 0 && (len + il > cap || cnt + ic > capB)) flush();
+    cur.push(it);
+    len += il;
+    cnt += ic;
+  }
+  flush();
+  return pieces.length > 0 ? pieces : [b];
+}
+
+/** Last resort: hard-cut a block's text (paragraph/heading/thinking). */
+function hardSplitBlock(b: TgBlock, cap: number): TgBlock[] {
+  if (b.type !== "paragraph" && b.type !== "heading" && b.type !== "thinking") return [b];
+  const text = richTextToPlain(b.text);
+  const pieces: TgBlock[] = [];
+  for (let i = 0; i < text.length; i += cap) {
+    const piece = text.slice(i, i + cap);
+    if (b.type === "heading") {
+      pieces.push(i === 0 ? { type: "heading", text: piece, size: b.size } : { type: "paragraph", text: piece });
+    } else {
+      pieces.push({ type: b.type, text: piece });
+    }
+  }
+  return pieces.length > 0 ? pieces : [b];
+}
+
+/**
+ * Blocks → plain text (the terminal fallback rung + blocksToPlainText for the
+ * plain demotion). Recursive walk: pre → bare lines, details → summary line +
+ * inner, table → pipe rows, list → "- " / "N. " items, links → "text (href)".
+ */
+export function blocksToPlainText(blocks: TgBlock[]): string {
+  const lines: string[] = [];
+  const walk = (bs: TgBlock[]): void => {
+    for (const b of bs) {
+      switch (b.type) {
+        case "paragraph":
+        case "heading":
+        case "thinking":
+          lines.push(richTextToPlain(b.text));
+          break;
+        case "pre":
+          lines.push(b.text);
+          break;
+        case "divider":
+          lines.push(HR_PLAIN);
+          break;
+        case "list":
+          for (const it of b.items) {
+            const body = blocksToPlainText(it.blocks).replace(/\n/g, " ");
+            const box = it.has_checkbox ? `[${it.is_checked ? "x" : " "}] ` : "";
+            const num = it.type && it.value !== undefined ? `${it.value}. ` : "- ";
+            lines.push(num + box + body);
+          }
+          break;
+        case "blockquote":
+          walk(b.blocks);
+          break;
+        case "details":
+          lines.push(richTextToPlain(b.summary));
+          walk(b.blocks);
+          break;
+        case "table":
+          for (const row of b.cells) {
+            lines.push("| " + row.map((c) => richTextToPlain(c)).join(" | ") + " |");
+          }
+          break;
+      }
+    }
+  };
+  walk(blocks);
+  return lines.join("\n");
+}
+
+/** RichText → plain text (links degrade to "text (href)", the legacy behavior). */
+export function richTextToPlain(rt: TgRichText): string {
+  if (typeof rt === "string") return rt;
+  if (Array.isArray(rt)) return rt.map(richTextToPlain).join("");
+  if (rt.type === "url") return `${richTextToPlain(rt.text)} (${rt.url})`;
+  return richTextToPlain(rt.text);
+}
