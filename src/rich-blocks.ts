@@ -438,7 +438,11 @@ export function tailBlocks(blocks: TgBlock[], capChars = 32_000, capBlocks = 480
  *  - anything else → hard character cut (last resort)
  */
 export function chunkBlocks(blocks: TgBlock[], capChars = 32_000, capBlocks = 480): TgBlock[][] {
-  const expanded = expandBlocks(blocks, capChars, capBlocks);
+  // reserve the (continued) marker budget for splitting too — a structural
+  // piece packed to the full cap would leave no room for the marker in
+  // chunks 2+ (the marker rides ON TOP of the piece's content).
+  const effCap = capChars - CONTINUED.length - 1;
+  const expanded = expandBlocks(blocks, effCap, capBlocks);
   const raw: TgBlock[][] = [];
   let cur: TgBlock[] = [];
   let curLen = 0;

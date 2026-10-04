@@ -15,6 +15,13 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { blocksToPlainText, type TgBlock } from "../src/rich-blocks.ts";
+
+/** The wire text of a rich call: the blocks' plain rendering (or the plain body text). */
+const richText = (body: Record<string, unknown> | undefined): string => {
+  const blocks = (body?.rich_message as { blocks?: unknown[] } | undefined)?.blocks;
+  return blocks ? blocksToPlainText(blocks as TgBlock[]) : String(body?.text ?? "");
+};
 
 const agentDir = mkdtempSync(join(tmpdir(), "pi-tg-reload-"));
 process.env.PI_CODING_AGENT_DIR = agentDir;
@@ -342,11 +349,11 @@ test("mid-run dialog: the live draft is segmented BEFORE the dialog message, and
   assert.notEqual(segIdx, -1, "the segment was sent");
   assert.ok(segIdx < dlgIdx, "the segment landed before the dialog message (chronological order)");
   assert.ok(
-    String((calls[segIdx]?.body.rich_message as { markdown?: string })?.markdown ?? "").includes("working on it"),
+    richText(calls[segIdx]?.body).includes("working on it"),
     "the segment carries the pre-dialog work",
   );
   assert.ok(
-    String((calls[segIdx]?.body.rich_message as { markdown?: string })?.markdown ?? "").includes("⏸️ Paused — answer the dialog below"),
+    richText(calls[segIdx]?.body).includes("⏸️ Paused — answer the dialog below"),
     "the segment ends with the paused status line",
   );
 
@@ -355,9 +362,9 @@ test("mid-run dialog: the live draft is segmented BEFORE the dialog message, and
   handlersE.get("message_start")!({ message: { role: "assistant", content: [{ type: "text", text: "" }] } }, ctx);
   handlersE.get("message_update")!({ message: { role: "assistant", content: [{ type: "text", text: "post-dialog" }] } }, ctx);
   await waitFor(
-    () => calls.some((c) => c.method === "sendRichMessageDraft" && String((c.body.rich_message as { markdown?: string })?.markdown ?? "").includes("post-dialog")),
+    () => calls.some((c) => c.method === "sendRichMessageDraft" && richText(c.body).includes("post-dialog")),
     "post-answer draft re-spawned",
   );
   const lastDraft = [...calls].reverse().find((c) => c.method === "sendRichMessageDraft")!;
-  assert.ok(!String((lastDraft.body.rich_message as { markdown?: string })?.markdown ?? "").includes("working on it"), "the pre-dialog content was segmented out");
+  assert.ok(!richText(lastDraft.body).includes("working on it"), "the pre-dialog content was segmented out");
 });

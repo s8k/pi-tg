@@ -2,6 +2,7 @@ import type { Out, TelegramPi, PiContextUsage, PiSessionInfo } from "./session-b
 import { compactTokenDetail } from "./mirror.ts";
 import type { PiModel, PiThinkingLevel } from "./thinking.ts";
 import type { TelegramState } from "./state.ts";
+import type { TgBlock } from "./rich-blocks.ts";
 
 // ── Local structural mirrors of pi 0.84.4 (keeps wiring.ts pi-free & testable) ──
 
@@ -44,8 +45,8 @@ export interface ClientLike {
   sendMessage(chatId: number, text: string, opts?: { parseMode?: "HTML" | null; replyToId?: number; replyMarkup?: unknown; disableNotification?: boolean }): Promise<{ message_id: number }>;
   editMessageText(chatId: number, messageId: number, text: string, opts?: { parseMode?: "HTML" | null; replyMarkup?: unknown }): Promise<boolean>;
   deleteMessage(chatId: number, messageId: number): Promise<void>;
-  sendRichMessage(chatId: number, rich: { markdown?: string }, opts?: { replyToId?: number; disableNotification?: boolean }): Promise<{ message_id: number }>;
-  sendRichMessageDraft(chatId: number, draftId: number, rich: { markdown?: string }, canStop?: boolean, keepOnStop?: boolean): Promise<boolean>;
+  sendRichMessage(chatId: number, rich: { blocks: TgBlock[] }, opts?: { replyToId?: number; disableNotification?: boolean }): Promise<{ message_id: number }>;
+  sendRichMessageDraft(chatId: number, draftId: number, rich: { blocks: TgBlock[] }, canStop?: boolean, keepOnStop?: boolean): Promise<boolean>;
 }
 
 // ── Out adapter: client + state tracking + persist ──
@@ -59,14 +60,14 @@ export function makeOut(client: ClientLike, state: TelegramState, persist: () =>
       await persist();
       return sent.message_id;
     },
-    async sendRich(chatId, md, opts) {
-      const sent = await client.sendRichMessage(chatId, { markdown: md }, opts);
+    async sendRich(chatId, blocks, opts) {
+      const sent = await client.sendRichMessage(chatId, { blocks }, opts);
       state.addSent(sent.message_id);
       await persist();
       return sent.message_id;
     },
-    sendDraft: (chatId, draftId, md, canStop, keepOnStop) =>
-      client.sendRichMessageDraft(chatId, draftId, { markdown: md }, canStop, keepOnStop),
+    sendDraft: (chatId, draftId, blocks, canStop, keepOnStop) =>
+      client.sendRichMessageDraft(chatId, draftId, { blocks }, canStop, keepOnStop),
     edit: (chatId, messageId, text, opts) => {
       const parseMode: "HTML" | null = opts && opts.parseMode !== undefined ? opts.parseMode : "HTML";
       return client.editMessageText(chatId, messageId, text, { parseMode, replyMarkup: opts?.replyMarkup });

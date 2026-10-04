@@ -104,7 +104,7 @@ test("compact: spinner draft (canStop, keepOnStop) + stamped persistent result",
   await bridge.dispatch({ kind: "compact", chatId: 7 });
   const draft = out.calls[0]!;
   assert.equal(draft.kind, "sendDraft"); // the in-progress state is an EPHEMERAL draft, never a message
-  assert.equal(draft.text, "<tg-thinking>🗜 Compacting context…</tg-thinking>");
+  assert.equal(draft.text, "🗜 Compacting context…"); // thinking block's plain rendering
   assert.equal(draft.canStop, true); // the native Stop button cancels the compaction
   assert.equal(draft.keepOnStop, true);
   assert.ok(draft.draftId! >= 1_000_000, "compact drafts live in their own id namespace");

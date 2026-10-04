@@ -9,6 +9,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { SessionBridge } from "../src/session-bridge.ts";
 import { FakeOut, FakePi } from "./fake-pi.ts";
+import { blocksToPlainText } from "../src/rich-blocks.ts";
 import { makeDeps } from "./helpers.ts";
 
 const tick = (): Promise<void> => new Promise((r) => setImmediate(r));
@@ -22,7 +23,7 @@ test("autoCompactStart: a standalone ephemeral draft (no Stop button); finish(ok
   await tick();
   const spawn = out.calls[0]!;
   assert.equal(spawn.kind, "sendDraft");
-  assert.equal(spawn.text, "<tg-thinking>🗜 Auto-compacting…</tg-thinking>");
+  assert.equal(spawn.text, "🗜 Auto-compacting…"); // thinking block's plain rendering
   assert.equal(spawn.canStop, false, "no Stop button — nothing bot-side can cancel an auto-compact");
   assert.ok(spawn.draftId !== undefined && spawn.draftId >= 1_000_000, "shares the compact draft id namespace");
 
@@ -109,8 +110,8 @@ test("the draft never went up: finish still attempts the stamp (harmless) and se
   const pi = new FakePi();
   const out = new FakeOut();
   // the draft never lands (the fake still records the attempts)
-  out.sendDraft = async (chatId, draftId, md, canStop, keepOnStop) => {
-    out.calls.push({ kind: "sendDraft", chatId, text: md, draftId, canStop, keepOnStop });
+  out.sendDraft = async (chatId, draftId, blocks, canStop, keepOnStop) => {
+    out.calls.push({ kind: "sendDraft", chatId, blocks, text: blocksToPlainText(blocks), draftId, canStop, keepOnStop });
     return false;
   };
   const bridge = new SessionBridge(makeDeps(pi.build(), out));

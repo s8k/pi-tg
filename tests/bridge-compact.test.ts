@@ -4,7 +4,8 @@
 // duplicate-compaction guard.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { SessionBridge, COMPACT_DRAFT_MD } from "../src/session-bridge.ts";
+import { SessionBridge, COMPACT_DRAFT } from "../src/session-bridge.ts";
+import { blocksToPlainText } from "../src/rich-blocks.ts";
 import { FakeOut, FakePi } from "./fake-pi.ts";
 import { makeDeps, lastSend } from "./helpers.ts";
 
@@ -18,7 +19,7 @@ test("compact (idle): spinner draft first, then the stamped persistent result", 
   assert.equal(pi.compactCalls, 1, "pi.compact is called (idle: after the draft)");
   const draft = out.calls[0]!;
   assert.equal(draft.kind, "sendDraft");
-  assert.equal(draft.text, COMPACT_DRAFT_MD);
+  assert.equal(draft.text, blocksToPlainText(COMPACT_DRAFT));
   assert.equal(draft.canStop, true);
   assert.equal(draft.keepOnStop, true);
   assert.equal(draft.draftId, 1_000_001, "ids are base + increasing seq");
@@ -66,7 +67,7 @@ test("compact (busy): compact is triggered FIRST, the draft waits for waitForIdl
   await d;
   const draft = out.calls[0]!;
   assert.equal(draft.kind, "sendDraft");
-  assert.equal(draft.text, COMPACT_DRAFT_MD);
+  assert.equal(draft.text, blocksToPlainText(COMPACT_DRAFT));
   assert.equal(draft.canStop, true);
   assert.equal(draft.keepOnStop, true);
 
@@ -199,7 +200,7 @@ test("compact heartbeat: the draft is re-sent every draftHeartbeatMs and cleared
   await new Promise((r) => setTimeout(r, 45)); // several heartbeat ticks (10 ms period)
   const heartbeats = out.calls.filter((c) => c.kind === "sendDraft" && c.draftId === spawn.draftId);
   assert.ok(heartbeats.length >= 3, `spawn + heartbeats (got ${heartbeats.length})`);
-  assert.equal(heartbeats[1]!.text, COMPACT_DRAFT_MD);
+  assert.equal(heartbeats[1]!.text, blocksToPlainText(COMPACT_DRAFT));
   assert.equal(heartbeats[1]!.canStop, true, "the Stop button stays available during the heartbeat");
 
   pi.compactDone?.(true, "1,000 → 100 tokens");
@@ -269,7 +270,7 @@ test("prompt while manual compact in progress → rejected (B6); nothing sent to
   assert.equal(calls[0]!.kind, "send", "the rejection is a plain persistent send (notifies)");
   assert.equal(calls[0]!.text, "🗜 Compaction already in progress — resend your prompt after it finishes");
   assert.equal(calls[1]!.kind, "sendDraft", "…then the compact draft is re-raised immediately");
-  assert.equal(calls[1]!.text, COMPACT_DRAFT_MD);
+  assert.equal(calls[1]!.text, blocksToPlainText(COMPACT_DRAFT));
 });
 
 test("B6 rejection re-raises the compact draft IMMEDIATELY (the plain send dismisses the pending draft)", async () => {
@@ -277,7 +278,7 @@ test("B6 rejection re-raises the compact draft IMMEDIATELY (the plain send dismi
   const out = new FakeOut();
   const bridge = new SessionBridge(makeDeps(pi.build(), out));
   await bridge.dispatch({ kind: "compact", chatId: 7 });
-  const draftIdx = out.calls.findIndex((c) => c.kind === "sendDraft" && c.text === COMPACT_DRAFT_MD);
+  const draftIdx = out.calls.findIndex((c) => c.kind === "sendDraft" && c.text === blocksToPlainText(COMPACT_DRAFT));
   assert.ok(draftIdx >= 0, "the compact draft went up");
   const draftId = out.calls[draftIdx]!.draftId!;
   await bridge.dispatch({ kind: "prompt", chatId: 7, text: "hello" });
@@ -287,7 +288,7 @@ test("B6 rejection re-raises the compact draft IMMEDIATELY (the plain send dismi
   const calls = out.calls.slice(draftIdx + 1);
   assert.deepEqual(calls.map((c) => c.kind), ["send", "sendDraft"]);
   assert.equal(calls[0]!.text, "🗜 Compaction already in progress — resend your prompt after it finishes");
-  assert.equal(calls[1]!.text, COMPACT_DRAFT_MD);
+  assert.equal(calls[1]!.text, blocksToPlainText(COMPACT_DRAFT));
   assert.equal(calls[1]!.draftId, draftId, "the SAME draft id is re-raised");
 });
 

@@ -5,6 +5,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Mirror, type MirrorMessage } from "../src/mirror.ts";
+import type { TgBlock } from "../src/rich-blocks.ts";
 import { makeMirrorDeps, tick } from "./mirror-helpers.ts";
 
 const textMsg = (text: string, extra: Partial<MirrorMessage> = {}): MirrorMessage => ({
@@ -40,9 +41,9 @@ test("whenSettled: pending while the final send is still in flight — the order
   let released = false;
   const gates: (() => void)[] = [];
   const realSendRich = h.out.sendRich.bind(h.out);
-  h.out.sendRich = async (chatId: number, md: string) => {
+  h.out.sendRich = async (chatId: number, blocks: TgBlock[]) => {
     if (!released) await new Promise<void>((r) => gates.push(r));
-    return realSendRich(chatId, md);
+    return realSendRich(chatId, blocks);
   };
   const release = (): void => {
     released = true;
@@ -71,9 +72,9 @@ test("whenSettled: a new run starts while the old settle is pending → the old 
   let released = false;
   const gates: (() => void)[] = [];
   const realSendRich = h.out.sendRich.bind(h.out);
-  h.out.sendRich = async (chatId: number, md: string) => {
+  h.out.sendRich = async (chatId: number, blocks: TgBlock[]) => {
     if (!released) await new Promise<void>((r) => gates.push(r));
-    return realSendRich(chatId, md);
+    return realSendRich(chatId, blocks);
   };
   const release = (): void => {
     released = true;

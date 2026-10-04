@@ -1,5 +1,6 @@
 import type { TelegramPi, PiModelInfo, PiSessionInfo, PiContextUsage } from "../src/session-bridge.ts";
 import type { PiModel, PiThinkingLevel } from "../src/thinking.ts";
+import { blocksToPlainText, type TgBlock } from "../src/rich-blocks.ts";
 
 export interface FakePiOptions {
   cwd?: string;
@@ -93,6 +94,7 @@ export interface FakeOutCall {
   chatId: number;
   messageId?: number;
   text?: string;
+  blocks?: TgBlock[];
   opts?: { parseMode?: "HTML" | null; replyToId?: number; replyMarkup?: unknown; disableNotification?: boolean };
   draftId?: number;
   canStop?: boolean;
@@ -123,15 +125,15 @@ export class FakeOut {
   delete = async (chatId: number, messageId: number): Promise<void> => {
     this.calls.push({ kind: "delete", chatId, messageId });
   };
-  sendRich = async (chatId: number, md: string, opts?: { disableNotification?: boolean }): Promise<number | undefined> => {
+  sendRich = async (chatId: number, blocks: TgBlock[], opts?: { disableNotification?: boolean }): Promise<number | undefined> => {
     const attempt = this.sendRichAttempts++;
     const err = this.sendRichFailScript ? this.sendRichFailScript(attempt) : this.sendRichFailsWith;
     if (err) throw err;
-    this.calls.push({ kind: "sendRich", chatId, text: md, opts });
+    this.calls.push({ kind: "sendRich", chatId, blocks, text: blocksToPlainText(blocks), opts });
     return this.nextMessageId++;
   };
-  sendDraft = async (chatId: number, draftId: number, md: string, canStop?: boolean, keepOnStop?: boolean): Promise<boolean> => {
-    this.calls.push({ kind: "sendDraft", chatId, text: md, draftId, canStop, keepOnStop });
+  sendDraft = async (chatId: number, draftId: number, blocks: TgBlock[], canStop?: boolean, keepOnStop?: boolean): Promise<boolean> => {
+    this.calls.push({ kind: "sendDraft", chatId, blocks, text: blocksToPlainText(blocks), draftId, canStop, keepOnStop });
     return true;
   };
 }

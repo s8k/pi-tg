@@ -14,6 +14,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { blocksToPlainText, type TgBlock } from "../src/rich-blocks.ts";
 
 const agentDir = mkdtempSync(join(tmpdir(), "pi-tg-smoke-"));
 process.env.PI_CODING_AGENT_DIR = agentDir;
@@ -112,7 +113,8 @@ function fakeWire(calls: WireCall[]): { restore: () => void; ownerLearned: () =>
     const u = String(url);
     const method = u.split("/").pop() ?? "";
     const body = (init?.body ? JSON.parse(String(init.body)) : {}) as Record<string, unknown>;
-    calls.push({ method, body, markdown: String((body.rich_message as { markdown?: string } | undefined)?.markdown ?? "") });
+    const blocks = (body.rich_message as { blocks?: unknown[] } | undefined)?.blocks;
+    calls.push({ method, body, markdown: blocks ? blocksToPlainText(blocks as TgBlock[]) : "" });
     if (method === "getMe")
       return new Response(JSON.stringify({ ok: true, result: { id: 1, is_bot: true, first_name: "Tg", username: "tgb" } }), { status: 200 });
     if (method === "getUpdates") {
@@ -278,7 +280,7 @@ test("index.ts wiring: events → mirror → client wire (full clean run)", asyn
   const preview = calls
     .filter((c) => c.method === "sendRichMessageDraft" && c.markdown.includes("Completed ✔️"))
     .pop()!;
-  assert.ok(!preview.markdown.includes("---"), "no divider between the log and the answer");
+  assert.ok(!preview.markdown.includes("─"), "no divider between the log and the answer");
   const pOrder = [preview.markdown.indexOf("⚙ read ✖"), preview.markdown.indexOf("Completed ✔️"), preview.markdown.indexOf("The answer is 42.")];
   assert.ok(pOrder.every((i) => i >= 0), `all parts in the preview, got: ${JSON.stringify(preview.markdown)}`);
   assert.ok(pOrder[0]! < pOrder[1]! && pOrder[1]! < pOrder[2]!, `wrong preview order: ${pOrder}`);
@@ -294,7 +296,7 @@ test("index.ts wiring: events → mirror → client wire (full clean run)", asyn
   assert.ok(m1.markdown.includes("⚙ read ✖"), "the failed tool block is in m1");
   assert.ok(m1.markdown.includes("Completed ✔️"), "m1 ends with the marker");
   assert.ok(!m1.markdown.includes("The answer is 42."), "the answer is cut from m1");
-  assert.ok(!m1.markdown.includes("---"), "no divider in m1");
+  assert.ok(!m1.markdown.includes("─"), "no divider in m1");
   assert.equal(m2.markdown, "The answer is 42.", "m2 is the answer, verbatim");
   const draftIdx = calls.indexOf(calls.filter((c) => c.method === "sendRichMessageDraft" && c.markdown.includes("Completed ✔️")).pop()!);
   assert.ok(draftIdx < calls.indexOf(m1) && calls.indexOf(m1) < calls.indexOf(m2), "chronology: completed-state draft → m1 → m2");
@@ -613,8 +615,10 @@ test("dialog mirroring E2E: extension select → TG buttons → owner tap wins (
   //    dialog must not add one (the TG dialog is the notification itself).
   // The work-log line lives in the LIVE DRAFT (rich_message.markdown), not in
   // plain sends — look at both shapes.
-  const wireText = (c: WireCall): string =>
-    String((c.body.rich_message as { markdown?: string } | undefined)?.markdown ?? c.body.text ?? "");
+  const wireText = (c: WireCall): string => {
+    const blocks = (c.body.rich_message as { blocks?: unknown[] } | undefined)?.blocks;
+    return blocks ? blocksToPlainText(blocks as TgBlock[]) : String(c.body.text ?? "");
+  };
   handlers.get("ui_prompt_start")!({ title: "unmirrored prompt" });
   await waitFor(
     () => calls.some((c) => wireText(c).includes("⚠️ terminal prompt: unmirrored prompt")),

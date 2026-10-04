@@ -6,6 +6,7 @@ import type { PiModel, PiThinkingLevel } from "./thinking.ts";
 import { supportedThinkingLevels } from "./thinking.ts";
 import { pairWelcome, notAuthorizedText } from "./onboarding.ts";
 import { escapeHtml } from "./markdown.ts";
+import { mdToBlocks, type TgBlock } from "./rich-blocks.ts";
 import { formatGpuLines, type GpuStats } from "./gpu.ts";
 import { COMPACT_CANCELLED_MSG } from "./compact.ts";
 import { AUTO_COMPACT_STATUS, AUTO_COMPACT_DONE_TEXT, fmtTokens } from "./mirror.ts";
@@ -94,10 +95,10 @@ export interface Out {
     opts?: { parseMode?: "HTML" | null; replyMarkup?: unknown }
   ): Promise<boolean>; // false = text unchanged (not an error)
   delete(chatId: number, messageId: number): Promise<void>; // idempotent
-  /** Rich message (markdown pass-through); records the sent id; returns it. `disableNotification` suppresses the notification sound (persistent sends only — drafts cannot). */
-  sendRich(chatId: number, md: string, opts?: { disableNotification?: boolean }): Promise<number | undefined>;
-  /** Ephemeral draft; the same draftId refreshes in place. keepOnStop keeps the draft when Stop is pressed. */
-  sendDraft(chatId: number, draftId: number, md: string, canStop?: boolean, keepOnStop?: boolean): Promise<boolean>;
+  /** Blocks-tier rich message (Bot API 10.2+); records the sent id; returns it. `disableNotification` suppresses the notification sound (persistent sends only — drafts cannot). */
+  sendRich(chatId: number, blocks: TgBlock[], opts?: { disableNotification?: boolean }): Promise<number | undefined>;
+  /** Ephemeral draft (blocks-tier; `thinking` blocks are allowed here — never in persistent sends). The same draftId refreshes in place. keepOnStop keeps the draft when Stop is pressed. */
+  sendDraft(chatId: number, draftId: number, blocks: TgBlock[], canStop?: boolean, keepOnStop?: boolean): Promise<boolean>;
 }
 
 export interface BridgeDeps {
@@ -168,9 +169,9 @@ export function helpText(): string {
 // Draft ids live in their own namespace: the mirror uses 1.., compact starts
 // at 1_000_000.
 const COMPACT_DRAFT_ID_BASE = 1_000_000;
-export const COMPACT_DRAFT_MD = "<tg-thinking>🗜 Compacting context…</tg-thinking>";
+export const COMPACT_DRAFT: TgBlock[] = [{ type: "thinking", text: "🗜 Compacting context…" }];
 /** Lane-1 auto-compact draft content: the C1 status, wrapped in the ephemeral thinking block. */
-const AUTO_COMPACT_DRAFT_MD = `<tg-thinking>${AUTO_COMPACT_STATUS}</tg-thinking>`;
+const AUTO_COMPACT_DRAFT: TgBlock[] = [{ type: "thinking", text: AUTO_COMPACT_STATUS }];
 
 /** The in-progress state of a TG-initiated /compact (see case "compact"). */
 interface CompactState {
@@ -229,7 +230,7 @@ export class SessionBridge {
     if (c.draftId !== 0) {
       // The stamped state lands in the draft FIRST — the user sees the draft
       // morph into the result before the persistent message replaces it.
-      const stamp = cancelled ? "⏹️ Stopping… ✔️" : text;
+      const stamp = mdToBlocks(cancelled ? "⏹️ Stopping… ✔️" : text);
       await out.sendDraft(c.chatId, c.draftId, stamp, false /* no Stop button — it is over */).catch(() => {});
     }
     // A failed send must not become an unhandled rejection.
@@ -243,7 +244,7 @@ export class SessionBridge {
       this.compactHbTimer = undefined;
       const c = this.compactState;
       if (!c || c.draftId === 0) return; // finished or the draft never went up
-      void this.deps.out.sendDraft(c.chatId, c.draftId, COMPACT_DRAFT_MD, true, true).catch(() => {});
+      void this.deps.out.sendDraft(c.chatId, c.draftId, COMPACT_DRAFT, true, true).catch(() => {});
       this.armCompactHeartbeat();
     };
     const t = setTimeout(tick, this.deps.cfg.draftHeartbeatMs);
@@ -282,7 +283,7 @@ export class SessionBridge {
     const state: { chatId: number; draftId: number } = { chatId, draftId };
     this.autoCompactState = state;
     void this.deps.out
-      .sendDraft(chatId, draftId, AUTO_COMPACT_DRAFT_MD, false /* no Stop button */, true /* keepOnStop */)
+      .sendDraft(chatId, draftId, AUTO_COMPACT_DRAFT, false /* no Stop button */, true /* keepOnStop */)
       .then((up) => {
         if (this.autoCompactState !== state) return; // finished / superseded meanwhile
         if (up) this.armAutoCompactHeartbeat(); // landed: the draft expires after ~30 s — keep it alive
@@ -312,7 +313,7 @@ export class SessionBridge {
       ? `${AUTO_COMPACT_DONE_TEXT}${detail ? ` ${detail}` : ""}`
       : `⚠️ ${detail ?? "compaction failed"}`;
     if (s.draftId !== 0) {
-      await this.deps.out.sendDraft(s.chatId, s.draftId, text, false).catch(() => {});
+      await this.deps.out.sendDraft(s.chatId, s.draftId, mdToBlocks(text), false).catch(() => {});
     }
     await this.deps.out.send(s.chatId, text, { parseMode: null }).catch(() => {});
   }
@@ -324,7 +325,7 @@ export class SessionBridge {
       this.autoCompactHbTimer = undefined;
       const s = this.autoCompactState;
       if (!s || s.draftId === 0) return;
-      void this.deps.out.sendDraft(s.chatId, s.draftId, AUTO_COMPACT_DRAFT_MD, false, true).catch(() => {});
+      void this.deps.out.sendDraft(s.chatId, s.draftId, AUTO_COMPACT_DRAFT, false, true).catch(() => {});
       this.armAutoCompactHeartbeat();
     };
     const t = setTimeout(tick, this.deps.cfg.draftHeartbeatMs);
@@ -477,7 +478,7 @@ export class SessionBridge {
           // draft to restore).
           const c = this.compactState;
           if (c && c.draftId !== 0)
-            void out.sendDraft(c.chatId, c.draftId, COMPACT_DRAFT_MD, true, true).catch(() => {});
+            void out.sendDraft(c.chatId, c.draftId, COMPACT_DRAFT, true, true).catch(() => {});
           return;
         }
         // T6 early draft: the spinner goes out as soon as the prompt is
@@ -505,7 +506,7 @@ export class SessionBridge {
           pi.abort();
           if (compacting.draftId !== 0)
             void out
-              .sendDraft(compacting.chatId, compacting.draftId, "⏹️ Stopping…", false /* the draft is about to be stamped (finishCompact) */)
+              .sendDraft(compacting.chatId, compacting.draftId, mdToBlocks("⏹️ Stopping…"), false /* the draft is about to be stamped (finishCompact) */)
               .catch(() => {});
           return; // the final "⚠️ Compaction cancelled" comes via finishCompact
         }
@@ -562,7 +563,7 @@ export class SessionBridge {
         if (!this.compactState.stopRequested) {
           const draftId = COMPACT_DRAFT_ID_BASE + ++this.compactDraftSeq;
           draftUp = await out
-            .sendDraft(action.chatId, draftId, COMPACT_DRAFT_MD, true /* canStop */, true /* keepOnStop — the bot persists it as the stamped result */)
+            .sendDraft(action.chatId, draftId, COMPACT_DRAFT, true /* canStop */, true /* keepOnStop — the bot persists it as the stamped result */)
             .catch(() => false);
           if (!this.compactState) return; // onDone raced past the draft send
           if (draftUp) {

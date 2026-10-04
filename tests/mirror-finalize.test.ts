@@ -16,6 +16,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Mirror, type MirrorMessage } from "../src/mirror.ts";
 import { RICH_CAP } from "../src/markdown.ts";
+import { blocksLen } from "../src/rich-blocks.ts";
 import { TgError } from "../src/telegram-client.ts";
 import { makeMirrorDeps, tick } from "./mirror-helpers.ts";
 import type { FakeOutCall } from "./fake-pi.ts";
@@ -122,7 +123,7 @@ test("long log: m1 is chunked at the rich cap; the answer is the final send", as
 
   const rich = richCalls(h);
   assert.ok(rich.length > 2, `expected a chunked m1 + m2, got ${rich.length}`);
-  for (const c of rich) assert.ok((c.text?.length ?? 0) <= RICH_CAP + 8, `chunk within cap, got ${c.text?.length}`);
+  for (const c of rich) assert.ok(blocksLen(c.blocks ?? []) <= RICH_CAP, `chunk within the rendered cap, got ${blocksLen(c.blocks ?? [])}`);
   const markerIdx = rich.findIndex((c) => c.text?.includes("Completed ✔️"));
   assert.ok(markerIdx >= 0, "the marker chunk exists");
   assert.ok(markerIdx < rich.length - 1, "m2 follows the last m1 chunk");
@@ -130,22 +131,22 @@ test("long log: m1 is chunked at the rich cap; the answer is the final send", as
   assert.ok(!rich[rich.length - 2]?.text?.includes("The answer is 42."), "the answer is not in the last m1 chunk");
 });
 
-test("rich 400 → both messages fall back to HTML chunks", async () => {
+test("rich 400 → both messages fall back to plain chunks", async () => {
   const h = makeMirrorDeps({ streamEditMs: 0 });
   h.out.sendRichFailsWith = new TgError("sendRichMessage", 400, "rich parse error");
   const m = await runToConfirm(h);
   await m.onAssistantEnd(textMsg("The answer is 42.", { stopReason: "stop" }));
   await tick();
 
-  const html = h.out.calls.filter((c) => c.kind === "send" && c.opts?.parseMode === "HTML");
-  assert.ok(html.some((c) => c.text?.includes("Completed ✔️")), "m1 via the HTML path");
-  assert.ok(html.some((c) => c.text === "The answer is 42."), "m2 via the HTML path");
+  // the HTML tier retires with the blocks migration — a 400 demotes straight to plain text
+  const plain = h.out.calls.filter((c) => c.kind === "send" && c.opts?.parseMode === null);
+  assert.ok(plain.some((c) => c.text?.includes("Completed ✔️")), "m1 via the plain path");
+  assert.ok(plain.some((c) => c.text === "The answer is 42."), "m2 via the plain path");
 });
 
-test("rich 400 AND html 400 → both messages plain text (no parse mode)", async () => {
+test("rich 400 → both messages plain text (no parse mode)", async () => {
   const h = makeMirrorDeps({ streamEditMs: 0 });
   h.out.sendRichFailsWith = new TgError("sendRichMessage", 400, "rich parse error");
-  h.out.sendHtmlFailsWith = new TgError("sendMessage", 400, "html parse error");
   const m = await runToConfirm(h);
   await m.onAssistantEnd(textMsg("The answer is 42.", { stopReason: "stop" }));
   await tick();

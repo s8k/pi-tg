@@ -28,7 +28,7 @@ test("onPromptAccepted: the draft spawns BEFORE agent_start, and agent_start tak
   const spawn = drafts(h.out.calls).at(-1);
   assert.ok(spawn, "the early draft went out without any agent event");
   assert.equal(spawn!.canStop, true, "the early draft is stoppable");
-  assert.ok(spawn!.text!.includes("<tg-thinking>"), `spinner in the early draft: ${spawn!.text}`);
+  assert.ok(spawn!.blocks?.some((b) => b.type === "thinking"), `spinner in the early draft: ${spawn!.text}`);
   assert.equal(m.hasLiveDraft(), true);
 
   m.onAgentStart(); // the run starts: takes over the SAME draft
@@ -69,6 +69,6 @@ test("onPromptAccepted after finalization: a fresh draft with a clean log", asyn
   assert.equal(h.out.calls.length, beforeTotal + 1, "exactly one draft update (no persistent activity)");
   const last = ds.at(-1)!;
   assert.ok(!last.text!.includes("old answer"), "the previous run's answer is not carried");
-  assert.ok(last.text!.includes("<tg-thinking>"), "the new draft shows the spinner");
+  assert.ok(last.blocks?.some((b) => b.type === "thinking"), "the new draft shows the spinner");
   assert.equal(m.hasLiveDraft(), true);
 });

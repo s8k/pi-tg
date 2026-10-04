@@ -75,7 +75,8 @@ test("minimal draft: visible text only, same bottom line, no tool/thinking lines
   assert.ok(latest.includes("The answer is"), `the partial answer streams in: ${JSON.stringify(latest)}`);
   assert.ok(!latest.includes("⚙ read"), `no tool line: ${JSON.stringify(latest)}`);
   assert.ok(!latest.includes("check it"), `no thinking text: ${JSON.stringify(latest)}`);
-  assert.ok(latest.includes("<tg-thinking>"), `the <tg-thinking> bottom line is present: ${JSON.stringify(latest)}`);
+  const call = h.out.calls.filter((c) => c.kind === "sendDraft").at(-1)!;
+  assert.ok((call.blocks ?? []).some((b) => b.type === "thinking"), `the thinking bottom line is present: ${JSON.stringify(latest)}`);
 });
 
 test("full draft: unchanged — tool line AND narration both render (regression)", async () => {

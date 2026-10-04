@@ -257,10 +257,10 @@ test("makeOut: sendRich → client.sendRichMessage + addSent + persist", async (
   };
   const state = new TelegramState();
   const out = makeOut(client, state, async () => {});
-  const id = await out.sendRich(7, "a table");
+  const id = await out.sendRich(7, [{ type: "paragraph", text: "a table" }]);
   assert.equal(id, 888);
   assert.deepEqual(state.sentIds(), [888]);
-  assert.deepEqual(calls[0], ["rich", 7, { markdown: "a table" }]);
+  assert.deepEqual(calls[0], ["rich", 7, { blocks: [{ type: "paragraph", text: "a table" }] }]);
 });
 
 test("makeOut: sendRich disableNotification → client.sendRichMessage opts (undefined for notifying)", async () => {
@@ -274,9 +274,9 @@ test("makeOut: sendRich disableNotification → client.sendRichMessage opts (und
   };
   const state = new TelegramState();
   const out = makeOut(client, state, async () => {});
-  await out.sendRich(7, "silent table", { disableNotification: true });
-  assert.deepEqual(calls[0], ["rich", 7, { markdown: "silent table" }, { disableNotification: true }]);
-  await out.sendRich(7, "loud table");
+  await out.sendRich(7, [{ type: "paragraph", text: "silent table" }], { disableNotification: true });
+  assert.deepEqual(calls[0], ["rich", 7, { blocks: [{ type: "paragraph", text: "silent table" }] }, { disableNotification: true }]);
+  await out.sendRich(7, [{ type: "paragraph", text: "loud table" }]);
   assert.equal(calls[1]?.[3], undefined, "a notifying send passes no opts");
 });
 
@@ -291,8 +291,8 @@ test("makeOut: sendDraft → passthrough (draftId + canStop + keepOnStop), no ad
   };
   const state = new TelegramState();
   const out = makeOut(client, state, async () => {});
-  assert.equal(await out.sendDraft(7, 3, "working", true, true), true);
-  assert.deepEqual(calls[0], ["draft", 7, 3, { markdown: "working" }, true, true]);
+  assert.equal(await out.sendDraft(7, 3, [{ type: "thinking", text: "working" }], true, true), true);
+  assert.deepEqual(calls[0], ["draft", 7, 3, { blocks: [{ type: "thinking", text: "working" }] }, true, true]);
   assert.deepEqual(state.sentIds(), []);
 });
 
