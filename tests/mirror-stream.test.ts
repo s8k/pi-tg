@@ -466,7 +466,9 @@ test("pauseForDialog: no-op without a live working draft (no run / error end)", 
     await m.pauseForDialog();
     assert.equal(h.out.calls.length, 0);
   }
-  // error end: the draft is live but carries retry-carryover semantics — never segmented
+  // error end: the draft is live but carries retry-carryover semantics — never
+  // segmented; the dialog WAITS for the run to settle (the error message
+  // lands first) and only then proceeds
   {
     const h = makeMirrorDeps({ streamEditMs: 0 });
     const m = new Mirror(h.deps);
@@ -476,9 +478,70 @@ test("pauseForDialog: no-op without a live working draft (no run / error end)", 
     await m.onAssistantEnd(textMsg("partial", { stopReason: "error", errorMessage: "boom" }));
     await tick();
     const before = h.out.calls.length;
-    await m.pauseForDialog();
+    const pauseP = m.pauseForDialog();
+    await tick();
     assert.equal(h.out.calls.length, before, "no segment for an error-end draft");
+    void m.onAgentSettled(); // settles the error end → releases the wait
+    await pauseP;
   }
+});
+
+test("pauseForDialog: an ended run — waits until the FINAL message of the finalize split is delivered (the dialog must land AFTER it)", async () => {
+  const h = makeMirrorDeps({ streamEditMs: 0 });
+  const m = new Mirror(h.deps);
+  m.onAgentStart();
+  m.onAssistantStart(textMsg(""));
+  m.onAssistantUpdate(textMsg("the final answer"));
+  // Gate the persistent sends: each sendRich parks until explicitly released
+  const releases: Array<() => void> = [];
+  const realSendRich = h.out.sendRich;
+  h.out.sendRich = async (chatId: number, md: string, opts?: { disableNotification?: boolean }) => {
+    await new Promise<void>((r) => { releases.push(r); });
+    return realSendRich(chatId, md, opts);
+  };
+  const waitReleases = async (n: number): Promise<void> => {
+    for (;;) {
+      if (releases.length >= n) return;
+      await new Promise((r) => setImmediate(r));
+    }
+  };
+  void m.onAssistantEnd(textMsg("the final answer", { stopReason: "stop" })); // clean confirm → finalize starts (m1 work log → m2 final answer)
+  await waitReleases(1); // m1 is parked in the gate
+
+  const pauseP = m.pauseForDialog();
+  let resolved = false;
+  void pauseP.then(() => {
+    resolved = true;
+  });
+  await new Promise((r) => setImmediate(r));
+  assert.equal(resolved, false, "must not resolve while the finalized message is still in flight");
+  releases[0]?.(); // m1 delivered → m2 (the final answer) starts
+  await waitReleases(2);
+  await new Promise((r) => setImmediate(r));
+  assert.equal(resolved, false, "must not resolve until the FINAL answer (m2) is delivered too");
+  releases[1]?.(); // m2 delivered → settlement → the dialog may proceed
+  await pauseP;
+  const rich = h.out.calls.filter((c) => c.kind === "sendRich");
+  assert.equal(rich.length, 2, "m1 + m2 delivered");
+  assert.ok(rich[1]?.text?.includes("the final answer"), "m2 is the final answer");
+});
+
+test("pauseForDialog: an error-end run — waits for the settled finalization (the error message lands BEFORE the dialog)", async () => {
+  const h = makeMirrorDeps({ streamEditMs: 0 });
+  const m = new Mirror(h.deps);
+  m.onAgentStart();
+  m.onAssistantStart(textMsg(""));
+  m.onAssistantUpdate(textMsg("partial"));
+  await m.onAssistantEnd(textMsg("partial", { stopReason: "error", errorMessage: "boom" }));
+  await tick();
+  await m.onAgentEnd([]); // error end: no finalize yet (the stream may continue)
+  const before = h.out.calls.length;
+  const pauseP = m.pauseForDialog();
+  await tick();
+  assert.equal(h.out.calls.length, before, "no error persistence before settlement");
+  void m.onAgentSettled(); // settles the error end → persists + releases the wait
+  await pauseP;
+  assert.ok(h.out.calls.length > before, "the error message was persisted before the dialog could land");
 });
 
 test("BottomLine 'paused' renders blocks + tail + the paused status line", () => {
