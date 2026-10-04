@@ -60,7 +60,7 @@
 import type { Out } from "./session-bridge.ts";
 import type { TelegramState } from "./state.ts";
 import type { OutputLevel, TelegramConfig } from "./config.ts";
-import { RICH_CAP, escapeHtml, renderToolBlock, toolArgsJson, extractWhy, chunkText, type ToolState } from "./markdown.ts";
+import { RICH_CAP, escapeHtml, toolArgsJson, extractWhy, chunkText, type ToolState } from "./markdown.ts";
 import { mdToBlocks, foldBlocks, tailBlocks, chunkBlocks, blocksToPlainText, blocksLen, blockCount, type TgBlock } from "./rich-blocks.ts";
 import { TgError } from "./telegram-client.ts";
 
@@ -78,7 +78,7 @@ export interface MirrorMessage {
 
 /**
  * One committed, chronological block of the work log (message 1). Each block
- * renders on its own lines; `blocksToMd` separates blocks with one blank line.
+ * renders on its own lines; the blocks builder separates blocks structurally.
  */
 export type LogBlock =
   | { type: "narration"; text: string } // a demoted message's visible text, verbatim markdown
@@ -174,60 +174,6 @@ function tokensSuffix(t?: { input: number; output: number }): string {
   return i > 0 || o > 0 ? ` ↑${fmtTokens(i)} ↓${fmtTokens(o)}` : "";
 }
 
-export function blocksToMd(log: LogBlock[], opts: { tail?: string; bottom: BottomLine; tokens?: { input: number; output: number } }): string {
-  const suffix = tokensSuffix(opts.tokens);
-  const tail = opts.tail && opts.tail.trim() ? opts.tail : undefined;
-  const bottomText = bottomLineText(opts.bottom);
-  const parts: string[] = [];
-  log.forEach((b, i) => {
-    parts.push(b.type === "tool" ? renderToolBlock(b) : b.text);
-    // A carried-over ⚠️ error entry (Mirror.onAgentStart moves the failed
-    // run's bottom line into the log on a pi retry) keeps the full-width
-    // divider AFTER it whenever content follows — new tool blocks, the
-    // answer, the spinner, or a bottom line. Without this, the divider the
-    // retry window showed (⚠️ → --- → spinner) would vanish the moment the
-    // retry's first block lands. The last entry only gets one when something
-    // actually renders after it.
-    if (b.type === "agentError" && (i < log.length - 1 || Boolean(tail) || bottomText !== "")) parts.push("---");
-  });
-  if (opts.bottom.kind === "done") {
-    parts.push(`Completed ✔️${suffix}`);
-    if (tail) parts.push(tail); // no divider — the answer is its own message
-    return parts.join("\n\n");
-  }
-  if (tail) parts.push(tail);
-  if (opts.bottom.kind === "error" && opts.bottom.thinking) {
-    // Error end, stream still open (pi may auto-retry): the ⚠️ line, then a
-    // full-width horizontal line, then the spinner.
-    const err = bottomLineText(opts.bottom);
-    if (err) parts.push(err);
-    if (parts.length > 0) parts.push(err ? "---" : "\u00a0"); // divider after the ⚠️ line; classic gap without one
-    parts.push(`<tg-thinking>${opts.bottom.word ?? "Working"}…${suffix}</tg-thinking>`);
-    return parts.join("\n\n");
-  }
-  if (opts.bottom.kind === "thinking" || opts.bottom.kind === "compact") {
-    // text above the spinner → an extra blank line (skipped after a divider —
-    // the --- already separates, so the spinner sits directly under it, the
-    // same layout as the retry window)
-    if (parts.length > 0 && parts[parts.length - 1] !== "---") parts.push("\u00a0");
-    // The run's tokens go INSIDE the tag (same line — the renderer wraps
-    // trailing text below the tag); the label's shimmer covers the numbers
-    // too, which is fine: they're live telemetry, not body text.
-    const label = opts.bottom.kind === "thinking" ? `${opts.bottom.word}…` : opts.bottom.status;
-    parts.push(`<tg-thinking>${label}${suffix}</tg-thinking>`);
-    return parts.join("\n\n");
-  }
-  const bottom = bottomLineText(opts.bottom);
-  if (bottom) parts.push(bottom);
-  // The PERSISTENT error message ends with a full-width divider — but only
-  // when the message has content beyond the bare ⚠️ line (user request: a
-  // tool log / partial answer above the error gets closed off from whatever
-  // follows in the chat; a bare error stays bare). The ⚠️-aborted bottom
-  // never gets one, and a divider without the ⚠️ line would be a stray rule.
-  if (opts.bottom.kind === "error" && bottom && parts.length > 1) parts.push("---");
-  return parts.join("\n\n");
-}
-
 /** One tool log block → blocks: [💭 why] + details(⚙ name state → pre json) [+ pre error]. */
 function toolBlocks(b: Extract<LogBlock, { type: "tool" }>): TgBlock[] {
   const out: TgBlock[] = [];
@@ -243,9 +189,8 @@ function toolBlocks(b: Extract<LogBlock, { type: "tool" }>): TgBlock[] {
 }
 
 /**
- * The blocks-tier mirror builder (the TgBlock[] replacement for blocksToMd):
- * committed log blocks + the in-flight tail + the bottom line, in the SAME
- * layout blocksToMd documents. The SAME array feeds live drafts (the
+ * The blocks-tier mirror builder: committed log blocks + the in-flight tail
+ * + the bottom line, in one layout. The SAME array feeds live drafts (the
  * `thinking` block stays — it is draft-only) and persistent sends (the
  * caller strips `thinking` + the NBSP gap before sending).
  */

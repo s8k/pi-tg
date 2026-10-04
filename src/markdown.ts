@@ -1,108 +1,16 @@
+/**
+ * Survivors of the markdown/HTML pipeline after the blocks-tier migration
+ * (2026-10-03): plain-text chunking for the plain rung, the shared line
+ * regexes + `richUnits` block skeleton (the direct ancestor of
+ * `mdToBlocks` in rich-blocks.ts), and the work-log helpers. The rich
+ * markdown/HTML tiers (inlineToHtml, toUnits, markdownToHtml, chunkMarkdown,
+ * foldLongFences, chunkRich, tailView, renderToolBlock) are RETIRED — the
+ * blocks tier renders structured data, never a re-parsed string.
+ */
+
 /** Escape HTML text content (not attribute values). */
 export function escapeHtml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
-
-/** Escape a value for use inside a double-quoted HTML attribute. */
-export function escapeAttr(s: string): string {
-  return escapeHtml(s).replace(/"/g, "&quot;");
-}
-
-/**
- * Convert ONE line of markdown to Telegram HTML.
- * Supports: `code`, [t](url), **bold**, __bold__, *italic*, _italic_, ~~strike~~.
- * Guarantees balanced tags: unmatched markers remain literal (never an unclosed tag).
- * Documented v1 limits: no triple emphasis (`***x***`), no parens in URLs,
- * a `*` pair with text between renders as italic even if the intent was a bullet.
- */
-export function inlineToHtml(src: string): string {
-  const stash: string[] = [];
-  const keep = (html: string): string => {
-    stash.push(html);
-    return `\u0000${stash.length - 1}\u0000`;
-  };
-
-  // 1) code spans — content verbatim (escaped), no formatting parsed inside
-  let s = src.replace(/`([^`\n]+)`/g, (_m, code: string) => keep(`<code>${escapeHtml(code)}</code>`));
-
-  // 2) links — URL untouched by later passes; text fully parsed (recursive)
-  s = s.replace(/\[([^\]\n]+)\]\(([^()\s]+)\)/g, (_m, text: string, url: string) =>
-    keep(`<a href="${escapeAttr(url)}">${inlineToHtml(text)}</a>`),
-  );
-
-  // 3) escape the rest
-  s = escapeHtml(s);
-
-  // 4) emphasis — bold before italic (bold content admits single stars)
-  s = s.replace(/\*\*((?:[^*]|\*(?!\*))+?)\*\*/g, "<b>$1</b>");
-  s = s.replace(/(^|[^_\w])__((?:[^_]|\_(?!_))+?)__(?![\w_])/g, "$1<b>$2</b>");
-  s = s.replace(/~~(.+?)~~/g, "<s>$1</s>");
-  s = s.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, "$1<i>$2</i>");
-  s = s.replace(/(^|[^_\w])_([^_\n]+)_(?![\w_])/g, "$1<i>$2</i>");
-
-  // 5) restore stashed code spans / links
-  return s.replace(/\u0000(\d+)\u0000/g, (_m, i: string) => stash[Number(i)]);
-}
-
-const FENCE_OPEN_RE = /^\s*(`{3,}|~{3,})\s*(\S*)\s*$/;
-const HEADING_RE = /^#{1,6}\s+(.*)$/;
-const HR_RE = /^\s*((?:-\s*){3,}|(?:\*\s*){3,}|(?:_\s*){3,})$/;
-const UL_RE = /^\s*[-*+]\s+(.*)$/;
-const OL_RE = /^\s*(\d{1,9})\.\s+(.*)$/;
-const BQ_RE = /^\s*>\s?(.*)$/;
-const HR_LINE = "────────";
-
-function fenceCloseRe(open: string): RegExp {
-  const ch = open[0] === "`" ? "`" : "~";
-  return new RegExp("^\\s*" + ch + "{" + open.length + ",}\\s*$");
-}
-
-interface Unit {
-  html: string;
-}
-
-/** Parse markdown into render units; a whole code fence is ONE unit (never split later). */
-export function toUnits(md: string): Unit[] {
-  const lines = md.replace(/\r\n?/g, "\n").split("\n");
-  const units: Unit[] = [];
-  let i = 0;
-  while (i < lines.length) {
-    const line = lines[i];
-    const fence = FENCE_OPEN_RE.exec(line);
-    if (fence) {
-      const buf: string[] = [];
-      const closeRe = fenceCloseRe(fence[1]);
-      i++;
-      while (i < lines.length && !closeRe.test(lines[i])) {
-        buf.push(lines[i]);
-        i++;
-      }
-      if (i < lines.length) i++; // consume closing fence (EOF = still streaming)
-      units.push({ html: `<pre>${escapeHtml(buf.join("\n"))}</pre>` });
-      continue;
-    }
-    if (line.trim() === "") { i++; continue; }
-    const h = HEADING_RE.exec(line);
-    const hr = HR_RE.exec(line);
-    const ul = UL_RE.exec(line);
-    const ol = OL_RE.exec(line);
-    const bq = BQ_RE.exec(line);
-    let html: string;
-    if (h) html = `<b>${inlineToHtml(h[1].replace(/\s+#+\s*$/, ""))}</b>`;
-    else if (hr) html = HR_LINE;
-    else if (ul) html = `• ${inlineToHtml(ul[1])}`;
-    else if (ol) html = `${ol[1]}. ${inlineToHtml(ol[2])}`;
-    else if (bq) html = `❝ ${inlineToHtml(bq[1])}`;
-    else html = inlineToHtml(line);
-    units.push({ html });
-    i++;
-  }
-  return units;
-}
-
-/** Full document → one HTML string (for single-message sends and tests). */
-export function markdownToHtml(md: string): string {
-  return toUnits(md).map((u) => u.html).join("\n");
 }
 
 export const TG_MAX_LEN = 4096;
@@ -117,76 +25,6 @@ function hardCut(text: string, cap: number): string[] {
   }
   if (rest !== "") out.push(rest);
   return out;
-}
-
-/** Split one over-limit unit: <pre> blocks re-wrap at code-line boundaries; anything else hard-cuts. */
-function hardSplitUnit(html: string, maxLen: number): string[] {
-  const cap = maxLen - MARKER.length;
-  const m = /^<pre>([\s\S]*)<\/pre>$/.exec(html);
-  if (!m) return hardCut(html, cap);
-  const lineCap = cap - "<pre>".length - "</pre>".length;
-  const codeLines = m[1].split("\n");
-  const out: string[] = [];
-  let buf: string[] = [];
-  let len = 0;
-  const flush = () => {
-    if (buf.length > 0) {
-      out.push(`<pre>${buf.join("\n")}</pre>`);
-      buf = [];
-      len = 0;
-    }
-  };
-  for (const cl of codeLines) {
-    if (cl.length > lineCap) {
-      // single code line over the limit: hard-cut (documented last resort)
-      flush();
-      for (const piece of hardCut(cl, lineCap)) out.push(`<pre>${piece}</pre>`);
-      continue;
-    }
-    const add = (buf.length > 0 ? 1 : 0) + cl.length;
-    if (len + add <= lineCap) {
-      buf.push(cl);
-      len += add;
-    } else {
-      flush();
-      buf.push(cl);
-      len = cl.length;
-    }
-  }
-  flush();
-  return out;
-}
-
-/** Pack rendered units into chunks ≤ maxLen; chunks ≥ 2 get the continuation marker. */
-export function chunkMarkdown(md: string, maxLen = TG_MAX_LEN): string[] {
-  const raw: string[] = [];
-  let cur = "";
-  const push = () => {
-    if (cur !== "") {
-      raw.push(cur);
-      cur = "";
-    }
-  };
-  for (const u of toUnits(md)) {
-    const piece = u.html;
-    if (piece.length > maxLen - MARKER.length) {
-      push();
-      raw.push(...hardSplitUnit(piece, maxLen));
-      continue;
-    }
-    // Full maxLen only for the very first piece of the very first chunk
-    // (the only chunk that never carries the marker); everything else reserves marker space.
-    const cap = raw.length === 0 && cur === "" ? maxLen : maxLen - MARKER.length;
-    const sep = cur === "" ? 0 : 1;
-    if (cur.length + sep + piece.length <= cap) {
-      cur = cur === "" ? piece : cur + "\n" + piece;
-    } else {
-      push();
-      cur = piece;
-    }
-  }
-  push();
-  return raw.map((r, idx) => (idx === 0 ? r : MARKER + r));
 }
 
 /** Same line-boundary packing for plain (fallback) text. */
@@ -219,62 +57,19 @@ export function chunkText(plain: string, maxLen = TG_MAX_LEN): string[] {
   return raw.map((r, idx) => (idx === 0 ? r : MARKER + r));
 }
 
-function stripInline(s: string): string {
-  return s
-    .replace(/\[([^\]\n]+)\]\(([^()\s]+)\)/g, "$1 ($2)")
-    .replace(/`([^`\n]+)`/g, "$1")
-    .replace(/\*\*([^*]+)\*\*/g, "$1")
-    .replace(/__([^_]+__)__|__([^_]+)__/g, (_m, _a, b) => (b ?? _m))
-    .replace(/~~(.+?)~~/g, "$1")
-    .replace(/\*([^*\n]+)\*/g, "$1")
-    .replace(/(^|[^\w])_([^_\n]+)_(?!\w)/g, "$1$2");
-}
+// ─────────────────────── Shared block skeleton (mdToBlocks ancestor) ───────────────────────
 
-/** Strip all markdown syntax → plain text (used when Telegram rejects the HTML). */
-export function toPlainText(md: string): string {
-  const lines = md.replace(/\r\n?/g, "\n").split("\n");
-  const out: string[] = [];
-  let i = 0;
-  while (i < lines.length) {
-    const line = lines[i];
-    const fence = FENCE_OPEN_RE.exec(line);
-    if (fence) {
-      const closeRe = fenceCloseRe(fence[1]);
-      i++;
-      while (i < lines.length && !closeRe.test(lines[i])) {
-        out.push(lines[i]);
-        i++;
-      }
-      if (i < lines.length) i++;
-      continue;
-    }
-    if (line.trim() === "") { out.push(""); i++; continue; }
-    const h = HEADING_RE.exec(line);
-    const hr = HR_RE.exec(line);
-    const ul = UL_RE.exec(line);
-    const ol = OL_RE.exec(line);
-    const bq = BQ_RE.exec(line);
-    if (h) out.push(stripInline(h[1].replace(/\s+#+\s*$/, "")));
-    else if (hr) out.push(HR_LINE);
-    else if (ul) out.push("• " + stripInline(ul[1]));
-    else if (ol) out.push(`${ol[1]}. ` + stripInline(ol[2]));
-    else if (bq) out.push(stripInline(bq[1]));
-    else out.push(stripInline(line));
-    i++;
-  }
-  return out.join("\n");
-}
+const FENCE_OPEN_RE = /^\s*(`{3,}|~{3,})\s*(\S*)\s*$/;
+const HEADING_RE = /^#{1,6}\s+(.*)$/;
+const HR_RE = /^\s*((?:-\s*){3,}|(?:\*\s*){3,}|(?:_\s*){3,})$/;
+const UL_RE = /^\s*[-*+]\s+(.*)$/;
+const OL_RE = /^\s*(\d{1,9})\.\s+(.*)$/;
+const BQ_RE = /^\s*>\s?(.*)$/;
+const HR_LINE = "────────";
 
-// ─────────────────────────── Rich pipeline (Bot API 10.2+) ───────────────────────────
-
-/** Internal rich-message cap (documented: 32768 UTF-8 chars; margin pending Task 0 spike). */
-export const RICH_CAP = 32_000;
-
-export type RichUnitType = "fence" | "table" | "heading" | "list" | "blockquote" | "hr" | "details" | "paragraph";
-
-export interface RichUnit {
-  type: RichUnitType;
-  text: string; // verbatim markdown of the block
+function fenceCloseRe(open: string): RegExp {
+  const ch = open[0] === "`" ? "`" : "~";
+  return new RegExp("^\\s*" + ch + "{" + open.length + ",}\\s*$");
 }
 
 const isTableRow = (line: string): boolean => {
@@ -286,8 +81,21 @@ const DETAILS_OPEN_RE = /^\s*<details>/i;
 const DETAILS_CLOSE_RE = /^\s*<\/details>/i;
 
 /**
- * Top-level block parse (verbatim — no rendering). Powers folding, chunking and
- * the tail view. One implementation; the legacy converter is untouched.
+ * Internal rich-message cap (documented: 32768 UTF-8 chars; margin pending Task 0 spike).
+ */
+export const RICH_CAP = 32_000;
+
+export type RichUnitType = "fence" | "table" | "heading" | "list" | "blockquote" | "hr" | "details" | "paragraph";
+
+export interface RichUnit {
+  type: RichUnitType;
+  text: string; // verbatim markdown of the block
+}
+
+/**
+ * Top-level block parse (verbatim — no rendering). The direct ancestor of
+ * `mdToBlocks` in rich-blocks.ts, kept as the shared skeleton (same regexes,
+ * same pass order) so the two stay in sync.
  */
 export function richUnits(md: string): RichUnit[] {
   const lines = md.replace(/\r\n?/g, "\n").split("\n");
@@ -355,158 +163,6 @@ export function richUnits(md: string): RichUnit[] {
   return units;
 }
 
-/**
- * Wrap fenced blocks whose body has more than `foldLines` lines in a closed
- * <details> (the markdown tier parses markdown inside details bodies, so the
- * fence still renders as a preformatted block). Short fences pass verbatim.
- */
-export function foldLongFences(md: string, foldLines = 25): string {
-  const lines = md.replace(/\r\n?/g, "\n").split("\n");
-  const out: string[] = [];
-  let i = 0;
-  while (i < lines.length) {
-    const line = lines[i];
-    const fence = FENCE_OPEN_RE.exec(line);
-    if (!fence) { out.push(line); i++; continue; }
-    const buf: string[] = [line];
-    const closeRe = fenceCloseRe(fence[1]);
-    i++;
-    let closed = false;
-    while (i < lines.length && !closeRe.test(lines[i])) { buf.push(lines[i]); i++; }
-    if (i < lines.length) { buf.push(lines[i]); i++; closed = true; }
-    const body = buf.slice(1, closed ? buf.length - 1 : buf.length);
-    if (body.length > foldLines) {
-      const lang = fence[2] ?? "";
-      const summary = `code${lang ? `, ${lang}` : ""} (${body.length} lines)`;
-      out.push(`<details><summary>${summary}</summary>`, "", ...buf, "", "</details>");
-    } else {
-      out.push(...buf);
-    }
-  }
-  return out.join("\n");
-}
-
-/**
- * Pack rich units into chunks ≤ cap (chunks ≥ 2 prefixed with the marker;
- * `MARKER` and `hardCut` are reused from the legacy section above).
- * A unit bigger than the whole cap is split inside, by type:
- * fence → code lines (fence+language re-emitted per piece);
- * table → rows (header + separator repeated per piece);
- * details → unwrap, then re-pack the content;
- * anything else → hard character cut (last resort, as in the legacy path).
- */
-export function chunkRich(md: string, cap = RICH_CAP): string[] {
-  return packRichUnits(richUnits(md), cap).map((r, i) => (i === 0 ? r : MARKER + r));
-}
-
-function packRichUnits(units: RichUnit[], cap: number): string[] {
-  const raw: string[] = [];
-  let cur = "";
-  const push = () => {
-    if (cur !== "") { raw.push(cur); cur = ""; }
-  };
-  for (const u of units) {
-    if (u.text.length > cap - MARKER.length) {
-      push();
-      raw.push(...splitRichUnit(u, cap));
-      continue;
-    }
-    // Full cap only for the very first piece of the very first chunk (the only
-    // chunk that never carries the marker) — same rule as the legacy packer.
-    const capNow = raw.length === 0 && cur === "" ? cap : cap - MARKER.length;
-    // Blank line between blocks: in the markdown tier a single \n is a soft
-    // break WITHIN a paragraph, so blocks must be separated by \n\n.
-    const sep = cur === "" ? 0 : 2;
-    if (cur.length + sep + u.text.length <= capNow) {
-      cur = cur === "" ? u.text : cur + "\n\n" + u.text;
-    } else {
-      push();
-      cur = u.text;
-    }
-  }
-  push();
-  return raw;
-}
-
-function splitRichUnit(u: RichUnit, cap: number): string[] {
-  if (u.type === "fence") return splitFence(u.text, cap - MARKER.length);
-  if (u.type === "table") return splitTable(u.text, cap - MARKER.length);
-  // reserve the marker budget too: any piece may become a non-first chunk
-  if (u.type === "details") return packRichUnits(richUnits(unfoldDetails(u.text)), cap - MARKER.length);
-  return hardCut(u.text, cap - MARKER.length);
-}
-
-function splitFence(text: string, cap: number): string[] {
-  const lines = text.split("\n");
-  const open = lines[0];
-  let body = lines.slice(1);
-  const closeRe = fenceCloseRe((FENCE_OPEN_RE.exec(open)?.[1]) ?? "```");
-  let close: string | undefined;
-  if (body.length > 0 && closeRe.test(body[body.length - 1])) {
-    close = body[body.length - 1];
-    body = body.slice(0, -1);
-  }
-  const overhead = open.length + 1 + (close ? close.length + 1 : 0);
-  const bodyCap = Math.max(1, cap - overhead);
-  const pieces: string[] = [];
-  const emit = (chunk: string[]) => {
-    pieces.push([open, ...chunk, ...(close ? [close] : [])].join("\n"));
-  };
-  let cur: string[] = [];
-  let len = 0;
-  const flush = () => {
-    if (cur.length > 0) { emit(cur); cur = []; len = 0; }
-  };
-  for (const bl of body) {
-    if (bl.length > bodyCap) {
-      flush(); // one over-long code line: hard cut (last resort)
-      for (const piece of hardCut(bl, bodyCap)) emit([piece]);
-      continue;
-    }
-    const add = (cur.length > 0 ? 1 : 0) + bl.length;
-    if (len + add <= bodyCap) { cur.push(bl); len += add; }
-    else { flush(); cur = [bl]; len = bl.length; }
-  }
-  flush();
-  return pieces.length > 0 ? pieces : [open + (close ? "\n" + close : "")];
-}
-
-function splitTable(text: string, cap: number): string[] {
-  const lines = text.split("\n");
-  const header = lines.slice(0, 2); // header + separator
-  const rows = lines.slice(2);
-  const overhead = header.reduce((a, l) => a + l.length + 1, 0);
-  const rowsCap = Math.max(1, cap - overhead);
-  const pieces: string[] = [];
-  const emit = (chunk: string[]) => {
-    pieces.push([...header, ...chunk].join("\n"));
-  };
-  let cur: string[] = [];
-  let len = 0;
-  const flush = () => {
-    if (cur.length > 0) { emit(cur); cur = []; len = 0; }
-  };
-  for (const row of rows) {
-    if (row.length > rowsCap) {
-      flush(); // one over-long row: hard cut (last resort)
-      for (const piece of hardCut(row, rowsCap)) emit([piece]);
-      continue;
-    }
-    const add = (cur.length > 0 ? 1 : 0) + row.length;
-    if (len + add <= rowsCap) { cur.push(row); len += add; }
-    else { flush(); cur = [row]; len = row.length; }
-  }
-  flush();
-  return pieces.length > 0 ? pieces : [text];
-}
-
-/** Drop the details wrapper, keep the summary text as a plain leading line. */
-function unfoldDetails(text: string): string {
-  let s = text.replace(/<details[^>]*>/i, "").replace(/<\/details>/i, "");
-  s = s.replace(/<summary>([\s\S]*?)<\/summary>/i, (_m, t: string) => t.trim());
-  return s.replace(/^\n+/, "");
-}
-
 // ─────────────────────── Work-log tool blocks (two-message mirror) ───────────────────────
 
 /** State stamp for a tool block in the work log. */
@@ -518,35 +174,6 @@ export interface ToolBlockSpec {
   why?: string;
   state: ToolState;
   errorText?: string;
-}
-
-/**
- * One work-log tool block (its own lines; the caller separates blocks with a
- * blank line):
- *
- *   💭 *"the test expects a 302."*   ← the WHY first (motivation), then the call
- *
- *   <details><summary>⚙ read ✔</summary>   ← the tool name + state stamp is
- *                                              the summary (no "params" label)
- *
- *   ```json
- *   { … }                            ← the full arguments live here
- *   ```
- *
- *   </details>
- *
- *   <pre>RangeError: …</pre>        ← only on ✖, visible (not collapsed)
- *
- * Segments are joined with BLANK lines — a bare newline is a soft wrap in
- * Markdown, so each segment must be its own paragraph to sit on its own line.
- * All bot-generated text is HTML-escaped; the why line is italic markdown.
- */
-export function renderToolBlock(t: ToolBlockSpec): string {
-  const segments: string[] = [];
-  if (t.why) segments.push(`💭 *"${escapeHtml(t.why)}"*`);
-  segments.push([`<details><summary>⚙ ${t.name} ${t.state}</summary>`, "", "```json", escapeHtml(t.argsJson), "```", "", "</details>"].join("\n"));
-  if (t.state === "✖" && t.errorText) segments.push(`<pre>${escapeHtml(t.errorText)}</pre>`);
-  return segments.join("\n\n");
 }
 
 /** Tool arguments → pretty JSON, capped so the collapsed params block stays small. */
@@ -574,29 +201,4 @@ export function extractWhy(thinking: string[], cap = 200): string | undefined {
     if (c) return c.length > cap ? c.slice(0, cap) + "…" : c;
   }
   return undefined;
-}
-
-/**
- * Draft overflow view: if the text is over cap, keep the TAIL (what the user
- * cares about most), back the cut off to the nearest block boundary, and
- * prefix a single "⋯" line. Whole blocks only; a single oversized unit falls
- * back to a hard character tail (the draft is a live preview, not the answer).
- */
-export function tailView(md: string, cap = RICH_CAP): string {
-  if (md.length <= cap) return md;
-  const units = richUnits(md);
-  const budget = cap - "⋯\n".length;
-  const keep: string[] = [];
-  let len = 0;
-  for (let i = units.length - 1; i >= 0; i--) {
-    // blank line between blocks (markdown tier: single \n is a soft break)
-    const add = units[i].text.length + (keep.length > 0 ? 2 : 0);
-    if (len + add <= budget) { keep.unshift(units[i].text); len += add; }
-    else break;
-  }
-  if (keep.length === 0) {
-    const last = units[units.length - 1].text;
-    return "⋯\n" + last.slice(last.length - budget);
-  }
-  return "⋯\n" + keep.join("\n\n");
 }

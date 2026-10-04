@@ -36,10 +36,11 @@ Telegram (phone) ⇄ Bot API long polling ⇄ pi-tg (extension) ⇄ Pi harness
   `<details>` for long code, tool status lines in its footer (`⚙ bash: … ✔`),
   and a native **Stop** button. The draft is refreshed every 1.5 s and
   heartbeated every 17 s (it is ephemeral — Telegram auto-hides it ~30 s after
-  the last refresh). The final answer is a rich message; answers over the rich
-  limit (32 000 chars) are chunked at block boundaries with a `(continued)`
-  marker. If Telegram rejects a rich message, the answer is re-sent through
-  the legacy 4096-char HTML path, then plain text.
+  the last refresh). The final answer is a rich message (Bot API 10.2+ `blocks`
+  tier — structured `InputRichBlock` arrays, no markdown round-trip); answers
+  over the rich limit (32 000 chars) are chunked at block boundaries with a
+  `(continued)` marker. If Telegram rejects a rich send, the answer is
+  re-sent as plain text.
 
 ## Pi harness commands
 
@@ -162,7 +163,8 @@ enforces the rule mechanically.
 |---|---|
 | `src/config.ts` | config load/save, env token override, sanitize (id cap, sent-ids cap) |
 | `src/telegram-client.ts` | Bot API calls, 429 retry, poller loop + offset management |
-| `src/markdown.ts` | rich pipeline (`richUnits` / `foldLongFences` / `chunkRich` @32k / `tailView`) + legacy HTML (≤4096) / plain fallback |
+| `src/rich-blocks.ts` | the blocks tier: `TgBlock`/`TgRichText` types, cost model, `inlineToRichText`, `mdToBlocks`, `tailBlocks`/`chunkBlocks` @32k, `blocksToPlainText` (pure) |
+| `src/markdown.ts` | survivors: `richUnits` block skeleton, `chunkText` plain-rung chunking, work-log helpers (`toolArgsJson` / `extractWhy`) |
 | `src/thinking.ts` | `supportedThinkingLevels(model)` — mirror of pi’s selection logic (pure) |
 | `src/bot-commands.ts` | Telegram bot menu (`setMyCommands`) — single source of truth for the bot command list (pure) |
 | `src/ui-dialogs.ts` | in-flight mirrored dialogs: render, reply/number routing, first-answer-wins stamps (pure) |
@@ -171,7 +173,7 @@ enforces the rule mechanically.
 | `src/router.ts` | update → typed action (pure) |
 | `src/command-args.ts` | `/tg internal …` encode/parse (pure) |
 | `src/session-bridge.ts` | all phone-command logic behind the `TelegramPi` interface |
-| `src/mirror.ts` | pi events → one rich draft per turn (footer, 17 s heartbeat) + rich→HTML→plain finalization |
+| `src/mirror.ts` | pi events → one blocks draft per turn (footer, 17 s heartbeat) + blocks→plain finalization |
 | `src/onboarding.ts` | QR rendering, token validation, pairing texts (pure) |
 | `src/state.ts` | per-instance state: offset, sent ids, list caches |
 | `src/wiring.ts` | `makeOut` / `makeTelegramPi` adapters (structural pi mirrors) |

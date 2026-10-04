@@ -5,7 +5,7 @@
 // confirmed text stays as the answer under the final marker.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { Mirror, blocksToMd, type MirrorMessage } from "../src/mirror.ts";
+import { Mirror, type MirrorMessage } from "../src/mirror.ts";
 import type { TgBlock } from "../src/rich-blocks.ts";
 import { makeMirrorDeps, tick } from "./mirror-helpers.ts";
 
@@ -481,13 +481,6 @@ test("pauseForDialog: no-op without a live working draft (no run / error end)", 
     await m.pauseForDialog();
     assert.equal(h.out.calls.length, before, "no segment for an error-end draft");
   }
-});
-
-test("BottomLine 'paused' renders blocks + tail + the paused status line", () => {
-  assert.equal(
-    blocksToMd([{ type: "narration", text: "work" }], { tail: "tail", bottom: { kind: "paused" } }),
-    "work\n\ntail\n\n⏸️ Paused — answer the dialog below",
-  );
 });
 
 test("post-dialog: the fresh draft re-appears (spinner) at the next assistant MESSAGE START — before any visible text (thinking-only output)", async () => {
