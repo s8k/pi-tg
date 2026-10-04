@@ -181,7 +181,11 @@ export function mdToBlocks(md: string): TgBlock[] {
       i++;
       while (i < lines.length && !closeRe.test(lines[i])) { body.push(lines[i]); i++; }
       if (i < lines.length) i++; // consume close (EOF = still streaming)
-      out.push(lang ? { type: "pre", text: body.join("\n"), language: lang } : { type: "pre", text: body.join("\n") });
+      const code = body.join("\n");
+      // An empty fence body (a bare opener mid-stream, or a closed ```` ```\n``` ````)
+      // would 400 (RICH_MESSAGE_CONTENT_REQUIRED) — emit nothing; the body arrives
+      // on the next tick (a real structural shift, allowed by the draft rule).
+      if (code !== "") out.push(lang ? { type: "pre", text: code, language: lang } : { type: "pre", text: code });
       continue;
     }
     if (DETAILS_OPEN_RE.test(line)) {
@@ -202,7 +206,9 @@ export function mdToBlocks(md: string): TgBlock[] {
         inner.splice(firstIdx, 1);
       }
       const blocks = mdToBlocks(inner.join("\n"));
-      out.push(closed
+      // Empty details 400 (RICH_MESSAGE_CONTENT_REQUIRED, spike item 5) — an
+      // unclosed opener mid-stream has no body yet; emit nothing until it does.
+      if (blocks.length > 0) out.push(closed
         ? { type: "details", summary, blocks }
         : { type: "details", summary, blocks, is_open: true });
       continue;
@@ -211,7 +217,9 @@ export function mdToBlocks(md: string): TgBlock[] {
     const h = HEADING_RE.exec(line);
     if (h) {
       flushPara();
-      out.push({ type: "heading", text: inlineToRichText(h[2]), size: h[1].length as 1 | 2 | 3 | 4 | 5 | 6 });
+      // A half-typed heading ("## ") has empty text — the server 400s empty
+      // block content; emit nothing until the text arrives (next tick).
+      if (h[2].trim() !== "") out.push({ type: "heading", text: inlineToRichText(h[2]), size: h[1].length as 1 | 2 | 3 | 4 | 5 | 6 });
       i++; continue;
     }
     if (HR_RE.test(line)) { flushPara(); out.push({ type: "divider" }); i++; continue; }
@@ -222,9 +230,13 @@ export function mdToBlocks(md: string): TgBlock[] {
         const ul = UL_RE.exec(lines[i]);
         const ol = OL_RE.exec(lines[i]);
         if (ul) {
+          // A half-typed item ("- ") would carry an empty paragraph — 400.
           const task = TASK_RE.exec(ul[1]);
-          if (task) items.push({ blocks: [paraBlock(task[2])], has_checkbox: true, is_checked: task[1] !== " " });
-          else items.push({ blocks: [paraBlock(ul[1])] });
+          const itemText = task ? task[2] : ul[1];
+          if (itemText.trim() !== "") {
+            if (task) items.push({ blocks: [paraBlock(task[2])], has_checkbox: true, is_checked: task[1] !== " " });
+            else items.push({ blocks: [paraBlock(ul[1])] });
+          }
           i++;
           // v1: indented continuation lines attach to the previous item (flat lists)
           while (i < lines.length && /^\s+\S/.test(lines[i]) && !UL_RE.test(lines[i]) && !OL_RE.test(lines[i])) {
@@ -234,13 +246,13 @@ export function mdToBlocks(md: string): TgBlock[] {
           continue;
         }
         if (ol) {
-          items.push({ blocks: [paraBlock(ol[2])], type: "1", value: Number(ol[1]) });
+          if (ol[2].trim() !== "") items.push({ blocks: [paraBlock(ol[2])], type: "1", value: Number(ol[1]) });
           i++;
           continue;
         }
         break;
       }
-      out.push({ type: "list", items });
+      if (items.length > 0) out.push({ type: "list", items }); // all-empty (half-typed) list → nothing
       continue;
     }
     if (BQ_RE.test(line)) {
@@ -252,7 +264,8 @@ export function mdToBlocks(md: string): TgBlock[] {
         buf.push(bq[1]);
         i++;
       }
-      out.push({ type: "blockquote", blocks: mdToBlocks(buf.join("\n")) });
+      const bqBlocks = mdToBlocks(buf.join("\n"));
+      if (bqBlocks.length > 0) out.push({ type: "blockquote", blocks: bqBlocks }); // a bare ">" mid-stream 400s
       continue;
     }
     if (isTableRow(line) && i + 1 < lines.length && isTableSep(lines[i + 1])) {
@@ -281,8 +294,12 @@ const paraBlock = (text: string): TgBlock => ({ type: "paragraph", text: inlineT
 function tableBlock(rows: string[]): TgBlock {
   const splitRow = (row: string): string[] =>
     row.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((c) => c.trim());
-  const wrap = (rt: TgRichText, plainEntity: "bold" | "code"): TgRichText =>
-    typeof rt === "string" || Array.isArray(rt) ? { type: plainEntity, text: rt } : rt;
+  const wrap = (rt: TgRichText, plainEntity: "bold" | "code"): TgRichText => {
+    // An empty cell (half-typed mid-stream) would carry an empty entity — 400;
+    // a space renders as an (almost) empty cell and keeps the column shape.
+    const text = typeof rt === "string" && rt === "" ? " " : Array.isArray(rt) && richTextLen(rt) === 0 ? " " : rt;
+    return typeof text === "string" || Array.isArray(text) ? { type: plainEntity, text } : text;
+  };
   const header = splitRow(rows[0]).map((c) => wrap(inlineToRichText(c), "bold"));
   const body = rows.slice(2).map((r) => splitRow(r).map((c) => wrap(inlineToRichText(c), "code")));
   return { type: "table", is_bordered: true, cells: [header, ...body] };

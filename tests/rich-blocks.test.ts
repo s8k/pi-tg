@@ -586,3 +586,60 @@ describe("blocksToPlainText", () => {
     assert.equal(blocksToPlainText([{ type: "thinking", text: "W" }]), "W");
   });
 });
+
+// ─────────────────────── streaming-transient shapes: never emit empty blocks ───────────────────────
+// A live draft re-parses the streaming tail every tick — mid-token shapes (a bare
+// fence opener, an unclosed <details>, a half-typed heading/list item/quote) must
+// NOT produce blocks with empty content: the server 400s them with
+// RICH_MESSAGE_CONTENT_REQUIRED (spike item 5) and the whole draft update is lost.
+describe("mdToBlocks: streaming-transient shapes (no empty blocks)", () => {
+  test("bare fence opener (body still streaming) → no pre block", () => {
+    assert.deepEqual(mdToBlocks("```"), []);
+    assert.deepEqual(mdToBlocks("```js"), []);
+    assert.deepEqual(mdToBlocks("```js\n"), []);
+  });
+  test("closed EMPTY fence → nothing to render", () => {
+    assert.deepEqual(mdToBlocks("```\n```"), []);
+  });
+  test("unclosed <details> with no body yet → dropped", () => {
+    assert.deepEqual(mdToBlocks("<details>"), []);
+    assert.deepEqual(mdToBlocks("<details>\n<summary>hi</summary>"), []);
+  });
+  test("heading with no text yet → dropped (bare ## stays a verbatim paragraph)", () => {
+    assert.deepEqual(mdToBlocks("## "), []);
+    assert.deepEqual(mdToBlocks("##"), [{ type: "paragraph", text: "##" }]);
+  });
+  test("list item with no text yet → item dropped (empty list → nothing)", () => {
+    assert.deepEqual(mdToBlocks("- "), []);
+    assert.deepEqual(mdToBlocks("1. "), []);
+    // a real item survives, the empty one is filtered
+    assert.deepEqual(mdToBlocks("- \n- x"), [{ type: "list", items: [{ blocks: [{ type: "paragraph", text: "x" }] }] }]);
+  });
+  test("blockquote with no content yet → dropped", () => {
+    assert.deepEqual(mdToBlocks(">"), []);
+    assert.deepEqual(mdToBlocks("> "), []);
+  });
+  test("mixed doc: real content kept, transient empties dropped", () => {
+    // NB: "hello\n```\n## " — the fence is UNCLOSED (streaming), so "## " is its
+    // in-flight body: one pre("## "). (A closed empty fence IS dropped — above.)
+    assert.deepEqual(mdToBlocks("hello\n```\n## "), [
+      { type: "paragraph", text: "hello" },
+      { type: "pre", text: "## " },
+    ]);
+    assert.deepEqual(mdToBlocks("hello\n```\n##\n```\n## "), [
+      { type: "paragraph", text: "hello" },
+      { type: "pre", text: "##" },
+    ]);
+    assert.deepEqual(mdToBlocks("```\nx\n```\n```"), [{ type: "pre", text: "x" }]);
+  });
+  test("table cell with no text yet → space (entity text must be non-empty)", () => {
+    const out = mdToBlocks("| a |  |\n| --- | --- |\n| 1 |  |");
+    assert.deepEqual(out, [{
+      type: "table", is_bordered: true,
+      cells: [
+        [{ type: "bold", text: "a" }, { type: "bold", text: " " }],
+        [{ type: "code", text: "1" }, { type: "code", text: " " }],
+      ],
+    }]);
+  });
+});
