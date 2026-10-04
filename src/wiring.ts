@@ -45,7 +45,8 @@ export interface ClientLike {
   sendMessage(chatId: number, text: string, opts?: { parseMode?: "HTML" | null; replyToId?: number; replyMarkup?: unknown; disableNotification?: boolean }): Promise<{ message_id: number }>;
   editMessageText(chatId: number, messageId: number, text: string, opts?: { parseMode?: "HTML" | null; replyMarkup?: unknown }): Promise<boolean>;
   deleteMessage(chatId: number, messageId: number): Promise<void>;
-  sendRichMessage(chatId: number, rich: { blocks: TgBlock[] }, opts?: { replyToId?: number; disableNotification?: boolean }): Promise<{ message_id: number }>;
+  sendRichMessage(chatId: number, rich: { blocks: TgBlock[] }, opts?: { replyToId?: number; disableNotification?: boolean; replyMarkup?: unknown }): Promise<{ message_id: number }>;
+  editRichMessage(chatId: number, messageId: number, rich: { blocks: TgBlock[] }, opts?: { replyMarkup?: unknown }): Promise<boolean>;
   sendRichMessageDraft(chatId: number, draftId: number, rich: { blocks: TgBlock[] }, canStop?: boolean, keepOnStop?: boolean): Promise<boolean>;
 }
 
@@ -68,6 +69,7 @@ export function makeOut(client: ClientLike, state: TelegramState, persist: () =>
     },
     sendDraft: (chatId, draftId, blocks, canStop, keepOnStop) =>
       client.sendRichMessageDraft(chatId, draftId, { blocks }, canStop, keepOnStop),
+    editRich: (chatId, messageId, blocks, opts) => client.editRichMessage(chatId, messageId, { blocks }, opts),
     edit: (chatId, messageId, text, opts) => {
       const parseMode: "HTML" | null = opts && opts.parseMode !== undefined ? opts.parseMode : "HTML";
       return client.editMessageText(chatId, messageId, text, { parseMode, replyMarkup: opts?.replyMarkup });

@@ -1,6 +1,19 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { SessionBridge, helpText } from "../src/session-bridge.ts";
+import { SessionBridge, helpBlocks } from "../src/session-bridge.ts";
+
+/** The bold command names of helpBlocks, in order. */
+const helpCmds = (): string[] => {
+  const cmds: string[] = [];
+  for (const b of helpBlocks()) {
+    if (b.type !== "paragraph") continue;
+    const parts = Array.isArray(b.text) ? b.text : [b.text];
+    for (const p of parts) {
+      if (!Array.isArray(p) && typeof p !== "string" && p.type === "bold") cmds.push(String(p.text));
+    }
+  }
+  return cmds.filter((c) => c.startsWith("/"));
+};
 import { FakeOut, FakePi } from "./fake-pi.ts";
 import { makeDeps, lastSend } from "./helpers.ts";
 
@@ -45,23 +58,20 @@ test("old /mute /unmute are gone: they land on the unknown-command path", async 
 });
 
 test("help: command order — status, stop, compact up top; name right after sessions", () => {
-  const cmds = helpText()
-    .split("\n")
-    .filter((l) => l.startsWith("<b>/"))
-    .map((l) => l.match(/^<b>\/(\w+)/)?.[1] ?? "");
+  const cmds = helpCmds();
   assert.deepEqual(cmds, [
-    "status", "stop", "compact", "new", "sessions", "name", "models", "thinking",
-    "level_mute", "level_minimal", "level_full", "reload", "kill", "help",
+    "/status", "/stop", "/compact", "/new", "/sessions", "/name <text>", "/models", "/thinking",
+    "/level_mute", "/level_minimal", "/level_full", "/reload", "/kill", "/help",
   ]);
 });
 
 test("help lists the three level commands, not /mute or /unmute", () => {
-  const h = helpText();
-  assert.ok(h.includes("/level_mute"), h);
-  assert.ok(h.includes("/level_minimal"), h);
-  assert.ok(h.includes("/level_full"), h);
-  assert.ok(!h.includes("/mute"), h);
-  assert.ok(!h.includes("/unmute"), h);
+  const cmds = helpCmds();
+  assert.ok(cmds.includes("/level_mute"), cmds.join(","));
+  assert.ok(cmds.includes("/level_minimal"), cmds.join(","));
+  assert.ok(cmds.includes("/level_full"), cmds.join(","));
+  assert.ok(!cmds.includes("/mute"), cmds.join(","));
+  assert.ok(!cmds.includes("/unmute"), cmds.join(","));
 });
 
 test("status card always shows the level suffix (all three levels)", async () => {
@@ -69,7 +79,7 @@ test("status card always shows the level suffix (all three levels)", async () =>
     const pi = new FakePi({ cwd: "/proj", messageCount: 3 });
     const out = new FakeOut();
     await new SessionBridge(makeDeps(pi.build(), out, { level })).dispatch({ kind: "status", chatId: 7 });
-    return (out.calls.find((c) => c.kind === "send")?.text ?? "").split("\n")[0]!;
+    return (out.calls.find((c) => c.kind === "sendRich")?.text ?? "").split("\n")[0]!;
   };
   assert.equal(await header("full"), "📌 Untitled session — idle · 🔊 full");
   assert.equal(await header("minimal"), "📌 Untitled session — idle · 🔉 minimal");

@@ -12,7 +12,7 @@ import { probeGpu } from "./src/gpu.ts";
 import type { Out, TelegramPi } from "./src/session-bridge.ts";
 import { Mirror, compactTokenDetail } from "./src/mirror.ts";
 import type { MirrorMessage } from "./src/mirror.ts";
-import { renderQr, qrWidgetFactory, tokenLooksValid, notAuthorizedText } from "./src/onboarding.ts";
+import { renderQr, qrWidgetFactory, tokenLooksValid, notAuthorizedBlocks } from "./src/onboarding.ts";
 import { makeOut, makeTelegramPi, ctxIsAlive, wrapWaitForIdle, installUiProxy } from "./src/wiring.ts";
 import { PendingDialogs } from "./src/ui-dialogs.ts";
 import { runTgCompaction } from "./src/compact.ts";
@@ -246,7 +246,7 @@ export default function piTelegram(pi: ExtensionAPI): void {
       }
     }
     if (action.kind === "notAuthorized") {
-      await out.send(action.chatId, notAuthorizedText(false), { parseMode: null });
+      await out.sendRich(action.chatId, notAuthorizedBlocks(false));
       return;
     }
     if (action.kind === "unknown") {

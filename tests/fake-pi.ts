@@ -90,7 +90,7 @@ export class FakePi {
 }
 
 export interface FakeOutCall {
-  kind: "send" | "edit" | "delete" | "sendRich" | "sendDraft";
+  kind: "send" | "edit" | "delete" | "sendRich" | "sendDraft" | "editRich";
   chatId: number;
   messageId?: number;
   text?: string;
@@ -120,6 +120,10 @@ export class FakeOut {
   };
   edit = async (chatId: number, messageId: number, text: string, opts?: FakeOutCall["opts"]): Promise<boolean> => {
     this.calls.push({ kind: "edit", chatId, messageId, text, opts });
+    return true;
+  };
+  editRich = async (chatId: number, messageId: number, blocks: TgBlock[], opts?: { replyMarkup?: unknown }): Promise<boolean> => {
+    this.calls.push({ kind: "editRich", chatId, messageId, blocks, text: blocksToPlainText(blocks), opts: { ...opts } });
     return true;
   };
   delete = async (chatId: number, messageId: number): Promise<void> => {

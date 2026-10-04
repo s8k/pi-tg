@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { SessionBridge, helpText, type TelegramPi } from "../src/session-bridge.ts";
+import { SessionBridge, helpBlocks, type TelegramPi } from "../src/session-bridge.ts";
 import type { TgAction } from "../src/router.ts";
 import { FakeOut, FakePi } from "./fake-pi.ts";
 import { makeDeps, lastSend } from "./helpers.ts";
@@ -88,6 +88,7 @@ test("reload onDone(false, detail) → ⚠️ message; onDone(true) → no extra
   assert.ok(lastSend(out).includes("extension load failed: syntax error"));
 });
 
-test("helpText: lists /reload", () => {
-  assert.ok(helpText().includes("/reload"));
+test("helpBlocks: lists /reload", () => {
+  const plain = helpBlocks().map((b) => (b.type === "paragraph" ? JSON.stringify(b.text) : ""));
+  assert.ok(plain.some((p) => p.includes("/reload")));
 });

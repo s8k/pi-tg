@@ -34,3 +34,9 @@ export function lastSend(out: FakeOut): string {
   const sends = out.calls.filter((c) => c.kind === "send" && typeof c.text === "string");
   return sends[sends.length - 1]!.text as string;
 }
+
+/** The plain rendering of the last rich (blocks) call — send or edit. */
+export function lastRichText(out: FakeOut): string {
+  const calls = out.calls.filter((c) => c.kind === "sendRich" || c.kind === "editRich");
+  return calls[calls.length - 1]?.text ?? "";
+}
