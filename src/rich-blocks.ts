@@ -42,6 +42,89 @@ export interface TgListItem {
   type?: "a" | "A" | "i" | "I" | "1";
 }
 
+/**
+ * Convert ONE line of markdown to structured RichText.
+ * Supports: `code`, [t](url), **bold**, __bold__, *italic*, _italic_, ~~strike~~,
+ * ==marked==, ||spoiler||.
+ * Guarantees: balanced output (unmatched markers stay literal), code-span content
+ * verbatim (no formatting parsed inside), links' text parsed recursively.
+ */
+export function inlineToRichText(src: string): TgRichText {
+  // 1) code spans — stashed, verbatim, no formatting inside
+  const codeStash: string[] = [];
+  let s = src.replace(/`([^`\n]+)`/g, (_m, code: string) => {
+    codeStash.push(code);
+    return `\u0001${codeStash.length - 1}\u0001`;
+  });
+  // 2) links — stashed; URL untouched by later passes, text parsed recursively at the end
+  const linkStash: { text: string; url: string }[] = [];
+  s = s.replace(/\[([^\]\n]+)\]\(([^()\s]+)\)/g, (_m, text: string, url: string) => {
+    linkStash.push({ text, url });
+    return `\u0002${linkStash.length - 1}\u0002`;
+  });
+  // 3) emphasis — same regexes and pass order as the legacy inlineToHtml,
+  //    wrapping matches in open/close tags (tags contain no markers → no interference)
+  const open = (t: string) => `\u0004${t}\u0004`;
+  const close = (t: string) => `\u0005${t}\u0005`;
+  s = s.replace(/\*\*((?:[^*]|\*(?!\*))+?)\*\*/g, (_m, c: string) => open("B") + c + close("B"));
+  s = s.replace(/(^|[^_\w])__((?:[^_]|\_(?!_))+?)__(?![\w_])/g, (_m, pre: string, c: string) => pre + open("B") + c + close("B"));
+  s = s.replace(/~~(.+?)~~/g, (_m, c: string) => open("S") + c + close("S"));
+  s = s.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, (_m, pre: string, c: string) => pre + open("I") + c + close("I"));
+  s = s.replace(/(^|[^_\w])_([^_\n]+)_(?![\w_])/g, (_m, pre: string, c: string) => pre + open("I") + c + close("I"));
+  s = s.replace(/==(.+?)==/g, (_m, c: string) => open("M") + c + close("M"));
+  s = s.replace(/\|\|(.+?)\|\|/g, (_m, c: string) => open("P") + c + close("P"));
+  // 4) tag string → tree (stashes resolved here)
+  const out = parseTagged(s, codeStash, linkStash);
+  if (out.length === 0) return "";
+  if (out.length === 1) return out[0];
+  return out;
+}
+
+const EMPH_TYPE: Record<string, "bold" | "italic" | "strikethrough" | "marked" | "spoiler"> = {
+  B: "bold", I: "italic", S: "strikethrough", M: "marked", P: "spoiler",
+};
+
+/** Parse the tagged string into RichText nodes (recursive on emphasis tags). */
+function parseTagged(s: string, codeStash: string[], linkStash: { text: string; url: string }[]): TgRichText[] {
+  const out: TgRichText[] = [];
+  let buf = "";
+  const flush = () => {
+    if (buf !== "") { out.push(buf); buf = ""; }
+  };
+  let i = 0;
+  while (i < s.length) {
+    const ch = s.charAt(i);
+    if (ch === "\u0001" || ch === "\u0002") {
+      const end = s.indexOf(ch, i + 1);
+      const idx = Number(s.slice(i + 1, end));
+      flush();
+      if (ch === "\u0001") out.push({ type: "code", text: codeStash[idx] });
+      else {
+        const l = linkStash[idx];
+        out.push({ type: "url", text: inlineToRichText(l.text), url: l.url });
+      }
+      i = end + 1;
+      continue;
+    }
+    if (ch === "\u0004" && s.charAt(i + 2) === "\u0004") {
+      const t = s.charAt(i + 1);
+      const closeTag = `\u0005${t}\u0005`;
+      const end = s.indexOf(closeTag, i + 3);
+      flush();
+      const inner = parseTagged(s.slice(i + 3, end), codeStash, linkStash);
+      out.push({ type: EMPH_TYPE[t], text: inner.length === 1 ? inner[0] : inner });
+      i = end + closeTag.length;
+      continue;
+    }
+    buf += ch;
+    i++;
+  }
+  flush();
+  return out;
+}
+
+
+
 /** Sum of plain-text char lengths of all string leaves (JS string units, not bytes). */
 export function richTextLen(rt: TgRichText): number {
   if (typeof rt === "string") return rt.length;
