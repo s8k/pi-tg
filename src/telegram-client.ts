@@ -1,5 +1,6 @@
 /** Structural fetch — the real global `fetch` satisfies it; tests inject a fake. */
 import { BOT_COMMANDS } from "./bot-commands.ts";
+import type { TgBlock } from "./rich-blocks.ts";
 
 export type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
 
@@ -73,11 +74,9 @@ export interface TgUpdate {
   stopped_message_generation?: MessageGenerationStopped;
 }
 
-/** One of `markdown` | `html` | `blocks` must be set (Bot API 10.2, InputRichMessage). */
+/** Blocks-tier rich message (Bot API 10.2+, InputRichMessage). The markdown/html tiers retire with this migration. */
 export interface InputRichMessage {
-  markdown?: string;
-  html?: string;
-  blocks?: unknown[];
+  blocks: TgBlock[];
 }
 
 /**

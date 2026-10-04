@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { TelegramClient, TgError, TgNetworkError, pollLoop } from "../src/telegram-client.ts";
-import type { FetchLike } from "../src/telegram-client.ts";
+import type { FetchLike, InputRichMessage } from "../src/telegram-client.ts";
 import { BOT_COMMANDS } from "../src/bot-commands.ts";
 import { makeFakeFetch } from "./fake-fetch.ts";
 
@@ -44,7 +44,7 @@ test("sendRichMessageDraft: 429 is NOT retried (ephemeral payload) — one reque
   const ff = makeFakeFetch(() => ({ status: 429, body: { ok: false, error_code: 429, description: "Too Many Requests", parameters: { retry_after: 25 } } }));
   const c = new TelegramClient("T", { fetchImpl: ff.fetchImpl, sleep: async () => {} });
   await assert.rejects(
-    c.sendRichMessageDraft(7, 1, { markdown: "x" }),
+    c.sendRichMessageDraft(7, 1, { blocks: [{"type":"paragraph", text: "x"}]}),
     (e: unknown) => e instanceof TgError && e.code === 429 && e.retryAfter === 25,
   );
   assert.equal(ff.calls.length, 1, "the mirror paces the retry via its failure cooldown");
@@ -324,17 +324,17 @@ test("pollLoop: already stopping → returns without any call", async () => {
 test("sendRichMessage: rich_message param, optional reply_to_message", async () => {
   const ff = makeFakeFetch(() => ({ status: 200, body: { ok: true, result: { message_id: 9, chat: { id: 7, type: "private" }, date: 1 } } }));
   const c = new TelegramClient("T", { fetchImpl: ff.fetchImpl });
-  const msg = await c.sendRichMessage(7, { markdown: "| a | b |" }, { replyToId: 4 });
+  const msg = await c.sendRichMessage(7, { blocks: [{"type":"paragraph", text: "| a | b |"}]}, { replyToId: 4 });
   assert.equal(msg.message_id, 9);
   assert.equal(ff.calls[0].url, "https://api.telegram.org/botT/sendRichMessage");
   const body = JSON.parse(String(ff.calls[0].init?.body ?? "{}"));
-  assert.deepEqual(body, { chat_id: 7, rich_message: { markdown: "| a | b |" }, reply_to_message: { message_id: 4 } });
+  assert.deepEqual(body, { chat_id: 7, rich_message: { blocks: [{"type":"paragraph", text: "| a | b |"}]}, reply_to_message: { message_id: 4 } });
 });
 
 test("sendRichMessage: no replyToId omits reply_to_message", async () => {
   const ff = makeFakeFetch(() => ({ status: 200, body: { ok: true, result: { message_id: 5, chat: { id: 7, type: "private" }, date: 1 } } }));
   const c = new TelegramClient("T", { fetchImpl: ff.fetchImpl });
-  const rich = { markdown: "# hi" };
+  const rich: InputRichMessage = { blocks: [{ type: "paragraph", text: "# hi" }] };
   await c.sendRichMessage(7, rich);
   const body = JSON.parse(String(ff.calls[0].init?.body ?? "{}"));
   assert.equal(body.chat_id, 7);
@@ -345,10 +345,10 @@ test("sendRichMessage: no replyToId omits reply_to_message", async () => {
 test("sendRichMessage: disableNotification → disable_notification param; omitted when absent", async () => {
   const ff = makeFakeFetch(() => ({ status: 200, body: { ok: true, result: { message_id: 5, chat: { id: 7, type: "private" }, date: 1 } } }));
   const c = new TelegramClient("T", { fetchImpl: ff.fetchImpl });
-  await c.sendRichMessage(7, { markdown: "x" }, { disableNotification: true });
+  await c.sendRichMessage(7, { blocks: [{"type":"paragraph", text: "x"}]}, { disableNotification: true });
   const b1 = JSON.parse(String(ff.calls[0].init?.body ?? "{}"));
   assert.equal(b1.disable_notification, true, "silent send carries disable_notification: true");
-  await c.sendRichMessage(7, { markdown: "y" });
+  await c.sendRichMessage(7, { blocks: [{"type":"paragraph", text: "y"}]});
   const b2 = JSON.parse(String(ff.calls[1].init?.body ?? "{}"));
   assert.ok(!("disable_notification" in b2), "a notifying send omits the param");
 });
@@ -356,9 +356,9 @@ test("sendRichMessage: disableNotification → disable_notification param; omitt
 test("sendRichMessageDraft: draft_id + can_stop only when true; omitted when falsy", async () => {
   const ff = makeFakeFetch(() => ({ status: 200, body: { ok: true, result: true } }));
   const c = new TelegramClient("T", { fetchImpl: ff.fetchImpl });
-  assert.equal(await c.sendRichMessageDraft(7, 3, { markdown: "x" }, true), true);
-  assert.deepEqual(JSON.parse(String(ff.calls[0].init?.body)), { chat_id: 7, draft_id: 3, rich_message: { markdown: "x" }, can_stop: true });
-  assert.equal(await c.sendRichMessageDraft(7, 4, { markdown: "y" }), true);
+  assert.equal(await c.sendRichMessageDraft(7, 3, { blocks: [{"type":"paragraph", text: "x"}]}, true), true);
+  assert.deepEqual(JSON.parse(String(ff.calls[0].init?.body)), { chat_id: 7, draft_id: 3, rich_message: { blocks: [{"type":"paragraph", text: "x"}]}, can_stop: true });
+  assert.equal(await c.sendRichMessageDraft(7, 4, { blocks: [{"type":"paragraph", text: "y"}]}), true);
   const body2 = JSON.parse(String(ff.calls[1].init?.body));
   assert.equal("can_stop" in body2, false);
   assert.equal(body2.draft_id, 4);
@@ -367,15 +367,15 @@ test("sendRichMessageDraft: draft_id + can_stop only when true; omitted when fal
 test("sendRichMessageDraft: keep_on_stop only when true (drafts survive Stop so the bot can persist them)", async () => {
   const ff = makeFakeFetch(() => ({ status: 200, body: { ok: true, result: true } }));
   const c = new TelegramClient("T", { fetchImpl: ff.fetchImpl });
-  assert.equal(await c.sendRichMessageDraft(7, 5, { markdown: "x" }, true, true), true);
+  assert.equal(await c.sendRichMessageDraft(7, 5, { blocks: [{"type":"paragraph", text: "x"}]}, true, true), true);
   assert.deepEqual(JSON.parse(String(ff.calls[0].init?.body)), {
     chat_id: 7,
     draft_id: 5,
-    rich_message: { markdown: "x" },
+    rich_message: { blocks: [{"type":"paragraph", text: "x"}]},
     can_stop: true,
     keep_on_stop: true,
   });
-  assert.equal(await c.sendRichMessageDraft(7, 6, { markdown: "y" }, true, false), true);
+  assert.equal(await c.sendRichMessageDraft(7, 6, { blocks: [{"type":"paragraph", text: "y"}]}, true, false), true);
   const body2 = JSON.parse(String(ff.calls[1].init?.body));
   assert.equal("keep_on_stop" in body2, false, "falsy keepOnStop is omitted, not sent as false");
 });
@@ -383,7 +383,7 @@ test("sendRichMessageDraft: keep_on_stop only when true (drafts survive Stop so 
 test("sendRichMessage: 400 surfaces as TgError (fallback trigger)", async () => {
   const ff = makeFakeFetch(() => ({ status: 400, body: { ok: false, error_code: 400, description: "Bad Request: rich message parse error" } }));
   const c = new TelegramClient("T", { fetchImpl: ff.fetchImpl });
-  await assert.rejects(c.sendRichMessage(7, { markdown: "<broken" }), (e: unknown) => e instanceof TgError && e.code === 400);
+  await assert.rejects(c.sendRichMessage(7, { blocks: [{"type":"paragraph", text: "<broken"}]}), (e: unknown) => e instanceof TgError && e.code === 400);
 });
 
 test("setMyCommands: posts the full menu (global scope, no language_code)", async () => {
