@@ -985,10 +985,12 @@ export class Mirror {
    * One persistent send: fold long fences, chunk at the cap (the single
    * finalized message can exceed the cap; the draft is capped, the final
    * message is not), send as blocks-tier rich messages. On a 400 (the server
-   * rejected the blocks — the same content cannot heal) the WHOLE message is
-   * re-sent as plain text. A 400 that survives both levels rethrows without
-   * retrying. The `thinking` block is draft-only and never reaches this path
-   * (finalization builds with a non-thinking bottom).
+   * rejected the blocks — the same content cannot heal), the UNDELIVERED tail
+   * (the chunk that 400'd and everything after it) is re-sent as plain text —
+   * chunks that already landed are never re-sent (duplication). A 400 that
+   * survives the plain rung rethrows without retrying. The `thinking` block is
+   * draft-only and never reaches this path (finalization builds with a
+   * non-thinking bottom).
    */
   private async deliverOnce(chatId: number, blocks: TgBlock[], opts?: { disableNotification?: boolean }): Promise<void> {
     // the silence flag survives the rich → plain fallback chain
@@ -996,13 +998,15 @@ export class Mirror {
     const { out } = this.deps;
     const folded = foldBlocks(blocks, this.deps.cfg.codeFoldLines);
     const pieces = blocksLen(folded) <= RICH_CAP && blockCount(folded) <= 480 ? [folded] : chunkBlocks(folded);
+    let i = 0;
     try {
-      for (const p of pieces) await out.sendRich(chatId, p, silence);
+      for (; i < pieces.length; i++) await out.sendRich(chatId, pieces[i]!, silence);
       return;
     } catch (err) {
       if (!(err instanceof TgError && err.code === 400)) throw err;
     }
-    for (const chunk of chunkText(blocksToPlainText(folded))) await out.send(chatId, chunk, { parseMode: null, ...silence });
+    // chunks 0..i-1 already landed — re-send ONLY i..end as plain text
+    for (const chunk of chunkText(blocksToPlainText(pieces.slice(i).flat()))) await out.send(chatId, chunk, { parseMode: null, ...silence });
   }
 
   /** Up to PERSIST_ATTEMPTS with 1s/2s/4s backoff, honoring a 429's retry_after. */
