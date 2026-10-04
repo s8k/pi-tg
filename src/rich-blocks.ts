@@ -225,11 +225,19 @@ export function mdToBlocks(md: string): TgBlock[] {
     if (HR_RE.test(line)) { flushPara(); out.push({ type: "divider" }); i++; continue; }
     if (UL_RE.test(line) || OL_RE.test(line)) {
       flushPara();
-      const items: TgListItem[] = [];
+      // Server rule: a list must be EITHER ordered or unordered — a marker-type
+      // switch splits the list into consecutive runs (GFM does the same).
+      let kind: "ul" | "ol" = UL_RE.test(line) ? "ul" : "ol";
+      let items: TgListItem[] = [];
+      const flushList = () => {
+        if (items.length > 0) out.push({ type: "list", items }); // all-empty (half-typed) run → nothing
+        items = [];
+      };
       while (i < lines.length) {
         const ul = UL_RE.exec(lines[i]);
         const ol = OL_RE.exec(lines[i]);
         if (ul) {
+          if (kind === "ol") { flushList(); kind = "ul"; }
           // A half-typed item ("- ") would carry an empty paragraph — 400.
           const task = TASK_RE.exec(ul[1]);
           const itemText = task ? task[2] : ul[1];
@@ -240,19 +248,22 @@ export function mdToBlocks(md: string): TgBlock[] {
           i++;
           // v1: indented continuation lines attach to the previous item (flat lists)
           while (i < lines.length && /^\s+\S/.test(lines[i]) && !UL_RE.test(lines[i]) && !OL_RE.test(lines[i])) {
-            items[items.length - 1].blocks.push({ type: "paragraph", text: lines[i].trim() });
+            const cont = lines[i].trim();
             i++;
+            if (items.length > 0) items[items.length - 1].blocks.push({ type: "paragraph", text: cont });
+            else out.push({ type: "paragraph", text: cont }); // orphaned (its item was empty+dropped)
           }
           continue;
         }
         if (ol) {
+          if (kind === "ul") { flushList(); kind = "ol"; }
           if (ol[2].trim() !== "") items.push({ blocks: [paraBlock(ol[2])], type: "1", value: Number(ol[1]) });
           i++;
           continue;
         }
         break;
       }
-      if (items.length > 0) out.push({ type: "list", items }); // all-empty (half-typed) list → nothing
+      flushList();
       continue;
     }
     if (BQ_RE.test(line)) {

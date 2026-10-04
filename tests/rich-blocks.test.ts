@@ -632,6 +632,31 @@ describe("mdToBlocks: streaming-transient shapes (no empty blocks)", () => {
     ]);
     assert.deepEqual(mdToBlocks("```\nx\n```\n```"), [{ type: "pre", text: "x" }]);
   });
+  test("marker-type switch splits the list (server: list must be either ordered or unordered)", () => {
+    assert.deepEqual(mdToBlocks("- a\n1. b"), [
+      { type: "list", items: [{ blocks: [{ type: "paragraph", text: "a" }] }] },
+      { type: "list", items: [{ blocks: [{ type: "paragraph", text: "b" }], type: "1", value: 1 }] },
+    ]);
+    assert.deepEqual(mdToBlocks("1. a\n- b"), [
+      { type: "list", items: [{ blocks: [{ type: "paragraph", text: "a" }], type: "1", value: 1 }] },
+      { type: "list", items: [{ blocks: [{ type: "paragraph", text: "b" }] }] },
+    ]);
+    // same type stays one list (regression guard)
+    assert.deepEqual(mdToBlocks("- a\n- b"), [
+      { type: "list", items: [{ blocks: [{ type: "paragraph", text: "a" }] }, { blocks: [{ type: "paragraph", text: "b" }] }] },
+    ]);
+    // checkbox + plain = both unordered → one list
+    assert.deepEqual(mdToBlocks("- [ ] a\n- b"), [
+      { type: "list", items: [{ blocks: [{ type: "paragraph", text: "a" }], has_checkbox: true, is_checked: false }, { blocks: [{ type: "paragraph", text: "b" }] }] },
+    ]);
+  });
+  test("empty item at a marker-type switch: continuation line never crashes", () => {
+    const out = mdToBlocks("1. a\n- \n  cont");
+    assert.deepEqual(out, [
+      { type: "list", items: [{ blocks: [{ type: "paragraph", text: "a" }], type: "1", value: 1 }] },
+      { type: "paragraph", text: "cont" },
+    ]);
+  });
   test("table cell with no text yet → space (entity text must be non-empty)", () => {
     const out = mdToBlocks("| a |  |\n| --- | --- |\n| 1 |  |");
     assert.deepEqual(out, [{
