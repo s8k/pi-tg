@@ -184,6 +184,19 @@ describe("inlineToRichText", () => {
   test("& < > are plain text, never structure", () => {
     assert.deepEqual(inlineToRichText("a < b & c > d"), "a < b & c > d");
   });
+  test("emphasis crossing a bold boundary: terminates, no tag leakage (unbalanced-tag loop regression)", () => {
+    // The italic pass can pair a `*` INSIDE the bold content with a `*` AFTER
+    // the bold's close → unbalanced emphasis tags. parseTagged must not loop
+    // on them (it used to: indexOf(closeTag) = -1 → re-enter the same open tag
+    // forever → OOM on ~KB of real session content).
+    const out = inlineToRichText("**a * b** * c * d**");
+    const json = JSON.stringify(out);
+    assert.ok(!json.includes("\u0004"), "open tag leaked into output");
+    assert.ok(!json.includes("\u0005"), "close tag leaked into output");
+    const flat = (rt: TgRichText): string =>
+      typeof rt === "string" ? rt : Array.isArray(rt) ? rt.map(flat).join("") : flat(rt.text);
+    assert.ok(flat(out).includes("c") && flat(out).includes("d"), "content preserved");
+  });
   test("code span with unmatched emphasis inside stays verbatim", () => {
     assert.deepEqual(inlineToRichText("`a * b`"), C("a * b"));
   });

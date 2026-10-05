@@ -147,6 +147,7 @@ function parseTagged(s: string, codeStash: string[], linkStash: { text: string; 
     const ch = s.charAt(i);
     if (ch === "\u0001" || ch === "\u0002" || ch === "\u0003") {
       const end = s.indexOf(ch, i + 1);
+      if (end === -1) { i++; continue; } // defensive: unpaired sentinel (the passes emit complete pairs)
       const idx = Number(s.slice(i + 1, end));
       flush();
       if (ch === "\u0001") out.push({ type: "code", text: codeStash[idx] });
@@ -161,10 +162,26 @@ function parseTagged(s: string, codeStash: string[], linkStash: { text: string; 
       i = end + 1;
       continue;
     }
+    // Stray close tag: the emphasis passes can emit an UNBALANCED pair when a
+    // later pass matches across an earlier pass's tag boundary (a `*` inside
+    // bold content paired with a `*` after the bold close). Skip it — the
+    // alternative (appending control chars to text) is worse.
+    if (ch === "\u0005" && s.charAt(i + 2) === "\u0005") {
+      i += 3;
+      continue;
+    }
     if (ch === "\u0004" && s.charAt(i + 2) === "\u0004") {
       const t = s.charAt(i + 1);
       const closeTag = `\u0005${t}\u0005`;
       const end = s.indexOf(closeTag, i + 3);
+      // Unbalanced open (the matching close sits in an outer scope, or was
+      // never emitted): skip the tag instead of recursing on slice(i+3, -1)
+      // and re-entering the same tag forever (that loop OOM'd the process on
+      // real session content).
+      if (end === -1) {
+        i += 3;
+        continue;
+      }
       flush();
       const inner = parseTagged(s.slice(i + 3, end), codeStash, linkStash);
       out.push({ type: EMPH_TYPE[t], text: inner.length === 1 ? inner[0] : inner });
