@@ -1,7 +1,7 @@
 # Blocks-Tier Mirroring Implementation Plan
 
 > **REQUIRED SUB-SKILL:** Use the executing-plans skill to implement this plan task-by-task.
-> **Status:** draft — chunk outline below; sections land incrementally.
+> **Status:** done (2026-10-06) — all 10 tasks implemented; live matrix complete except item 9.2-5 (auto-compact lane 2, pending owner test).
 
 **Goal:** Replace the markdown-tier rich mirroring with the Telegram Bot API `blocks` tier: the mirror's block-shaped state model (`LogBlock[]` + streaming `tail` + `BottomLine`) renders directly to an explicit `InputRichBlock[]` array for both the live draft and the persistent sends, eliminating the "markdown string is re-parsed by Telegram" round trip and the whole bug class it creates (unclosed streaming fence swallowing the `<tg-thinking>` bottom line into a `<pre>` block).
 
@@ -69,7 +69,7 @@ Plus (common to all tiers): `media` (array, `tg://photo|video|document|audio?id=
 
 **Limits (Rich Message Limits section):** up to **32768 UTF-8 characters** in the rich message text (incl. custom-emoji alt text and formula source); up to **500 blocks, INCLUDING nested blocks, list items, ordered list items, table rows, quotation blocks, and details blocks**; up to **16 nesting levels**; 50 media; 20 table columns.
 
-**Methods (unchanged by this migration):** `sendRichMessage(chat_id, rich_message, …)`; `sendRichMessageDraft(chat_id, draft_id, rich_message, can_stop?)` — draft is ephemeral ~30 s preview, same `draft_id` = animated, different = replaced without animation. Any message sent to the chat clears the ephemeral draft (owner-verified, unchanged).
+**Methods:** `sendRichMessage(chat_id, rich_message, …)`; `sendRichMessageDraft(chat_id, draft_id, rich_message, can_stop?)` — draft is ephemeral ~30 s preview, same `draft_id` = animated, different = replaced without animation. Any message sent to the chat clears the ephemeral draft (owner-verified). ⚠️ Updated 2026-10-05: the API was restructured — `sendMessage` no longer accepts `rich_message`; `sendRichMessage`/`sendRichMessageDraft` are the canonical methods (our client already uses them exclusively).
 
 **Markdown-tier notes (for the fallback tier, read for contrast):** GFM-compatible + arbitrary inline HTML; "Markdown isn't parsed inside block HTML tags other than `<details>`, `<tg-collage>` and `<tg-slideshow>`"; table cells accept inline formatting only; the `<tg-thinking>` tag works there too (spike-verified 2026-08-31).
 
@@ -265,7 +265,24 @@ Commit: `feat(mirror): persistent sends on blocks with plain demotion (markdown 
 **Files:** `src/session-bridge.ts` (lane-1 compact drafts → `thinking` block; compact stamps, dialog acks), `src/ui-dialogs.ts` (stamped dialog segments), `src/bot-commands.ts` (status card, help), `src/onboarding.ts` — each `out.sendRich(md, …)` call becomes `out.sendRichBlocks(mdToBlocks(md))` (helper on `Out`; no md twin). Tests per file; the bridge/commands tests assert block payloads.
 Commit: `feat(bridge,dialogs,commands): all rich senders on the blocks tier`
 
-### Task 9: live verification + sweep
+### Task 9: live verification + sweep (LIVE MATRIX — 2026-10-06)
+
+| # | item | result |
+|---|------|--------|
+| 1 | dialog pause/respawn (stamp + button animation) | ✅ owner-verified (incl. the one-shot clear/kill fix) |
+| 2 | working draft — spinner under a streaming code fence, tool blocks (details + pre), done end (m1 + `Completed ✔️`, m2) | ✅ owner-verified |
+| 3 | ✖ tool-error block | ✅ owner-verified (read tool on a missing file → `isError` → ✖ pre block) |
+| 4 | error end (⚠️ + divider + thinking while open; finalized) | ✅ owner-verified (aborted run) |
+| 5 | auto-compact lane 1 + lane 2 | ⏳ pending owner test (lane 1 covered by unit tests) |
+| 6 | 32k+ answer chunking (`(continued)` marker) | ✅ owner-verified |
+| 7 | 400-fallback drill | ✅ owner-verified — 22-col table → plain demotion landed |
+| 8 | TUI dialog mirroring (select + confirm, both directions) | ✅ owner-verified 2026-10-06 after the single-arg confirm/input signal-slot fix (`64a4149`) |
+
+Post-migration fixes (all on this branch): streaming-transient empty-block 400, list marker-type split, table header `is_header`, answerCallbackQuery on every tap, one-shot clear/kill nonce, nested lists, and the dialog signal-slot fix.
+
+---
+
+### Task 9 (original spec): live verification + sweep
 
 1. `npx tsc --noEmit` + full `node --test` green.
 2. Live matrix against the Task-0 screenshots: working draft (spinner below a streaming code fence — the original bug), tool blocks (collapsed details + json pre + ✖ error pre), done end (m1 log + `Completed ✔️`, m2 answer), error end (⚠️ paragraph + divider + thinking while open; finalized error message), auto-compact lane 1 + lane 2, dialog pause/respawn, 32k+ answer chunking (`(continued)` marker), 400-fallback drill (temporarily corrupt a blocks payload → watch the md rung land).
@@ -283,13 +300,13 @@ Commit: `docs: blocks-tier mirroring — sweep stale references`
 | R2 | `mdToBlocks` is now a RENDERING parse over the LLM's free-form answer — a misparse degrades what the user reads (vs today's lossy-safe structural parse), and with the markdown tier retired there is no formatted fallback | Total-function contract (never throws, unknown → plain paragraph); on a blocks 400 the plain demotion renders the SAME blocks (`blocksToPlainText`) — content complete, formatting degraded; the live 400 drill (Task 9) exercises this path |
 | R3 | 32768 cap counts rendered text; our `blocksLen` counts JS string units of plain text | Same relationship as today's markdown source (rendered ≤ source, multibyte discounted) — `RICH_CAP = 32_000` budget carries over; Task 0.5 probes the 33k boundary on blocks |
 | R4 | 500-block cap counts list items + table rows + nested blocks — a miscount in `blockCount` would let an over-limit chunk 400 | handled like the 32k cap: `chunkBlocks` budgets `blockCount` per chunk (480 margin) with per-type inner splits (list at items, table at rows); Task 0.5 confirms the limit is per-message and the counting semantics; the fallback chain is the backstop for any residual miscount |
-| R5 | Flat-lists-only `mdToBlocks` (indented sub-items) | Documented v1 limit; indented lines attach to the previous item as extra paragraph text (no information loss, minor visual) |
+| R5 | ~~Flat-lists-only `mdToBlocks`~~ CLOSED 2026-10-05: nested lists implemented (stack-based GFM parser; indent > parent → nested list in the parent item's blocks; marker-type switch at same indent → sibling split; lazy materialization). Live-verified 3-level nesting (msg 1426) |
 | R6 | Drafts have no fallback rung — a blocks draft that 400s sits in the failure cooldown while the run continues | Unchanged from today (drafts already don't fall back); the persistent path still delivers everything; failure notifications surface it. Acceptable — flag if live drills show draft 400s are frequent |
 | R7 | `thinking` block label with token suffix — shimmer may clip long labels | Task 0.1 verifies the full `Pondering… ↑567 ↓1.2k` label renders; if clipped, move the suffix to a trailing `paragraph` (layout regression test pinned) |
 | R8 | Footnotes (`[^id]`), table alignment, task-list checkboxes from LLM markdown have no/partial block equivalents | Footnotes → plain text; alignment → default; GFM task lists `- [ ]` → `ListItem.has_checkbox` (free win — implement in Task 3) |
 | R9 | Received side: if the owner ever sends a rich message, updates carry `rich_message` blocks, not `text` | Out of scope (private chat, plain commands); the router reads `message.text` — add a defensive `rich_message` → plain-text projection in a follow-up if it ever matters |
 
-**Explicit non-goals (stay parked):** media/map/document/voice blocks, `<tg-button>` rows, collages/slideshows, `is_compact`/styled tables, RTL, `footer`/`anchor`/`pullquote`/`expandable_blockquote` blocks, nested list items (v2), the `html` tier as a primary format.
+**Explicit non-goals (stay parked):** media/map/document/voice blocks, `<tg-button>` rows, collages/slideshows, `is_compact`/styled tables, RTL, `footer`/`anchor`/`pullquote`/`expandable_blockquote` blocks, the `html` tier as a primary format. (Nested list items were a v2 non-goal — implemented 2026-10-05, see R5.)
 
 ## Why this is worth doing now (context)
 
