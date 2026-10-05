@@ -1,7 +1,7 @@
 # md4x parser migration
 
-Status: **planned** — branch `feat/md4x-parser` (branched from
-`feat/rich_blocks_migration` @ `9947938`).
+Status: **in progress** (T1–T2 done) — branch `feat/md4x-parser`
+(branched from `feat/rich_blocks_migration` @ `9947938`).
 
 ## Context
 
@@ -64,9 +64,10 @@ dialogs, the canonical footnote shape, math/anchor blocks.
 ## Chunk / progress tracker
 
 - [x] Chunk 1: header, context, goals/non-goals, task outline
-- [ ] Chunk 2: design — API surface, AST→TG mapping table, footnote mapping, heal strategy
-- [ ] Chunk 3: behavioral diffs + test strategy
-- [ ] Chunk 4: risks + live verification checklist
+- [x] Chunk 2: design — API surface, AST→TG mapping table, footnote mapping, heal strategy
+- [x] Chunk 3: behavioral diffs + test strategy
+- [x] Chunk 4: risks + live verification checklist
+- [x] T2 spike results recorded (§4.4)
 
 ---
 
@@ -289,12 +290,50 @@ that the mapper is behaviorally equivalent (modulo 3.1).
 - [ ] this doc's status → done; merge plan: `feat/md4x-parser` →
       `feat/rich_blocks_migration` (or → `main` once that branch merges)
 
-### 4.4 Open items for the T2 spike
+### 4.4 T2 spike results (2026-10-07, md4x 0.0.30) — all open items resolved
 
-- [ ] hard-break AST shape (3.1 #10)
-- [ ] inline `$x$` math: does md4x emit an inline math node? (3.1 #13)
-- [ ] ` ```math ` fence → math-display? (old behavior: yes)
-- [ ] `ol` starting > 1: `props.start` value; `li` value source
-- [ ] frontmatter: confirm suppression + `meta.title`
-- [ ] heal on: unclosed fence, unclosed table, half-typed `**`, half-typed `$$`
-- [ ] multiple body refs to one def: refId sequence + `refCount`
+1. **Hard breaks**: two-trailing-spaces → `br` node (empty element) → map to
+   `"\n"`. Soft break = literal `\n` inside the text string (unchanged).
+   **md4x quirk**: backslash-EOL becomes literal `\` + `n` (newline
+   swallowed, verified by char codes) instead of a `br`. Workaround:
+   stateless pre-scan `src.replace(/\\\n/g, "  \n")` before `parseAST`
+   (one regex, no state — not the kind of pass we're removing).
+2. **Inline math EXISTS**: `$x$` → `["math",{},expr]`. No inline-math entity
+   in `TgRichText` → map to literal `$expr$` string (preserves source;
+   matches old literal behavior). (Resolves 3.1 #13.)
+3. **` ```math ` fence is NOT math-display** — it's a plain `pre` with
+   `language: "math"`. Mapper: `pre` with `language === "math"` →
+   `mathematical_expression` (strip the trailing `\n` md4x keeps in code
+   content). Same end result as the old converter — tests stay green.
+4. **Ordered lists**: `props.start` present only when > 1; `li` carries no
+   value → mapper computes `value = (start ?? 1) + i`, `type: "1"`.
+5. **Frontmatter**: confirmed suppressed from `nodes`; available as
+   `tree.frontmatter` / `tree.meta.title` (we ignore both — 3.1 #11 stands).
+6. **heal**: unclosed fence → `pre` **even without heal** (CommonMark: fence
+   runs to EOD — spec, not heal); unclosed table [heal] → padded with empty
+   `td` nodes (the empty-cell rule below handles them); half `**` → closed
+   `strong` [heal] vs literal (no heal) ✓; half `$$` → `math-display` [heal] ✓.
+7. **Multiple refs to one def**: `refId` = 1..n per body occurrence, `refCount`
+   = n, ONE `footnote` entry in the `footnotes` block ✓. `[^id: label]` →
+   literal (pandoc extension) ✓. `label` prop = the user's source label; `id`
+   = the assigned number. The canonical mapping uses `id` (number) — same as
+   today (`reference_link` text = the number, not the label).
+
+**Refined table-cell rule (mapper MUST replicate the current wrap logic —
+spike-pinned 2026-10-05):** header plain cell → `bold` entity +
+`is_header: true`; body plain cell → `code` entity; a cell that maps to a
+single pure entity passes through (entities keep their own type, header adds
+`is_header`); a cell mapping to an ARRAY (mixed content) is WRAPPED in the
+plain entity (`{type: "code", text: ["x ", bold]}` — whole cell monospace);
+empty cell ("" or zero-length) → `" "` single space (empty entity 400s).
+
+**Refined canonical footnote mapping (T5):** body `footnote-ref {id: N,
+refId: k}` → `superscript[anchor{fnref-N-k}, reference_link{String(N),
+fn-N}]`; `footnotes` block → one `footer`: per `footnote {id: N}` →
+`"${N}. "` + `reference{mapInline(defChildren), fn-N}` + `" "` +
+`anchor_link{"↩", fnref-N-1}`, entries `"\n"`-prefixed (merged into the
+next entry's prefix string, per msg 1516). Def children are already parsed
+inline nodes — no re-parse needed (old code re-ran `inlineToRichText` on the
+definition text; same result). Undefined refs need no handling: md4x leaves
+them as literal text (no node). No refs → no footer (md4x omits the
+`footnotes` block entirely).
