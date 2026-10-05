@@ -312,9 +312,10 @@ export class TelegramClient {
 
   /**
    * Edits a rich message in place (Bot API: editMessageText takes a
-   * `rich_message` parameter instead of `text`). Omits `reply_markup` keeps
-   * the message's existing inline keyboard. "Message is not modified" is
-   * not an error (returns false, like editMessageText).
+   * `rich_message` parameter instead of `text`). Omitting `reply_markup`
+   * REMOVES the message's inline keyboard (live-verified) — stamps use this
+   * to disable dialog buttons; pass a new markup to replace it. "Message is
+   * not modified" is not an error (returns false, like editMessageText).
    */
   async editRichMessage(
     chatId: number,

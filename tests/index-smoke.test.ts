@@ -593,6 +593,12 @@ test("dialog mirroring E2E: extension select → TG buttons → owner tap wins (
     },
   ]);
   assert.equal(await p1, "chocolate", "the extension got the TAPPED option");
+  // every callback query is ANSWERED (silent) — otherwise the tapped button
+  // keeps Telegram's loading animation
+  await waitFor(
+    () => calls.some((c) => c.method === "answerCallbackQuery" && c.body.callback_query_id === "cb1"),
+    "the tap's callback_query is answered on the wire (stops the button animation)",
+  );
   await waitFor(
     () => calls.some((c) => c.method === "editMessageText" && wireText(c).includes("chocolate")),
     "✔️ stamp on the wire (rich edit carries rich_message, not text)",

@@ -133,8 +133,9 @@ export class FakeOut {
     const attempt = this.sendRichAttempts++;
     const err = this.sendRichFailScript ? this.sendRichFailScript(attempt) : this.sendRichFailsWith;
     if (err) throw err;
-    this.calls.push({ kind: "sendRich", chatId, blocks, text: blocksToPlainText(blocks), opts });
-    return this.nextMessageId++;
+    const id = this.nextMessageId++;
+    this.calls.push({ kind: "sendRich", chatId, blocks, text: blocksToPlainText(blocks), opts, messageId: id });
+    return id;
   };
   sendDraft = async (chatId: number, draftId: number, blocks: TgBlock[], canStop?: boolean, keepOnStop?: boolean): Promise<boolean> => {
     this.calls.push({ kind: "sendDraft", chatId, blocks, text: blocksToPlainText(blocks), draftId, canStop, keepOnStop });

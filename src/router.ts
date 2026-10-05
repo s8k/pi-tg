@@ -6,8 +6,10 @@ export const CB = {
   session: (i: number) => `s:${i}`,
   model: (i: number) => `m:${i}`,
   thinking: (i: number) => `t:${i}`,
-  kill: (yes: boolean) => (yes ? "k:1" : "k:0"),
-  clear: (doIt: boolean) => (doIt ? "c:1" : "c:0"),
+  /** One-shot confirmations: an optional nonce ties the tap to its exact
+    * question (the bridge stamps + disables it; repeat/foreign taps die). */
+  kill: (yes: boolean, nonce?: string) => (yes ? "k:1" : "k:0") + (nonce ? `:${nonce}` : ""),
+  clear: (doIt: boolean, nonce?: string) => (doIt ? "c:1" : "c:0") + (nonce ? `:${nonce}` : ""),
   /** Mirrored TUI dialogs: da:<dialogId>:<optionIndex> / dc:<dialogId> — always ≤ 64 bytes. */
   dialogAnswer: (d: number, i: number) => `da:${d}:${i}`,
   dialogCancel: (d: number) => `dc:${d}`,
@@ -35,8 +37,8 @@ export type TgAction =
   | { kind: "reload"; chatId: number }
   | { kind: "nameSet"; chatId: number; name: string }
   | { kind: "killAsk"; chatId: number }
-  | { kind: "kill"; chatId: number; yes: boolean }
-  | { kind: "clear"; chatId: number; doIt: boolean }
+  | { kind: "kill"; chatId: number; yes: boolean; nonce?: string }
+  | { kind: "clear"; chatId: number; doIt: boolean; nonce?: string }
   | { kind: "prompt"; chatId: number; text: string }
   | { kind: "dialogAnswer"; chatId: number; dialogId: number; index: number }
   | { kind: "dialogCancel"; chatId: number; dialogId: number }
@@ -77,8 +79,10 @@ export function route(
     if (d.startsWith("s:")) return { kind: "sessionActivate", chatId, index: Number(d.slice(2)) };
     if (d.startsWith("m:")) return { kind: "modelSet", chatId, index: Number(d.slice(2)) };
     if (d.startsWith("t:")) return { kind: "thinkingSet", chatId, index: Number(d.slice(2)) };
-    if (d === "k:1" || d === "k:0") return { kind: "kill", chatId, yes: d === "k:1" };
-    if (d === "c:1" || d === "c:0") return { kind: "clear", chatId, doIt: d === "c:1" };
+    const killM = /^k:([01])(?::(\w+))?$/.exec(d);
+    if (killM) return { kind: "kill", chatId, yes: killM[1] === "1", ...(killM[2] ? { nonce: killM[2] } : {}) };
+    const clearM = /^c:([01])(?::(\w+))?$/.exec(d);
+    if (clearM) return { kind: "clear", chatId, doIt: clearM[1] === "1", ...(clearM[2] ? { nonce: clearM[2] } : {}) };
     if (d.startsWith("da:")) {
       const [ds, is] = d.slice(3).split(":");
       const dialogId = Number(ds);

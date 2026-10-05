@@ -66,6 +66,15 @@ test("callbacks: owner only, vocabulary maps, stale → ignore", () => {
   assert.deepEqual(route(cbUpdate(7, owner, CB.kill(false)), owner), { kind: "kill", chatId: 7, yes: false });
   assert.deepEqual(route(cbUpdate(8, owner, CB.clear(true)), owner), { kind: "clear", chatId: 7, doIt: true });
   assert.deepEqual(route(cbUpdate(9, owner, CB.clear(false)), owner), { kind: "clear", chatId: 7, doIt: false });
+  // one-shot confirmation nonces (clear/kill questions are stamped + disabled per nonce)
+  assert.equal(CB.kill(true, "k7"), "k:1:k7");
+  assert.equal(CB.clear(false, "c9"), "c:0:c9");
+  assert.deepEqual(route(cbUpdate(12, owner, "k:1:k7"), owner), { kind: "kill", chatId: 7, yes: true, nonce: "k7" });
+  assert.deepEqual(route(cbUpdate(13, owner, "k:0:k7"), owner), { kind: "kill", chatId: 7, yes: false, nonce: "k7" });
+  assert.deepEqual(route(cbUpdate(14, owner, "c:0:c9"), owner), { kind: "clear", chatId: 7, doIt: false, nonce: "c9" });
+  assert.deepEqual(route(cbUpdate(15, owner, "c:1:c9"), owner), { kind: "clear", chatId: 7, doIt: true, nonce: "c9" });
+  assert.deepEqual(route(cbUpdate(16, owner, "c:1:"), owner), { kind: "ignore" }); // empty nonce
+  assert.deepEqual(route(cbUpdate(17, owner, "k:2:k7"), owner), { kind: "ignore" }); // bad yes/no
   assert.deepEqual(route(cbUpdate(10, owner, "garbage"), owner), { kind: "ignore" });
   assert.deepEqual(route(cbUpdate(11, owner, "s:999999"), owner), { kind: "sessionActivate", chatId: 7, index: 999999 });
 });

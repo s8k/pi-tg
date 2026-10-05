@@ -101,7 +101,7 @@ export interface Out {
     blocks: TgBlock[],
     opts?: { disableNotification?: boolean; replyToId?: number; replyMarkup?: unknown }
   ): Promise<number | undefined>;
-  /** Edits a rich message in place (editMessageText's rich_message parameter). false = unchanged (not an error). Omitting replyMarkup keeps the existing keyboard. */
+  /** Edits a rich message in place (editMessageText's rich_message parameter). false = unchanged (not an error). Omitting replyMarkup REMOVES the existing keyboard (stamps use this to disable dialog buttons). */
   editRich(chatId: number, messageId: number, blocks: TgBlock[], opts?: { replyMarkup?: unknown }): Promise<boolean>;
   /** Ephemeral draft (blocks-tier; `thinking` blocks are allowed here — never in persistent sends). The same draftId refreshes in place. keepOnStop keeps the draft when Stop is pressed. */
   sendDraft(chatId: number, draftId: number, blocks: TgBlock[], canStop?: boolean, keepOnStop?: boolean): Promise<boolean>;
@@ -196,6 +196,14 @@ interface CompactState {
 
 export class SessionBridge {
   private deps: BridgeDeps;
+  /**
+   * One-shot confirmation questions (clear/kill): nonce → the question's
+   * message id + blocks. A tap stamps the question IN PLACE (the edit removes
+   * the keyboard — a Bot API fact, live-verified), so the buttons die with it
+   * and repeat/foreign taps (same batch, old question) are silently ignored.
+   */
+  private oneShotSeq = 0;
+  private oneShot = new Map<string, { chatId: number; messageId: number; blocks: TgBlock[] }>();
   private compactState: CompactState | undefined;
   private compactDraftSeq = 0;
   private compactHbTimer: ReturnType<typeof setTimeout> | undefined;
@@ -388,11 +396,14 @@ export class SessionBridge {
     if (pa.type !== "reload") {
       await out.sendRich(chatId, await this.statusBlocks());
       if (cfg.askClearOnSwitch) {
-        await out.sendRich(chatId, [{ type: "paragraph", text: "Clear chat history?" }], {
+        const nonce = `c${++this.oneShotSeq}`;
+        const blocks: TgBlock[] = [{ type: "paragraph", text: "Clear chat history?" }];
+        const id = await out.sendRich(chatId, blocks, {
           replyMarkup: {
-            inline_keyboard: [[{ text: "🧹 Clear", callback_data: CB.clear(true) }, { text: "Keep", callback_data: CB.clear(false) }]],
+            inline_keyboard: [[{ text: "🧹 Clear", callback_data: CB.clear(true, nonce) }, { text: "Keep", callback_data: CB.clear(false, nonce) }]],
           },
         });
+        if (id !== undefined) this.oneShot.set(nonce, { chatId, messageId: id, blocks });
       }
     }
   }
@@ -655,21 +666,30 @@ export class SessionBridge {
           { type: "paragraph", text: ["📌 Renamed to ", { type: "bold", text: action.name }, "."] },
         ]);
         return;
-      case "killAsk":
-        await out.send(action.chatId, "⚠️ This terminates the pi process — the bot goes silent until pi restarts. Sure?", {
+      case "killAsk": {
+        const nonce = `k${++this.oneShotSeq}`;
+        const blocks: TgBlock[] = [{ type: "paragraph", text: "⚠️ This terminates the pi process — the bot goes silent until pi restarts. Sure?" }];
+        const id = await out.sendRich(action.chatId, blocks, {
           replyMarkup: {
-            inline_keyboard: [[{ text: "☠ Yes, kill", callback_data: CB.kill(true) }, { text: "No", callback_data: CB.kill(false) }]],
+            inline_keyboard: [[{ text: "☠ Yes, kill", callback_data: CB.kill(true, nonce) }, { text: "No", callback_data: CB.kill(false, nonce) }]],
           },
         });
+        if (id !== undefined) this.oneShot.set(nonce, { chatId: action.chatId, messageId: id, blocks });
         return;
-      case "kill":
+      }
+      case "kill": {
+        const p = this.consumeOneShot(action.nonce);
+        if (action.nonce && !p) return; // stale tap — the question is already stamped
         if (!action.yes) {
-          await out.send(action.chatId, "OK — pi keeps running.");
+          if (p) await this.stampOneShot(p, "✅ Kept running — pi is still alive.");
+          else await out.send(action.chatId, "OK — pi keeps running."); // legacy (no nonce) — plain message
           return;
         }
+        if (p) await this.stampOneShot(p, "☠ Shutting down…");
         await out.send(action.chatId, "👋 Shutting down pi… (bot goes silent)");
         pi.shutdown();
         return;
+      }
       case "clear":
         await this.handleClear(action);
         return;
@@ -805,17 +825,38 @@ export class SessionBridge {
     await out.send(action.chatId, `✓ Thinking: ${level}.`);
   }
 
+  /** Consume the tap's one-shot question (stale nonce → silent ignore). */
+  private consumeOneShot(nonce: string | undefined): { chatId: number; messageId: number; blocks: TgBlock[] } | undefined {
+    if (!nonce) return undefined;
+    const p = this.oneShot.get(nonce);
+    if (!p) return undefined; // stale: already answered, or a newer question replaced it
+    this.oneShot.delete(nonce);
+    return p;
+  }
+
+  /** Stamp the question in place: original blocks + a status line, NO keyboard —
+    * the edit removes it (Bot API: editMessageText without reply_markup drops
+    * the inline keyboard), so the stamped message can never be tapped again. */
+  private async stampOneShot(p: { chatId: number; messageId: number; blocks: TgBlock[] }, line: string): Promise<void> {
+    await this.deps.out.editRich(p.chatId, p.messageId, [...p.blocks, { type: "paragraph", text: line }]).catch(() => {});
+  }
+
   private async handleClear(action: Extract<TgAction, { kind: "clear" }>): Promise<void> {
     const { out, state, sleep } = this.deps;
+    const p = this.consumeOneShot(action.nonce);
+    if (action.nonce && !p) return; // stale tap — the question is already stamped
     if (!action.doIt) {
-      await out.send(action.chatId, "OK — chat history kept.");
+      if (p) await this.stampOneShot(p, "✅ Kept — chat history stays.");
+      else await out.send(action.chatId, "OK — chat history kept."); // legacy (no nonce) — plain message
       return;
     }
     const ids = state.drainSent();
     if (ids.length === 0) {
-      await out.send(action.chatId, "Nothing to clear.");
+      if (p) await this.stampOneShot(p, "✅ Nothing to clear.");
+      else await out.send(action.chatId, "Nothing to clear.");
       return;
     }
+    if (p) await this.stampOneShot(p, "🧹 Clearing…");
     await out.send(action.chatId, `🧹 Clearing ${ids.length} messages…`);
     let cleared = 0;
     for (const id of ids) {

@@ -22,9 +22,9 @@ export function encodeInternal(action: TgAction): string | null {
     case "prompt":
       return `internal prompt ${action.chatId} ${JSON.stringify(action.text)}`;
     case "kill":
-      return `internal kill ${action.chatId} ${action.yes ? 1 : 0}`;
+      return `internal kill ${action.chatId} ${action.yes ? 1 : 0}${action.nonce ? ` ${action.nonce}` : ""}`;
     case "clear":
-      return `internal clear ${action.chatId} ${action.doIt ? 1 : 0}`;
+      return `internal clear ${action.chatId} ${action.doIt ? 1 : 0}${action.nonce ? ` ${action.nonce}` : ""}`;
     case "dialogAnswer":
       return `internal dialogAnswer ${action.chatId} ${action.dialogId} ${action.index}`;
     case "dialogCancel":
@@ -60,12 +60,16 @@ export function parseInternal(args: string): TgAction | null {
       if (!Number.isInteger(fromId) || fromId <= 0) return null;
       return { kind: "pair", chatId, fromId };
     }
-    case "kill":
-      if (rest !== "0" && rest !== "1") return null;
-      return { kind: "kill", chatId, yes: rest === "1" };
-    case "clear":
-      if (rest !== "0" && rest !== "1") return null;
-      return { kind: "clear", chatId, doIt: rest === "1" };
+    case "kill": {
+      const partsRest = rest.split(/\s+/);
+      if (partsRest.length > 2 || (partsRest[0] !== "0" && partsRest[0] !== "1")) return null;
+      return { kind: "kill", chatId, yes: partsRest[0] === "1", ...(partsRest[1] ? { nonce: partsRest[1] } : {}) };
+    }
+    case "clear": {
+      const partsRest = rest.split(/\s+/);
+      if (partsRest.length > 2 || (partsRest[0] !== "0" && partsRest[0] !== "1")) return null;
+      return { kind: "clear", chatId, doIt: partsRest[0] === "1", ...(partsRest[1] ? { nonce: partsRest[1] } : {}) };
+    }
     case "dialogAnswer": {
       const partsRest = rest.split(/\s+/);
       if (partsRest.length !== 2) return null;

@@ -225,6 +225,12 @@ export default function piTelegram(pi: ExtensionAPI): void {
 
   async function handleUpdate(update: TgUpdate): Promise<void> {
     if (!bridge || !out || !state) return;
+    // Answer EVERY callback query (silent, no toast): Telegram keeps a loading
+    // animation on a tapped button until the callback is answered. Best-effort
+    // — a failure must never block the action itself (the button just animates
+    // a bit longer).
+    const cbId = update.callback_query?.id;
+    if (cbId && client) void client.answerCallbackQuery(cbId).catch(() => {});
     const action = route(
       update,
       cfg.ownerId,
