@@ -202,6 +202,9 @@ export function mirrorBlocks(log: LogBlock[], opts: { tail?: string; bottom: Bot
   const bottomText = bottomLineText(bottom);
   log.forEach((b, i) => {
     if (b.type === "tool") parts.push(...toolBlocks(b));
+    // narration is LLM text → full markdown conversion (plan spec: "narration →
+    // mdToBlocks(text)"). prompt/agentError are short bot strings → raw paragraph.
+    else if (b.type === "narration") parts.push(...mdToBlocks(b.text));
     else parts.push({ type: "paragraph", text: b.type === "agentError" ? `⚠️ error: ${b.text}` : b.text });
     if (b.type === "agentError" && (i < log.length - 1 || tail.length > 0 || bottomText !== "")) parts.push({ type: "divider" });
   });

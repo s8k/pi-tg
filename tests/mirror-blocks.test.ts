@@ -18,9 +18,26 @@ const plain = (b: TgBlock | undefined): string => {
   return b.type;
 };
 
-test("narration → mdToBlocks paragraphs", () => {
+test("narration → mdToBlocks (full conversion, plan spec — not a raw paragraph)", () => {
   const bs = mirrorBlocks([{ type: "narration", text: "hello **bold**" }], { bottom: { kind: "done" } });
+  assert.deepEqual(bs[0], { type: "paragraph", text: ["hello ", { type: "bold", text: "bold" }] });
+});
+
+test("narration with a list → list block", () => {
+  const bs = mirrorBlocks([{ type: "narration", text: "- a\n- b" }], { bottom: { kind: "done" } });
+  assert.equal(bs[0]?.type, "list");
+});
+
+test("agentError / prompt stay raw paragraphs (short bot strings, no LLM markdown)", () => {
+  const bs = mirrorBlocks(
+    [{ type: "agentError", text: "boom" }, { type: "prompt", text: "**hi**" }],
+    { bottom: { kind: "done" } },
+  );
   assert.equal(bs[0]?.type, "paragraph");
+  assert.equal(plain(bs[0]), "⚠️ error: boom");
+  // the prompt's markdown is NOT converted (raw string text)
+  const promptPara = bs.find((b) => b.type === "paragraph" && (b as { text: unknown }).text === "**hi**");
+  assert.ok(promptPara, "prompt stays a raw paragraph");
 });
 
 test("tool → details(⚙ name state) + pre(json args)", () => {
