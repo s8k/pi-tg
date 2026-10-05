@@ -6,10 +6,11 @@
   "description": "pi extension: drive your local Pi Coding Agent from Telegram (Bot API, long polling)",
   "license": "MIT",
   "dependencies": {
+    "md4x": "0.0.30",
     "qrcode": "^1.5.4"
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "^0.84.4",
+    "@earendil-works/pi-coding-agent": "^1.0.3",
     "@types/node": "^26.4.0",
     "typescript": "^5.9.3"
   }
