@@ -271,6 +271,11 @@ that the mapper is behaviorally equivalent (modulo 3.1).
    formatted markdown (the `3e9ce51` fix), spinner stays last.
 3. **Long transcript**: the 1.5 MB session at full level — no OOM, heap
    < 200 MB, per-tick parse+heal < ~100 ms (T9 numbers attach here).
+   T9 MEASURED (2026-10-07, this machine): 1.5 MB mixed doc → 130 ms
+   no-heal / 132 ms heal, heap +11–20 MB (old parser: 158 ms on the same
+   doc — md4x is 22% faster AND can't hit the old parser's catastrophic
+   unbalanced-input OOM); 10k `**bold**` runs → 12 ms; 50k footnotes
+   (1.6 MB) → 172 ms, +60 MB (linear).
 4. **Footnote canonical shape**: forward the bot's footnote message back;
    the incoming `rich_message` blocks match the server's own shape
    (superscript anchor+reference_link in the body; `footer` block with
