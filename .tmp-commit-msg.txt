@@ -1,9 +1,0 @@
-fix(rich-blocks): split line-initial anchors out of their paragraph (md4x keeps them as inline html)
-
-Live T10 found it: an <a name="id"></a> line followed by text WITHOUT a
-blank line (common LLM output) arrived as ONE paragraph with the anchor as
-inline html nodes and rendered literal. Split the paragraph at the anchor
-pair (paragraph-before / anchor / paragraph-after, line-edges trimmed) —
-old line-parser parity. Mid-line anchors stay literal (the old line regex
-was line-anchored too). A stray </a> continuation line now stays literal
-raw data instead of being silently consumed.

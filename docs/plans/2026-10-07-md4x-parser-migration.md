@@ -208,6 +208,8 @@ test is amended with a comment citing the new (spec-correct) behavior.
 | 12 | `$$..$$` mid-paragraph vs whole line | whole-line only (old pre-scan) | display math wherever it's a paragraph child | **Keep md4x's** (superset; our tests use whole-line) |
 | 13 | inline `$x$` (if md4x supports it) | literal | **T2 spike** — if md4x emits an inline math node: no Tg inline-math entity exists → map to literal source text | decide in T2 |
 | 14 | `**a * b** * c * d**` (cross-boundary emphasis) | OOM (now: degraded literal) | CommonMark-correct: bold + italic + literal `**` | **Keep** (the regression test still guards: terminates, no control chars, content preserved) |
+| 15 | `H~2~O` / `X^2^` (sub/superscript) | literal (never supported) | literal (no GFM syntax; md4x has no sub/sup nodes, HTML `<sub>` arrives as raw html) | **No regression** — the old parser never had it either; the Tg `subscript`/`superscript` entities remain (used internally by footnote markers, live-verified) |
+| 16 | `<a name="x"></a>` glued to the next line (no blank line) | anchor block (line-based) | one paragraph with inline html (lazy continuation) → literal | **Fixed in the mapper** (live T10, msg 1548): split line-initial anchors out of the paragraph; mid-line anchors stay literal; stray `</a>` continuation stays literal raw data |
 | 15 | `<a name="id"></a>` on own line | `anchor` block (regex pre-scan) | `p` of two `html` nodes → same mapping (2.3) | unchanged, different mechanism |
 
 ### 3.2 Test strategy
