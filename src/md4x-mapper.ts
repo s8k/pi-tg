@@ -439,13 +439,32 @@ export function mapBlocks(nodes: ComarkNode[], ctx: Ctx): TgBlock[] {
 
 // --- public entry points -------------------------------------------------------
 
+/**
+ * Draft-only: neutralize half-typed inline markers at the STREAMING EDGE
+ * that heal handles badly (live T10): a trailing lone backtick (odd total
+ * count) — heal doubles it into a visible literal "``" — and a trailing
+ * lone * or ~ (odd count) — an incomplete closing run heal leaves literal.
+ * Only the very end of the text is touched (the unclosed construct of a
+ * streaming document is always the newest one); persistent text never passes
+ * through here.
+ */
+function sanitizeDraftTail(md: string): string {
+  let s = md;
+  const count = (re: RegExp): number => (s.match(re) ?? []).length;
+  if (count(/`/g) % 2 === 1) s = s.replace(/`+\s*$/, "");
+  if (count(/\*/g) % 2 === 1 && /(^|[^*])\*$/.test(s)) s = s.replace(/\*$/, "");
+  if (count(/~/g) % 2 === 1 && /(^|[^~])~$/.test(s)) s = s.replace(/~$/, "");
+  return s;
+}
+
 /** The blocks-tier markdown entry point (md4x-backed). `heal: true` for
  *  drafts (incomplete streaming markdown); persistent sends never heal. */
 export function mdToBlocksV2(md: string, opts?: { heal?: boolean }): TgBlock[] {
   const heal = opts?.heal ?? false;
   // \r\n normalization (old parser parity) + the md4x backslash-EOL quirk
   // workaround (it emits a literal `\n` for a CommonMark hard break — §4.4 #1)
-  const norm = md.replace(/\r\n?/g, "\n").replace(/\\\n/g, "  \n");
+  let norm = md.replace(/\r\n?/g, "\n").replace(/\\\n/g, "  \n");
+  if (heal) norm = sanitizeDraftTail(norm);
   const { src, regions } = extractDetails(norm);
   const tree = parseAST(src, { heal });
   const ctx: Ctx = {

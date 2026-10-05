@@ -1,0 +1,15 @@
+fix(rich-blocks): draft sanitizer for the streaming edge (live T10 flicker)
+
+heal has two rough edges at the streaming edge (owner-verified in the live
+draft): a trailing LONE backtick (odd total count) is doubled into a visible
+literal "``", and a trailing lone */~ (incomplete closing run, e.g. "**bold *")
+stays literal. Both leak raw markers into the draft for a tick or two.
+
+sanitizeDraftTail (drafts only — the heal path of mdToBlocksV2) strips:
+- a trailing backtick run when the total backtick count is odd (the unclosed
+  opener of a streaming doc is always the newest one), and
+- a trailing lone * or ~ when that marker's count is odd (half-typed closer;
+  even counts are literal text and stay).
+Completed spans are untouched (even counts), persistent text never passes
+through, and mid-text unclosed constructs are left to heal (it closes them
+properly).

@@ -338,6 +338,29 @@ describe("heal (drafts only)", () => {
     const blocks = mdToBlocksV2("bold **unfin", { heal: true });
     assert.deepEqual(blocks, [P(["bold ", B("unfin")])]);
   });
+  test("draft sanitizer: trailing lone backtick (odd count) is stripped — heal doubles it into a visible ``` artifact (live T10)", () => {
+    // streaming `getChat`: tick 1 is "I see `" — heal turns the lone ` into a
+    // LITERAL "``" (two visible backticks); the sanitizer drops the unclosed
+    // opener instead, so the code span just appears a tick later, complete
+    assert.deepEqual(mdToBlocksV2("I see `", { heal: true }), [P("I see")]);
+    assert.deepEqual(mdToBlocksV2("I see ` ", { heal: true }), [P("I see")]);
+    // completed spans are untouched (even count — the trailing run is closed)
+    assert.deepEqual(mdToBlocksV2("I see `getChat`", { heal: true }), [P(["I see ", { type: "code", text: "getChat" }])]);
+    // persistent (no heal) never sanitizes
+    assert.deepEqual(mdToBlocksV2("I see `"), [P("I see `")]);
+  });
+  test("draft sanitizer: trailing lone */~ (incomplete closing run) is stripped (live T10 ** flicker)", () => {
+    // "**bold *" (one star of the closing pair typed): heal leaves it literal
+    // "**bold **"; the sanitizer drops the half-typed closer → clean bold
+    assert.deepEqual(mdToBlocksV2("**bold *", { heal: true }), [P(B("bold"))]);
+    assert.deepEqual(mdToBlocksV2("~~x ~", { heal: true }), [P({ type: "strikethrough", text: "x" })]);
+    // complete pairs untouched
+    assert.deepEqual(mdToBlocksV2("**bold**", { heal: true }), [P(B("bold"))]);
+    // a literal star not at the very end is untouched
+    assert.deepEqual(mdToBlocksV2("2 * 3", { heal: true }), [P("2 * 3")]);
+    // a trailing star with an EVEN count is literal text, not a half-closer
+    assert.deepEqual(mdToBlocksV2("2 * 3 *", { heal: true }), [P("2 * 3 *")]);
+  });
   test("half-typed inline $$ stays literal (no inline-math entity); a complete $$…$$ line is the math block", () => {
     // Embedded math-display (heal closed the half-typed marker mid-sentence)
     // keeps its source — matches the old parser's literal behavior.
