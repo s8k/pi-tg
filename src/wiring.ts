@@ -305,11 +305,26 @@ function withCombinedSignal(
   signal: AbortSignal,
 ): unknown {
   if (method === "editor") return orig(...args);
+  const mergeOpts = (optsArg: unknown): { signal: AbortSignal } => {
+    const opts = (typeof optsArg === "object" && optsArg !== null ? optsArg : {}) as { signal?: AbortSignal };
+    return { ...opts, signal: opts.signal ? AbortSignal.any([opts.signal, signal]) : signal };
+  };
+  if (method === "confirm" || method === "input") {
+    // pi signatures: confirm(title, message?, opts?) / input(title, placeholder?, opts?).
+    // The signal MUST land in slot 3. Pushing it (as the generic branch below
+    // does) drops it into the `message`/`placeholder` slot when the caller
+    // omits that arg — pi renders the dialog title as `${title} ${message}`
+    // (→ "[object Object]"), and `opts` is undefined so pi never registers its
+    // abort listener: TG taps can no longer close the TUI dialog. Fill the
+    // omitted middle slot with "" (a template string would print "undefined").
+    return orig(args[0], args[1] ?? "", mergeOpts(args[2]));
+  }
+  // select: (title, options, opts?) — `options` is a required array, so the
+  // generic last-slot rule is safe.
   const next = [...args];
   const last = next[next.length - 1];
   if (last === undefined || (typeof last === "object" && !Array.isArray(last))) {
-    const opts = (typeof last === "object" && last !== null ? last : {}) as { signal?: AbortSignal };
-    next[next.length - 1] = { ...opts, signal: opts.signal ? AbortSignal.any([opts.signal, signal]) : signal };
+    next[next.length - 1] = mergeOpts(last);
   } else {
     next.push({ signal });
   }
