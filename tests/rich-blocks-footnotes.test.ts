@@ -4,50 +4,50 @@ import { mdToBlocks, inlineToRichText, blocksToPlainText, blocksLen, blockCount,
 import type { TgBlock, TgRichText } from "../src/rich-blocks.ts";
 
 /** The canonical body marker (spike 2026-10-06, forwarded msg 1516):
- *  superscript(anchor "fnref-<id>-<k>", reference_link "<n>" → "fn-<id>"). */
-const marker = (num: number, id: string, occ = 1): TgRichText => ({
+ *  superscript(anchor "fnref-<N>-<k>", reference_link "<N>" → "fn-<N>").
+ *  md4x numbers footnotes by first-reference order — the id IS the number
+ *  (the source id string is not part of the canonical shape). */
+const marker = (num: number, occ = 1): TgRichText => ({
   type: "superscript",
   text: [
-    { type: "anchor", name: `fnref-${id}-${occ}` },
-    { type: "reference_link", text: String(num), reference_name: `fn-${id}` },
+    { type: "anchor", name: `fnref-${num}-${occ}` },
+    { type: "reference_link", text: String(num), reference_name: `fn-${num}` },
   ],
 });
 
 describe("footnotes (markdown → canonical reference entities + footer block)", () => {
-  test("inline: [^id] → intermediate reference entity; [^1] numeric too", () => {
-    // mdToBlocks post-processes these into the canonical superscript markers;
-    // the per-line function only stashes the id (numbering is document-level).
-    assert.deepEqual(inlineToRichText("Text with a reference[^id1] and another one[^id2]."),
-      ["Text with a reference", { type: "reference", text: "", name: "id1" }, " and another one", { type: "reference", text: "", name: "id2" }, "."]);
-    assert.deepEqual(inlineToRichText("see [^1]"), ["see ", { type: "reference", text: "", name: "1" }]);
+  test("inline: [^id] without a definition stays literal (md4x: undefined refs are literal, GFM)", () => {
+    assert.equal(inlineToRichText("Text with a reference[^id1] and another one[^id2]."),
+      "Text with a reference[^id1] and another one[^id2].");
+    assert.equal(inlineToRichText("see [^1]"), "see [^1]");
   });
 
-  test("inline: a half-typed [^ stays literal; [^x] is a reference even mid-stream", () => {
+  test("inline: a half-typed [^ and an undefined [^x] both stay literal", () => {
     assert.equal(inlineToRichText("a [^ b"), "a [^ b");
-    assert.deepEqual(inlineToRichText("a [^x] b"), ["a ", { type: "reference", text: "", name: "x" }, " b"]);
+    assert.equal(inlineToRichText("a [^x] b"), "a [^x] b");
   });
 
-  test("inline: footnote definition syntax NEVER becomes an entity mid-paragraph", () => {
-    const rt = inlineToRichText("[^id1]: Definition of the first footnote.");
-    assert.equal(JSON.stringify(rt), JSON.stringify("[^id1]: Definition of the first footnote."));
+  test("inline: a line-initial footnote definition is block-level — no body text", () => {
+    // md4x parses `[^id]: text` as a definition (the block tier renders it in
+    // the footer); a line-sized string with ONLY a definition has no body.
+    assert.equal(inlineToRichText("[^id1]: Definition of the first footnote."), "");
   });
 
-  test("inline: reference with explicit label text", () => {
-    assert.deepEqual(inlineToRichText("a[^note: see below]"),
-      ["a", { type: "reference", text: "see below", name: "note" }]);
+  test("inline: [^id: label] (pandoc extension) stays literal (md4x has no label syntax)", () => {
+    assert.equal(inlineToRichText("a[^note: see below]"), "a[^note: see below]");
   });
 
   test("mdToBlocks: refs → canonical superscript markers; definitions → footer block", () => {
     const blocks = mdToBlocks("Text with a reference[^id1] and another one[^id2].\n\n[^id1]: Definition of the first footnote.\n[^id2]: Definition of the second footnote.");
     assert.equal(blocks.length, 2, "body paragraph + footer");
     const body = blocks[0] as Extract<TgBlock, { type: "paragraph" }>;
-    assert.deepEqual(body.text, ["Text with a reference", marker(1, "id1"), " and another one", marker(2, "id2"), "."]);
+    assert.deepEqual(body.text, ["Text with a reference", marker(1), " and another one", marker(2), "."]);
     const footer = blocks[1] as Extract<TgBlock, { type: "footer" }>;
     assert.equal(footer.type, "footer");
     // the footer text is ONE rich-text array: "N. " + reference(definition) + " " + ↩ backlink, "\n"-separated
     assert.deepEqual(footer.text, [
-      "1. ", { type: "reference", text: "Definition of the first footnote.", name: "fn-id1" }, " ", { type: "anchor_link", text: "↩", anchor_name: "fnref-id1-1" },
-      "\n2. ", { type: "reference", text: "Definition of the second footnote.", name: "fn-id2" }, " ", { type: "anchor_link", text: "↩", anchor_name: "fnref-id2-1" },
+      "1. ", { type: "reference", text: "Definition of the first footnote.", name: "fn-1" }, " ", { type: "anchor_link", text: "↩", anchor_name: "fnref-1-1" },
+      "\n2. ", { type: "reference", text: "Definition of the second footnote.", name: "fn-2" }, " ", { type: "anchor_link", text: "↩", anchor_name: "fnref-2-1" },
     ]);
   });
 
@@ -57,9 +57,11 @@ describe("footnotes (markdown → canonical reference entities + footer block)",
     assert.equal((blocks[0] as Extract<TgBlock, { type: "paragraph" }>).text, "line one [^a]: not a def\nmore");
   });
 
-  test("mdToBlocks: an unclosed/half-typed definition at EOF emits nothing (no empty blocks, no leak)", () => {
+  test("mdToBlocks: a half-typed definition at EOF — incomplete defs are dropped (md4x), a bare [^id stays literal", () => {
     assert.deepEqual(mdToBlocks("para\n\n[^id]:"), [{ type: "paragraph", text: "para" }]);
-    assert.deepEqual(mdToBlocks("para\n\n[^id"), [{ type: "paragraph", text: "para" }]);
+    // md4x only recognizes `[^id` (no colon yet) as plain text — the draft
+    // shows it literally for a tick; it disappears once the definition completes
+    assert.deepEqual(mdToBlocks("para\n\n[^id"), [{ type: "paragraph", text: "para" }, { type: "paragraph", text: "[^id" }]);
     assert.deepEqual(mdToBlocks("[^id]: half-typed"), []);
     // a bare "[^id]" line (no colon yet, mid-stream) is not a definition —
     // with no definition anywhere it stays literal (GFM: undefined ref)
@@ -70,29 +72,31 @@ describe("footnotes (markdown → canonical reference entities + footer block)",
     const blocks = mdToBlocks("- item with a footnote[^note]\n\n[^note]: def text");
     assert.equal(blocks.length, 2);
     const list = blocks[0] as Extract<TgBlock, { type: "list" }>;
-    assert.deepEqual((list.items[0].blocks[0] as Extract<TgBlock, { type: "paragraph" }>).text, ["item with a footnote", marker(1, "note")]);
+    assert.deepEqual((list.items[0].blocks[0] as Extract<TgBlock, { type: "paragraph" }>).text, ["item with a footnote", marker(1)]);
     assert.equal((blocks[1] as Extract<TgBlock, { type: "footer" }>).type, "footer");
   });
 
   test("mdToBlocks: multiple references to the same id — same number, per-occurrence anchors, one footer entry", () => {
     const blocks = mdToBlocks("One[^a] and two[^a] and three[^b].\n\n[^a]: shared definition.\n[^b]: other.");
     const body = blocks[0] as Extract<TgBlock, { type: "paragraph" }>;
-    assert.deepEqual(body.text, ["One", marker(1, "a", 1), " and two", marker(1, "a", 2), " and three", marker(2, "b"), "."]);
+    assert.deepEqual(body.text, ["One", marker(1, 1), " and two", marker(1, 2), " and three", marker(2), "."]);
     const footer = blocks[1] as Extract<TgBlock, { type: "footer" }>;
     assert.deepEqual(footer.text, [
-      "1. ", { type: "reference", text: "shared definition.", name: "fn-a" }, " ", { type: "anchor_link", text: "↩", anchor_name: "fnref-a-1" },
-      "\n2. ", { type: "reference", text: "other.", name: "fn-b" }, " ", { type: "anchor_link", text: "↩", anchor_name: "fnref-b-1" },
+      "1. ", { type: "reference", text: "shared definition.", name: "fn-1" }, " ", { type: "anchor_link", text: "↩", anchor_name: "fnref-1-1" },
+      "\n2. ", { type: "reference", text: "other.", name: "fn-2" }, " ", { type: "anchor_link", text: "↩", anchor_name: "fnref-2-1" },
     ]);
   });
 
   test("mdToBlocks: numbering follows FIRST REFERENCE order, not definition order; unreferenced definitions are dropped", () => {
     const blocks = mdToBlocks("See[^b] first, then[^a].\n\n[^a]: alpha def.\n[^b]: beta def.\n[^c]: never referenced.");
     const body = blocks[0] as Extract<TgBlock, { type: "paragraph" }>;
-    assert.deepEqual(body.text, ["See", marker(1, "b"), " first, then", marker(2, "a"), "."]);
+    // md4x numbers by first-reference order: [^b] is 1, [^a] is 2 — the
+    // canonical names carry the NUMBER, not the source id
+    assert.deepEqual(body.text, ["See", marker(1), " first, then", marker(2), "."]);
     const footer = blocks[1] as Extract<TgBlock, { type: "footer" }>;
     assert.deepEqual(footer.text, [
-      "1. ", { type: "reference", text: "beta def.", name: "fn-b" }, " ", { type: "anchor_link", text: "↩", anchor_name: "fnref-b-1" },
-      "\n2. ", { type: "reference", text: "alpha def.", name: "fn-a" }, " ", { type: "anchor_link", text: "↩", anchor_name: "fnref-a-1" },
+      "1. ", { type: "reference", text: "beta def.", name: "fn-1" }, " ", { type: "anchor_link", text: "↩", anchor_name: "fnref-1-1" },
+      "\n2. ", { type: "reference", text: "alpha def.", name: "fn-2" }, " ", { type: "anchor_link", text: "↩", anchor_name: "fnref-2-1" },
     ]);
   });
 
@@ -105,8 +109,9 @@ describe("footnotes (markdown → canonical reference entities + footer block)",
   test("mdToBlocks: multi-line definition (indented continuation) folds into one text", () => {
     const blocks = mdToBlocks("Ref[^m].\n\n[^m]: first line\n    continued line.");
     const footer = blocks[1] as Extract<TgBlock, { type: "footer" }>;
+    // md4x keeps the continuation's newline (the old line-folding joined with a space)
     assert.deepEqual(footer.text, [
-      "1. ", { type: "reference", text: "first line continued line.", name: "fn-m" }, " ", { type: "anchor_link", text: "↩", anchor_name: "fnref-m-1" },
+      "1. ", { type: "reference", text: "first line\ncontinued line.", name: "fn-1" }, " ", { type: "anchor_link", text: "↩", anchor_name: "fnref-1-1" },
     ]);
   });
 

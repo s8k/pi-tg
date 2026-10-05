@@ -194,9 +194,12 @@ function toolBlocks(b: Extract<LogBlock, { type: "tool" }>): TgBlock[] {
  * `thinking` block stays — it is draft-only) and persistent sends (the
  * caller strips `thinking` + the NBSP gap before sending).
  */
-export function mirrorBlocks(log: LogBlock[], opts: { tail?: string; bottom: BottomLine; tokens?: { input: number; output: number } }): TgBlock[] {
+export function mirrorBlocks(log: LogBlock[], opts: { tail?: string; bottom: BottomLine; tokens?: { input: number; output: number }; heal?: boolean }): TgBlock[] {
+  // heal (drafts only): md4x closes half-typed emphasis/fence constructs in
+  // the in-flight text; persistent sends keep them literal (never "completed")
+  const heal = opts.heal ?? false;
   const suffix = tokensSuffix(opts.tokens);
-  const tail = opts.tail && opts.tail.trim() ? mdToBlocks(opts.tail) : [];
+  const tail = opts.tail && opts.tail.trim() ? mdToBlocks(opts.tail, { heal }) : [];
   const bottom = opts.bottom;
   const parts: TgBlock[] = [];
   const bottomText = bottomLineText(bottom);
@@ -204,7 +207,7 @@ export function mirrorBlocks(log: LogBlock[], opts: { tail?: string; bottom: Bot
     if (b.type === "tool") parts.push(...toolBlocks(b));
     // narration is LLM text → full markdown conversion (plan spec: "narration →
     // mdToBlocks(text)"). prompt/agentError are short bot strings → raw paragraph.
-    else if (b.type === "narration") parts.push(...mdToBlocks(b.text));
+    else if (b.type === "narration") parts.push(...mdToBlocks(b.text, { heal }));
     else parts.push({ type: "paragraph", text: b.type === "agentError" ? `⚠️ error: ${b.text}` : b.text });
     if (b.type === "agentError" && (i < log.length - 1 || tail.length > 0 || bottomText !== "")) parts.push({ type: "divider" });
   });
@@ -990,6 +993,7 @@ export class Mirror {
       tail: this.tail,
       bottom: bottom ?? this.currentBottom(),
       tokens: this.runTokens(),
+      heal: true, // the live draft parses IN-FLIGHT text — heal half-typed constructs
     });
   }
 

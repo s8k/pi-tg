@@ -27,9 +27,9 @@ describe("mathematical expressions + anchors (markdown → blocks)", () => {
     assert.deepEqual(blocks, [{ type: "mathematical_expression", expression: "\\frac{a}{b} + c" }]);
   });
 
-  test("an unclosed $$ opener mid-stream emits nothing (no empty block, no literal leak)", () => {
-    assert.deepEqual(mdToBlocks("para\n\n$$E = mc"), [{ type: "paragraph", text: "para" }]);
-    assert.deepEqual(mdToBlocks("$$E = mc"), []);
+  test("an unclosed $$ opener mid-stream: literal WITHOUT heal (final text kept verbatim), a math block WITH heal (draft)", () => {
+    assert.deepEqual(mdToBlocks("para\n\n$$E = mc"), [{ type: "paragraph", text: "para" }, { type: "paragraph", text: "$$E = mc" }]);
+    assert.deepEqual(mdToBlocks("$$E = mc", { heal: true }), [{ type: "mathematical_expression", expression: "E = mc" }]);
   });
 
   test("a closed empty math block emits nothing (empty content 400s)", () => {
@@ -67,10 +67,14 @@ describe("mathematical expressions + anchors (markdown → blocks)", () => {
     ]);
   });
 
-  test("anchor with a trailing </a> on the next line is consumed (half-typed form)", () => {
+  test("anchor with a trailing </a> on the next line stays literal (GFM: lazy continuation of the html line)", () => {
+    // md4x folds the stray </a> into the first line's paragraph (a lazy
+    // continuation), so the all-html anchor pattern no longer matches — the
+    // old parser's line-based consumption is gone (a mid-stream transient;
+    // the next tick re-parses the corrected text)
     const blocks = mdToBlocks("<a name=\"c1\"></a>\n</a>\n\nText");
     assert.deepEqual(blocks, [
-      { type: "anchor", name: "c1" },
+      { type: "paragraph", text: "<a name=\"c1\"></a>\n</a>" },
       { type: "paragraph", text: "Text" },
     ]);
   });

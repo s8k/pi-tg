@@ -146,9 +146,9 @@ describe("inlineToRichText", () => {
   test("strikethrough ~~", () => {
     assert.deepEqual(inlineToRichText("~~old~~"), S("old"));
   });
-  test("==marked== and ||spoiler||", () => {
+  test("==marked== → marked; ||spoiler|| stays literal (md4x has no GFM spoiler syntax — dropped by design)", () => {
     assert.deepEqual(inlineToRichText("==new=="), M("new"));
-    assert.deepEqual(inlineToRichText("||secret||"), SP("secret"));
+    assert.equal(inlineToRichText("||secret||"), "||secret||");
   });
   test("link: [t](url) → {type:url, text, url}; text parsed recursively", () => {
     assert.deepEqual(inlineToRichText("[t](http://x/?a=1&b=2)"), U("t", "http://x/?a=1&b=2"));
@@ -271,15 +271,14 @@ describe("mdToBlocks", () => {
       ] },
     ]);
   });
-  test("indented continuation attaches to the previous list item", () => {
+  test("indented continuation joins the item's paragraph (GFM soft break, not a second paragraph)", () => {
     const blocks = mdToBlocks("- a\n  continued\n- b");
     const list = blocks[0];
     assert.equal(list.type, "list");
     if (list.type !== "list") return;
     assert.equal(list.items.length, 2);
     assert.deepEqual(list.items[0].blocks, [
-      { type: "paragraph", text: "a" },
-      { type: "paragraph", text: "continued" },
+      { type: "paragraph", text: "a\ncontinued" },
     ]);
   });
   test("nested lists (indent > parent) → list block inside the parent item (server-verified)", () => {
@@ -691,9 +690,9 @@ describe("mdToBlocks: streaming-transient shapes (no empty blocks)", () => {
     assert.deepEqual(mdToBlocks("<details>"), []);
     assert.deepEqual(mdToBlocks("<details>\n<summary>hi</summary>"), []);
   });
-  test("heading with no text yet → dropped (bare ## stays a verbatim paragraph)", () => {
+  test("heading with no text yet → dropped (empty headings 400 — a bare ## emits nothing)", () => {
     assert.deepEqual(mdToBlocks("## "), []);
-    assert.deepEqual(mdToBlocks("##"), [{ type: "paragraph", text: "##" }]);
+    assert.deepEqual(mdToBlocks("##"), []);
   });
   test("list item with no text yet → item dropped (empty list → nothing)", () => {
     assert.deepEqual(mdToBlocks("- "), []);
@@ -736,11 +735,13 @@ describe("mdToBlocks: streaming-transient shapes (no empty blocks)", () => {
       { type: "list", items: [{ blocks: [{ type: "paragraph", text: "a" }], has_checkbox: true, is_checked: false }, { blocks: [{ type: "paragraph", text: "b" }] }] },
     ]);
   });
-  test("empty item at a marker-type switch: continuation line never crashes", () => {
+  test("empty item at a marker-type switch: continuation line never crashes (GFM: it is the item's text)", () => {
+    // `- ` + an indented "cont" is a list item whose text is "cont" (md4x is
+    // spec-compliant where the old line parser dropped the marker)
     const out = mdToBlocks("1. a\n- \n  cont");
     assert.deepEqual(out, [
       { type: "list", items: [{ blocks: [{ type: "paragraph", text: "a" }], type: "1", value: 1 }] },
-      { type: "paragraph", text: "cont" },
+      { type: "list", items: [{ blocks: [{ type: "paragraph", text: "cont" }] }] },
     ]);
   });
   test("table cell with no text yet → space (entity text must be non-empty)", () => {
