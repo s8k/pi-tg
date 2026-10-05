@@ -1,7 +1,7 @@
 # Blocks-Tier Mirroring Implementation Plan
 
 > **REQUIRED SUB-SKILL:** Use the executing-plans skill to implement this plan task-by-task.
-> **Status:** done (2026-10-06) — all 10 tasks implemented; live matrix complete except item 9.2-5 (auto-compact lane 2, pending owner test).
+> **Status:** done (2026-10-06) — all 10 tasks implemented; live matrix complete (all 8 items owner-verified, incl. auto-compact lane 2 and the canonical footnote rework).
 
 **Goal:** Replace the markdown-tier rich mirroring with the Telegram Bot API `blocks` tier: the mirror's block-shaped state model (`LogBlock[]` + streaming `tail` + `BottomLine`) renders directly to an explicit `InputRichBlock[]` array for both the live draft and the persistent sends, eliminating the "markdown string is re-parsed by Telegram" round trip and the whole bug class it creates (unclosed streaming fence swallowing the `<tg-thinking>` bottom line into a `<pre>` block).
 
@@ -273,12 +273,12 @@ Commit: `feat(bridge,dialogs,commands): all rich senders on the blocks tier`
 | 2 | working draft — spinner under a streaming code fence, tool blocks (details + pre), done end (m1 + `Completed ✔️`, m2) | ✅ owner-verified |
 | 3 | ✖ tool-error block | ✅ owner-verified (read tool on a missing file → `isError` → ✖ pre block) |
 | 4 | error end (⚠️ + divider + thinking while open; finalized) | ✅ owner-verified (aborted run) |
-| 5 | auto-compact lane 1 + lane 2 | ⏳ pending owner test (lane 1 covered by unit tests) |
+| 5 | auto-compact lane 1 + lane 2 | ✅ owner-verified (lane 1 covered by unit tests) |
 | 6 | 32k+ answer chunking (`(continued)` marker) | ✅ owner-verified |
 | 7 | 400-fallback drill | ✅ owner-verified — 22-col table → plain demotion landed |
 | 8 | TUI dialog mirroring (select + confirm, both directions) | ✅ owner-verified 2026-10-06 after the single-arg confirm/input signal-slot fix (`64a4149`) |
 
-Post-migration fixes (all on this branch): streaming-transient empty-block 400, list marker-type split, table header `is_header`, answerCallbackQuery on every tap, one-shot clear/kill nonce, nested lists, and the dialog signal-slot fix.
+Post-migration fixes (all on this branch): streaming-transient empty-block 400, list marker-type split, table header `is_header`, answerCallbackQuery on every tap, one-shot clear/kill nonce, nested lists, the dialog signal-slot fix, and the footnote rework to the canonical superscript-marker + `footer` shape (learned from the server's own markdown→blocks conversion via a forwarded rich message).
 
 ---
 
@@ -304,7 +304,7 @@ Commit: `docs: blocks-tier mirroring — sweep stale references`
 | R6 | Drafts have no fallback rung — a blocks draft that 400s sits in the failure cooldown while the run continues | Unchanged from today (drafts already don't fall back); the persistent path still delivers everything; failure notifications surface it. Acceptable — flag if live drills show draft 400s are frequent |
 | R7 | `thinking` block label with token suffix — shimmer may clip long labels | Task 0.1 verifies the full `Pondering… ↑567 ↓1.2k` label renders; if clipped, move the suffix to a trailing `paragraph` (layout regression test pinned) |
 | R8 | Footnotes (`[^id]`), table alignment, task-list checkboxes from LLM markdown have no/partial block equivalents | Footnotes: CLOSED 2026-10-06 (revised) — canonical shape learned from the server's own markdown→blocks conversion (forwarded msg 1516): body `[^id]` → `superscript(anchor "fnref-<id>-<k>" + reference_link "<n>" → "fn-<id>")`; line-initial definitions → `footer` block (`"N. " + reference(definition, "fn-<id>") + " " + ↩ backlink`), numbering = first-reference order, undefined refs stay literal (GFM). Math `$…$`/`$$…$$` → `mathematical_expression` block + `<a name=…>` → `anchor` block landed the same day. Alignment → default (unchanged); task lists → `has_checkbox` (done) |
-| R9 | Received side: if the owner ever sends a rich message, updates carry `rich_message` blocks, not `text` | Out of scope (private chat, plain commands); the router reads `message.text` — add a defensive `rich_message` → plain-text projection in a follow-up if it ever matters |
+| R9 | Received side: if the owner ever sends a rich message, updates carry `rich_message` blocks, not `text` | Confirmed live (2026-10-06, forwarded msg 1516 — the forward carried `rich_message` blocks, no `text`). Still out of scope for the router (private chat, plain commands); a defensive `rich_message` → plain-text projection is a small follow-up if it ever matters |
 
 **Explicit non-goals (stay parked):** media/map/document/voice blocks, `<tg-button>` rows, collages/slideshows, `is_compact`/styled tables, RTL, `footer`/`anchor`/`pullquote`/`expandable_blockquote` blocks, the `html` tier as a primary format. (Nested list items were a v2 non-goal — implemented 2026-10-05, see R5.)
 
