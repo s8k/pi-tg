@@ -194,7 +194,7 @@ describe("inlineToRichText", () => {
     assert.ok(!json.includes("\u0004"), "open tag leaked into output");
     assert.ok(!json.includes("\u0005"), "close tag leaked into output");
     const flat = (rt: TgRichText): string =>
-      typeof rt === "string" ? rt : Array.isArray(rt) ? rt.map(flat).join("") : flat(rt.text);
+      typeof rt === "string" ? rt : Array.isArray(rt) ? rt.map(flat).join("") : rt.type === "anchor" ? "" : flat(rt.text);
     assert.ok(flat(out).includes("c") && flat(out).includes("d"), "content preserved");
   });
   test("code span with unmatched emphasis inside stays verbatim", () => {
