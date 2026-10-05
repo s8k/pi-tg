@@ -4,7 +4,8 @@
  * Source of truth: live Bot API docs (core.telegram.org/bots/api) + Task 0
  * spike results (docs/plans/2026-10-03-blocks-mirroring.md, 2026-10-04):
  *  - link entity is { type: "url", text, url } (href 400s; anchor_link is for internal anchors)
- *  - table cells must be RichText entity OBJECTS (bare strings 400); is_bordered for borders
+ *  - table cells must be RichText entity OBJECTS (bare strings 400); is_bordered for borders;
+ *    header cells add is_header: true (live-verified 2026-10-05: distinct header background)
  *  - ordered lists need type: "1" (+value) per item
  *  - 500-block limit is counted top-level by the server (list items are NOT counted per-item);
  *    our blockCount counts items/rows/nesting anyway — conservative, extra-safe
@@ -20,6 +21,14 @@ export type TgRichText =
   | { type: "url"; text: TgRichText; url: string }
   | { type: "subscript" | "superscript"; text: TgRichText };
 
+/**
+ * A table cell: a rich-text entity OBJECT (bare strings 400). Header-row cells
+ * add `is_header: true` — the client renders header cells with a distinct
+ * background (live-verified 2026-10-05: entity + is_header renders better
+ * than the full RichBlockTableCell object shape).
+ */
+export type TgTableCell = TgRichText | (TgRichText & { is_header?: boolean });
+
 /** The InputRichBlock subset we emit. */
 export type TgBlock =
   | { type: "paragraph"; text: TgRichText }
@@ -28,7 +37,7 @@ export type TgBlock =
   | { type: "divider" }
   | { type: "list"; items: TgListItem[] }
   | { type: "blockquote"; blocks: TgBlock[] }
-  | { type: "table"; cells: TgRichText[][]; is_bordered?: boolean; caption?: TgRichText }
+  | { type: "table"; cells: TgTableCell[][]; is_bordered?: boolean; caption?: TgRichText }
   | { type: "details"; summary: TgRichText; blocks: TgBlock[]; is_open?: boolean }
   | { type: "thinking"; text: TgRichText }; // draft-only — never in persistent sends
 
@@ -305,13 +314,14 @@ const paraBlock = (text: string): TgBlock => ({ type: "paragraph", text: inlineT
 function tableBlock(rows: string[]): TgBlock {
   const splitRow = (row: string): string[] =>
     row.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((c) => c.trim());
-  const wrap = (rt: TgRichText, plainEntity: "bold" | "code"): TgRichText => {
+  const wrap = (rt: TgRichText, plainEntity: "bold" | "code", isHeader = false): TgTableCell => {
     // An empty cell (half-typed mid-stream) would carry an empty entity — 400;
     // a space renders as an (almost) empty cell and keeps the column shape.
     const text = typeof rt === "string" && rt === "" ? " " : Array.isArray(rt) && richTextLen(rt) === 0 ? " " : rt;
-    return typeof text === "string" || Array.isArray(text) ? { type: plainEntity, text } : text;
+    const cell: TgTableCell = typeof text === "string" || Array.isArray(text) ? { type: plainEntity, text, ...(isHeader ? { is_header: true } : {}) } : { ...text, ...(isHeader ? { is_header: true } : {}) } as TgTableCell;
+    return cell;
   };
-  const header = splitRow(rows[0]).map((c) => wrap(inlineToRichText(c), "bold"));
+  const header = splitRow(rows[0]).map((c) => wrap(inlineToRichText(c), "bold", true));
   const body = rows.slice(2).map((r) => splitRow(r).map((c) => wrap(inlineToRichText(c), "code")));
   return { type: "table", is_bordered: true, cells: [header, ...body] };
 }

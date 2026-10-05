@@ -298,8 +298,9 @@ describe("mdToBlocks", () => {
     assert.equal(t.type, "table");
     if (t.type !== "table") return;
     assert.equal(t.is_bordered, true);
+    // header cells carry is_header (client renders a distinct header background)
     assert.deepEqual(t.cells, [
-      [{ type: "bold", text: "h1" }, { type: "bold", text: "h2" }],
+      [{ type: "bold", text: "h1", is_header: true }, { type: "bold", text: "h2", is_header: true }],
       [{ type: "code", text: "a" }, { type: "code", text: "b" }],
     ]);
   });
@@ -662,7 +663,7 @@ describe("mdToBlocks: streaming-transient shapes (no empty blocks)", () => {
     assert.deepEqual(out, [{
       type: "table", is_bordered: true,
       cells: [
-        [{ type: "bold", text: "a" }, { type: "bold", text: " " }],
+        [{ type: "bold", text: "a", is_header: true }, { type: "bold", text: " ", is_header: true }],
         [{ type: "code", text: "1" }, { type: "code", text: " " }],
       ],
     }]);
