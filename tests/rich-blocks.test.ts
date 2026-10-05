@@ -257,7 +257,7 @@ describe("mdToBlocks", () => {
       ] },
     ]);
   });
-  test("indented continuation attaches to the previous list item (v1 flat lists)", () => {
+  test("indented continuation attaches to the previous list item", () => {
     const blocks = mdToBlocks("- a\n  continued\n- b");
     const list = blocks[0];
     assert.equal(list.type, "list");
@@ -266,6 +266,77 @@ describe("mdToBlocks", () => {
     assert.deepEqual(list.items[0].blocks, [
       { type: "paragraph", text: "a" },
       { type: "paragraph", text: "continued" },
+    ]);
+  });
+  test("nested lists (indent > parent) → list block inside the parent item (server-verified)", () => {
+    const blocks = mdToBlocks("- Major Project Deliverables\n  - Phase 1: Planning & Setup\n  - Phase 2: Build");
+    assert.equal(blocks.length, 1);
+    const list = blocks[0];
+    assert.equal(list.type, "list");
+    if (list.type !== "list") return;
+    assert.equal(list.items.length, 1);
+    assert.deepEqual(list.items[0].blocks, [
+      { type: "paragraph", text: "Major Project Deliverables" },
+      { type: "list", items: [
+        { blocks: [{ type: "paragraph", text: "Phase 1: Planning & Setup" }] },
+        { blocks: [{ type: "paragraph", text: "Phase 2: Build" }] },
+      ] },
+    ]);
+  });
+  test("three nesting levels + pop back out", () => {
+    const blocks = mdToBlocks("- a\n  - b\n    - c\n  - d\n- e");
+    const list = blocks[0];
+    assert.equal(list.type, "list");
+    if (list.type !== "list") return;
+    assert.equal(list.items.length, 2, "a and e are top-level");
+    const a = list.items[0];
+    assert.equal(a.blocks.length, 2, "a carries its nested list");
+    const nested = a.blocks[1];
+    assert.equal(nested.type, "list");
+    if (nested.type !== "list") return;
+    assert.equal(nested.items.length, 2, "b and d are under a");
+    assert.equal(nested.items[0].blocks[1]?.type, "list", "c is under b");
+    assert.deepEqual(nested.items[1].blocks, [{ type: "paragraph", text: "d" }]);
+    assert.deepEqual(list.items[1].blocks, [{ type: "paragraph", text: "e" }]);
+  });
+  test("nested ordered list keeps type/value per item", () => {
+    const blocks = mdToBlocks("- parent\n  1. first\n  2. second\n- sibling");
+    const list = blocks[0];
+    assert.equal(list.type, "list");
+    if (list.type !== "list") return;
+    const nested = list.items[0].blocks[1];
+    assert.equal(nested?.type, "list");
+    if (nested?.type !== "list") return;
+    assert.deepEqual(nested.items, [
+      { blocks: [{ type: "paragraph", text: "first" }], type: "1", value: 1 },
+      { blocks: [{ type: "paragraph", text: "second" }], type: "1", value: 2 },
+    ]);
+    assert.deepEqual(list.items[1].blocks, [{ type: "paragraph", text: "sibling" }]);
+  });
+  test("marker-type switch at the SAME indent still splits (server: ordered XOR unordered)", () => {
+    const blocks = mdToBlocks("- a\n  - b\n  1. c");
+    const list = blocks[0];
+    assert.equal(list.type, "list");
+    if (list.type !== "list") return;
+    assert.equal(list.items.length, 1);
+    assert.deepEqual(list.items[0].blocks, [
+      { type: "paragraph", text: "a" },
+      { type: "list", items: [{ blocks: [{ type: "paragraph", text: "b" }] }] },
+      { type: "list", items: [{ blocks: [{ type: "paragraph", text: "c" }], type: "1", value: 1 }] },
+    ]);
+  });
+  test("tabs count as 4 columns for nesting", () => {
+    const blocks = mdToBlocks("- a\n\t- b");
+    const list = blocks[0];
+    assert.equal(list.type, "list");
+    if (list.type !== "list") return;
+    assert.equal(list.items.length, 1);
+    assert.equal(list.items[0].blocks[1]?.type, "list");
+  });
+  test("half-typed empty items: no empty list blocks (streaming transient)", () => {
+    assert.deepEqual(mdToBlocks("- "), []);
+    assert.deepEqual(mdToBlocks("- a\n  - "), [
+      { type: "list", items: [{ blocks: [{ type: "paragraph", text: "a" }] }] },
     ]);
   });
   test("blockquote → inner blocks recursively (consecutive lines = one soft-break paragraph)", () => {

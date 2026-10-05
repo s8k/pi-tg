@@ -234,45 +234,75 @@ export function mdToBlocks(md: string): TgBlock[] {
     if (HR_RE.test(line)) { flushPara(); out.push({ type: "divider" }); i++; continue; }
     if (UL_RE.test(line) || OL_RE.test(line)) {
       flushPara();
-      // Server rule: a list must be EITHER ordered or unordered — a marker-type
-      // switch splits the list into consecutive runs (GFM does the same).
-      let kind: "ul" | "ol" = UL_RE.test(line) ? "ul" : "ol";
-      let items: TgListItem[] = [];
-      const flushList = () => {
-        if (items.length > 0) out.push({ type: "list", items }); // all-empty (half-typed) run → nothing
-        items = [];
+      // GFM nesting: a line indented MORE than the current list nests under
+      // the previous item (the server accepts a list block inside an item's
+      // blocks — live-verified 2026-10-06). A marker-type switch at the SAME
+      // indent splits: the server requires each list to be entirely ordered
+      // or entirely unordered (GFM does the same).
+      type LFrame = {
+        indent: number;
+        kind: "ul" | "ol";
+        block: TgBlock | undefined; // materialized lazily — half-typed (all-empty) runs emit nothing
+        attachTo: TgBlock[]; // `out`, or the parent item's blocks
+      };
+      const frames: LFrame[] = [];
+      const openList = (indent: number, kind: "ul" | "ol"): LFrame => {
+        let attachTo: TgBlock[] | TgListItem = out;
+        const parent = frames[frames.length - 1];
+        const parentItems = parent?.block ? (parent.block as Extract<TgBlock, { type: "list" }>).items : undefined;
+        const last = parentItems?.[parentItems.length - 1];
+        if (last) attachTo = last.blocks;
+        const f: LFrame = { indent, kind, block: undefined, attachTo };
+        frames.push(f);
+        return f;
+      };
+      const ensureBlock = (f: LFrame): Extract<TgBlock, { type: "list" }> => {
+        if (!f.block) {
+          f.block = { type: "list", items: [] };
+          f.attachTo.push(f.block);
+        }
+        return f.block as Extract<TgBlock, { type: "list" }>;
       };
       while (i < lines.length) {
         const ul = UL_RE.exec(lines[i]);
         const ol = OL_RE.exec(lines[i]);
+        if (!ul && !ol) break;
+        const kind: "ul" | "ol" = ul ? "ul" : "ol";
+        const indent = lines[i].match(/^\s*/)?.[0].replace(/\t/g, "    ").length ?? 0;
+        while (frames.length > 1 && frames[frames.length - 1].indent > indent) frames.pop();
+        let top = frames[frames.length - 1];
+        if (!top || indent > top.indent) {
+          top = openList(indent, kind); // nested under the parent's last item
+        } else if (kind !== top.kind) {
+          top = { indent: top.indent, kind, block: undefined, attachTo: top.attachTo }; // sibling split
+          frames[frames.length - 1] = top;
+        }
+        // A half-typed item ("- ") would carry an empty paragraph — 400. The
+        // list block itself is materialized only when an item actually lands
+        // (an all-empty half-typed run must emit nothing).
         if (ul) {
-          if (kind === "ol") { flushList(); kind = "ul"; }
-          // A half-typed item ("- ") would carry an empty paragraph — 400.
           const task = TASK_RE.exec(ul[1]);
           const itemText = task ? task[2] : ul[1];
           if (itemText.trim() !== "") {
-            if (task) items.push({ blocks: [paraBlock(task[2])], has_checkbox: true, is_checked: task[1] !== " " });
-            else items.push({ blocks: [paraBlock(ul[1])] });
+            const list = ensureBlock(top);
+            if (task) list.items.push({ blocks: [paraBlock(task[2])], has_checkbox: true, is_checked: task[1] !== " " });
+            else list.items.push({ blocks: [paraBlock(ul[1])] });
           }
-          i++;
-          // v1: indented continuation lines attach to the previous item (flat lists)
-          while (i < lines.length && /^\s+\S/.test(lines[i]) && !UL_RE.test(lines[i]) && !OL_RE.test(lines[i])) {
-            const cont = lines[i].trim();
-            i++;
-            if (items.length > 0) items[items.length - 1].blocks.push({ type: "paragraph", text: cont });
-            else out.push({ type: "paragraph", text: cont }); // orphaned (its item was empty+dropped)
-          }
-          continue;
+        } else if (ol && ol[2].trim() !== "") {
+          ensureBlock(top).items.push({ blocks: [paraBlock(ol[2])], type: "1", value: Number(ol[1]) });
         }
-        if (ol) {
-          if (kind === "ul") { flushList(); kind = "ol"; }
-          if (ol[2].trim() !== "") items.push({ blocks: [paraBlock(ol[2])], type: "1", value: Number(ol[1]) });
+        i++;
+        // indented non-list lines attach to the deepest open item
+        while (i < lines.length && /^\s+\S/.test(lines[i]) && !UL_RE.test(lines[i]) && !OL_RE.test(lines[i])) {
+          const cont = lines[i].trim();
           i++;
-          continue;
+          const tl = frames[frames.length - 1];
+          const items = tl?.block ? (tl.block as Extract<TgBlock, { type: "list" }>).items : undefined;
+          const it = items?.[items.length - 1];
+          if (it) it.blocks.push({ type: "paragraph", text: cont });
+          else out.push({ type: "paragraph", text: cont }); // orphaned (its item was empty+dropped)
         }
-        break;
       }
-      flushList();
       continue;
     }
     if (BQ_RE.test(line)) {
