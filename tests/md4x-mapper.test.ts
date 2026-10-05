@@ -286,6 +286,26 @@ describe("math + anchors + details (T6)", () => {
   test("<a name='id'></a> on own line → anchor block", () => {
     assert.deepEqual(mdToBlocksV2('<a name="my-anchor"></a>'), [{ type: "anchor", name: "my-anchor" }]);
   });
+  test("anchor at the start of a paragraph (no blank line after — common LLM output) splits", () => {
+    // md4x folds the following line into the same p (lazy continuation); the
+    // old line parser saw the anchor on its own line. Split at the anchor
+    // pair: paragraph-before / anchor / paragraph-after, edges trimmed.
+    assert.deepEqual(mdToBlocksV2('<a name="x"></a>\nText after'), [
+      { type: "anchor", name: "x" },
+      { type: "paragraph", text: "Text after" },
+    ]);
+    assert.deepEqual(mdToBlocksV2('Intro\n<a name="y"></a>\nMore'), [
+      { type: "paragraph", text: "Intro" },
+      { type: "anchor", name: "y" },
+      { type: "paragraph", text: "More" },
+    ]);
+  });
+  test("anchor in a paragraph keeps its following text tight (blank line still separates)", () => {
+    assert.deepEqual(mdToBlocksV2('<a name="z"></a>\n\nSeparate'), [
+      { type: "anchor", name: "z" },
+      { type: "paragraph", text: "Separate" },
+    ]);
+  });
   test("details: summary stripped from first line, body blocks, closed", () => {
     const bs = mdToBlocksV2("<details>\n<summary>Why?</summary>\nbody **here**\n</details>");
     assert.deepEqual(bs, [{

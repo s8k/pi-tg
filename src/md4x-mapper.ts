@@ -111,6 +111,65 @@ function detailsFromRegion(json: string | undefined, heal: boolean): TgBlock | u
     : { type: "details", summary, blocks, is_open: true };
 }
 
+/** Locate an `<a name="id"></a>` pair among a paragraph's inline nodes.
+ *  md4x renders the anchor as inline html node(s) INSIDE a p — either the
+ *  whole paragraph (own line) or glued to adjacent text when no blank line
+ *  separates it (common LLM output). Returns where + how many nodes it spans. */
+function findAnchor(kids: ComarkNode[]): { at: number; span: number; name: string } | undefined {
+  const tryMatch = (raw: string): string | undefined => {
+    const m = ANCHOR_LINE_RE.exec(raw);
+    return m ? m[1] : undefined;
+  };
+  // md4x splits the tag into two consecutive html nodes
+  for (let i = 0; i + 1 < kids.length; i++) {
+    const a = kids[i]!;
+    const b = kids[i + 1]!;
+    if (isEl(a) && a[0] === "html" && isEl(b) && b[0] === "html") {
+      const name = tryMatch(rawTextOf(a) + rawTextOf(b));
+      if (name) return { at: i, span: 2, name };
+    }
+  }
+  // a single html node carrying the whole pair
+  for (let i = 0; i < kids.length; i++) {
+    const k = kids[i]!;
+    if (isEl(k) && k[0] === "html") {
+      const name = tryMatch(rawTextOf(k));
+      if (name) return { at: i, span: 1, name };
+    }
+  }
+  return undefined;
+}
+
+/** Raw text of any node (strings pass through; elements keep source bytes). */
+function rawOf(k: ComarkNode): string {
+  return typeof k === "string" ? k : rawTextOf(k as El);
+}
+
+/** Trim the whitespace at one edge of a mapped RichText (the \n that glued a
+ *  paragraph line to the anchor); undefined when only whitespace remained. */
+function trimEdge(rt: TgRichText, side: "start" | "end"): TgRichText | undefined {
+  if (typeof rt === "string") {
+    const t = side === "start" ? rt.trimStart() : rt.trimEnd();
+    return t === "" ? undefined : t;
+  }
+  if (!Array.isArray(rt)) return rt;
+  const arr = rt.slice();
+  if (side === "start") {
+    while (arr.length > 0 && typeof arr[0] === "string") {
+      const s = (arr[0] as string).trimStart();
+      if (s !== "") { arr[0] = s; break; }
+      arr.shift();
+    }
+  } else {
+    while (arr.length > 0 && typeof arr[arr.length - 1] === "string") {
+      const s = (arr[arr.length - 1] as string).trimEnd();
+      if (s !== "") { arr[arr.length - 1] = s; break; }
+      arr.pop();
+    }
+  }
+  return arr.length === 0 ? undefined : arr.length === 1 ? arr[0]! : arr;
+}
+
 // --- small helpers -----------------------------------------------------------
 
 /** Raw descendant text of an element (keeps source bytes for code/html/math
@@ -298,11 +357,23 @@ export function mapBlocks(nodes: ComarkNode[], ctx: Ctx): TgBlock[] {
           if (expr !== "") out.push({ type: "mathematical_expression", expression: expr });
           continue;
         }
-        // `<a name="id"></a>` on its own line → anchor block (md4x renders it
-        // as a p of inline html nodes; the text keeps the source bytes)
-        if (kids.length > 0 && kids.every((k) => isEl(k) && k[0] === "html")) {
-          const m = ANCHOR_LINE_RE.exec(kids.map((k) => rawTextOf(k as El)).join(""));
-          if (m) { out.push({ type: "anchor", name: m[1]! }); continue; }
+        // `<a name="id"></a>` → anchor block. md4x keeps it as inline html
+        // INSIDE the paragraph — own line (all-html p) or glued to the next
+        // line (no blank line — common LLM output). Split at the anchor:
+        // paragraph-before / anchor / paragraph-after. Old line-parser parity:
+        // only a LINE-INITIAL anchor splits (preceding text empty or ending
+        // in \n); a mid-line anchor stays literal.
+        const anchor = findAnchor(kids);
+        if (anchor) {
+          const beforeRaw = kids.slice(0, anchor.at).map(rawOf).join("");
+          if (beforeRaw === "" || beforeRaw.endsWith("\n")) {
+            const before = trimEdge(mapInline(kids.slice(0, anchor.at), ctx), "end");
+            const after = trimEdge(mapInline(kids.slice(anchor.at + anchor.span), ctx), "start");
+            if (before) out.push({ type: "paragraph", text: before });
+            out.push({ type: "anchor", name: anchor.name });
+            if (after) out.push({ type: "paragraph", text: after });
+            continue;
+          }
         }
         const text = mapInline(kids, ctx);
         if (plainOf(text).trim() !== "") out.push({ type: "paragraph", text });

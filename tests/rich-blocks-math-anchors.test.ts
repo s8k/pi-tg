@@ -67,14 +67,15 @@ describe("mathematical expressions + anchors (markdown → blocks)", () => {
     ]);
   });
 
-  test("anchor with a trailing </a> on the next line stays literal (GFM: lazy continuation of the html line)", () => {
-    // md4x folds the stray </a> into the first line's paragraph (a lazy
-    // continuation), so the all-html anchor pattern no longer matches — the
-    // old parser's line-based consumption is gone (a mid-stream transient;
-    // the next tick re-parses the corrected text)
+  test("anchor with a trailing </a> on the next line: line-initial anchor splits, the stray </a> stays literal", () => {
+    // md4x folds the stray </a> into the same paragraph (lazy continuation);
+    // the line-initial anchor still splits, and the stray tag is raw data
+    // (the entity tier never parses it) — a mid-stream transient, the next
+    // tick re-parses the corrected text
     const blocks = mdToBlocks("<a name=\"c1\"></a>\n</a>\n\nText");
     assert.deepEqual(blocks, [
-      { type: "paragraph", text: "<a name=\"c1\"></a>\n</a>" },
+      { type: "anchor", name: "c1" },
+      { type: "paragraph", text: "</a>" },
       { type: "paragraph", text: "Text" },
     ]);
   });
