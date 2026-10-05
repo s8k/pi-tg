@@ -10,7 +10,7 @@ const richPlain = (blocks: import("../src/rich-blocks.ts").TgBlock[]): string =>
     })
     .join("\n");
 const richPlainRt = (rt: import("../src/rich-blocks.ts").TgRichText): string =>
-  typeof rt === "string" ? rt : Array.isArray(rt) ? rt.map(richPlainRt).join("") : richPlainRt(rt.text);
+  typeof rt === "string" ? rt : Array.isArray(rt) ? rt.map(richPlainRt).join("") : rt.type === "anchor" ? "" : richPlainRt(rt.text);
 
 test("renderQr: uniform width, no ANSI escapes, deterministic, has modules", () => {
   const q1 = renderQr("https://t.me/pi_telegram_bot");

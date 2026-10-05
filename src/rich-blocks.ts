@@ -20,11 +20,18 @@ export type TgRichText =
   | { type: "bold" | "italic" | "underline" | "strikethrough" | "spoiler" | "marked" | "code"; text: TgRichText }
   | { type: "url"; text: TgRichText; url: string }
   | { type: "subscript" | "superscript"; text: TgRichText }
-  /** A footnote reference (markdown `[^id]`). `text` = optional label; the
-   *    definition text is NOT carried by the blocks tier (docs 2026-10-05: no
-   *    InputRichBlockFootnote exists) — clients render the reference marker.
-   *    Cost model: zero rendered text (the marker is client-drawn). */
-  | { type: "reference"; text: TgRichText; name: string };
+  /** An inline anchor (inside a rich-text sequence — the blocks tier has no
+   *    inline anchor, so it only occurs nested, e.g. in footnote markers).
+   *    Zero rendered text. */
+  | { type: "anchor"; name: string }
+  /** A footnote reference (markdown `[^id]`) — INTERMEDIATE form emitted by
+   *    inlineToRichText; mdToBlocks rewrites it into the canonical marker
+   *    (superscript(anchor + reference_link)) or a literal `[^id]`. */
+  | { type: "reference"; text: TgRichText; name: string }
+  /** A link TO a footnote definition (canonical body marker, half 2). */
+  | { type: "reference_link"; text: TgRichText; reference_name: string }
+  /** A link TO an in-message anchor (canonical footer backlink "↩"). */
+  | { type: "anchor_link"; text: TgRichText; anchor_name: string };
 
 /**
  * A table cell: a rich-text entity OBJECT (bare strings 400). Header-row cells
@@ -51,6 +58,10 @@ export type TgBlock =
   /** An in-message anchor (markdown `<a name="id"></a>`). Zero content —
    *    exists for in-document links (`anchor_link` references). */
   | { type: "anchor"; name: string }
+  /** The footnote DEFINITIONS block (canonical shape, spike 2026-10-06 /
+   *    forwarded msg 1516): numbered "N. " + reference(definition text) +
+   *    " " + ↩ backlink entries, "\n"-separated in ONE RichText array. */
+  | { type: "footer"; text: TgRichText }
   | { type: "thinking"; text: TgRichText }; // draft-only — never in persistent sends
 
 export interface TgListItem {
@@ -66,12 +77,13 @@ export interface TgListItem {
 /**
  * Convert ONE line of markdown to structured RichText.
  * Supports: `code`, [t](url), **bold**, __bold__, *italic*, _italic_, ~~strike~~,
- * ==marked==, ||spoiler||, [^id] footnote references (→ RichTextReference).
- * Footnote DEFINITIONS (`[^id]: text` at the start of a line) are stripped by
- * mdToBlocks — there is no definition block in the blocks tier (docs
- * 2026-10-05: no InputRichBlockFootnote; the client renders the reference
- * marker); mid-line `[^id]:` stays literal (only line-initial definitions
- * are footnotes).
+ * ==marked==, ||spoiler||, [^id] footnote references (→ intermediate
+ * RichTextReference entities that mdToBlocks rewrites into the canonical
+ * superscript markers).
+ * Footnote DEFINITIONS (`[^id]: text` at the start of a line) are collected
+ * by mdToBlocks into a `footer` block (the blocks tier's canonical definition
+ * home — spike 2026-10-06); mid-line `[^id]:` stays literal (only
+ * line-initial definitions are footnotes).
  * Display math ($$…$$ whole line / ```math fence) and <a name=…> anchors are
  * BLOCK-level constructs — see mdToBlocks; a $$…$$ embedded in a text line
  * stays literal (the blocks tier has no inline math entity).
@@ -183,6 +195,116 @@ const BQ_RE = /^\s*>\s?(.*)$/;
 // markdown-tier affordance) — what survives is the inline [^id] reference.
 const FN_DEF_RE = /^\s{0,3}\[\^([^\[\]\n]+)\]:\s?(.*)$/;
 const FN_DEF_CONT_RE = /^\s{1,}\S/;
+
+/**
+ * Rewrite the intermediate footnote references in a parsed block tree into
+ * the CANONICAL shapes (spike 2026-10-06, forwarded msg 1516 — the server's
+ * own markdown→blocks conversion):
+ *   body: [^id] → superscript(anchor "fnref-<id>-<k>",
+ *                              reference_link "<n>" → "fn-<id>")
+ *   end:  footer "N. " + reference(definition, "fn-<id>") + " " + ↩
+ * Numbering follows FIRST REFERENCE order (GFM); unreferenced definitions
+ * are dropped; a reference with no definition stays literal `[^id]` (GFM).
+ */
+function finalizeFootnotes(blocks: TgBlock[], defs: Map<string, string>): TgBlock[] {
+  const order: string[] = [];
+  const seen = new Set<string>();
+  const collect = (rt: TgRichText): void => {
+    if (typeof rt === "string") return;
+    if (Array.isArray(rt)) { for (const x of rt) collect(x); return; }
+    if (rt.type === "anchor") return;
+    if (rt.type === "reference" && !seen.has(rt.name)) { seen.add(rt.name); order.push(rt.name); }
+    else collect(rt.text);
+  };
+  const collectBlocks = (bs: TgBlock[]): void => {
+    for (const b of bs) {
+      switch (b.type) {
+        case "paragraph": case "heading": case "thinking": collect(b.text); break;
+        case "list": for (const it of b.items) collectBlocks(it.blocks); break;
+        case "blockquote": collectBlocks(b.blocks); break;
+        case "details": collect(b.summary); collectBlocks(b.blocks); break;
+        case "table": for (const row of b.cells) for (const c of row) collect(c); break;
+        default: break;
+      }
+    }
+  };
+  // A RichText mapper must handle every shape (it's also used as a raw text
+  // fn for literalization, where it may receive a reference entity directly).
+  // merge adjacent strings (literalized refs become array members); a
+  // single-element array collapses to the element (a lone ref is the whole
+  // block text — collapsing keeps it a plain string, not a 1-item array)
+  const mergeStrings = (arr: TgRichText[]): TgRichText => {
+    const out: TgRichText[] = [];
+    for (const x of arr) {
+      const last = out[out.length - 1];
+      if (typeof last === "string" && typeof x === "string") out[out.length - 1] = last + x;
+      else out.push(x);
+    }
+    return out.length === 1 ? out[0] : out;
+  };
+  const mapBlock = (fn: (rt: TgRichText) => TgRichText, b: TgBlock): TgBlock => {
+    switch (b.type) {
+      case "paragraph": case "heading": case "thinking":
+        return { ...b, text: fn(b.text) };
+      case "list":
+        return { ...b, items: b.items.map((it) => ({ ...it, blocks: it.blocks.map((x) => mapBlock(fn, x)) })) };
+      case "blockquote":
+        return { ...b, blocks: b.blocks.map((x) => mapBlock(fn, x)) };
+      case "details":
+        return { ...b, summary: fn(b.summary), blocks: b.blocks.map((x) => mapBlock(fn, x)) };
+      case "table":
+        return { ...b, cells: b.cells.map((row) => row.map((c) => fn(c) as TgTableCell)) };
+      default:
+        return b; // footer/pre/divider/anchor/mathematical_expression: no RichText to map
+    }
+  };
+  collectBlocks(blocks);
+  if (order.length === 0) return blocks; // nothing referenced — no markers, no footer
+  // GFM: a reference with no definition is NOT a footnote — it stays literal
+  // ([^id]) and must not consume a number. Numbering = FIRST REFERENCE order
+  // over DEFINED ids only.
+  const num = new Map<string, number>();
+  for (const id of order) if (defs.has(id)) num.set(id, num.size + 1);
+  const occ = new Map<string, number>();
+  const mapRt = (rt: TgRichText): TgRichText => {
+    if (typeof rt === "string") return rt;
+    if (Array.isArray(rt)) return mergeStrings(rt.map(mapRt));
+    if (rt.type === "reference") {
+      const n = num.get(rt.name);
+      if (!n) return literalizeRef(rt); // undefined (no definition) — GFM literal
+      const k = (occ.get(rt.name) ?? 0) + 1;
+      occ.set(rt.name, k);
+      return { type: "superscript", text: [
+        { type: "anchor", name: `fnref-${rt.name}-${k}` },
+        { type: "reference_link", text: String(n), reference_name: `fn-${rt.name}` },
+      ] };
+    }
+    if (rt.type === "anchor") return rt;
+    return { ...rt, text: mapRt(rt.text) };
+  };
+  const out = blocks.map((b) => mapBlock(mapRt, b));
+  const parts: TgRichText[] = [];
+  for (const id of order) {
+    const def = defs.get(id);
+    const n = num.get(id);
+    if (def === undefined || n === undefined) continue; // undefined refs: no footer entry
+    // canonical shape: the newline is merged into the next entry's prefix
+    // ("\n2. "), not a separate array element (spike msg 1516)
+    parts.push(
+      `${parts.length > 0 ? "\n" : ""}${n}. `,
+      { type: "reference", text: inlineToRichText(def), name: `fn-${id}` },
+      " ",
+      { type: "anchor_link", text: "↩", anchor_name: `fnref-${id}-1` },
+    );
+  }
+  if (parts.length > 0) out.push({ type: "footer", text: parts.length === 1 ? parts[0] : parts });
+  return out;
+}
+
+/** An intermediate reference → its GFM literal form (no definition). */
+function literalizeRef(rt: TgRichText): TgRichText {
+  return `[^${(rt as { name: string }).name}]`;
+}
 // A line that is an INCOMPLETE footnote marker ("[^id", no closing bracket
 // yet — the model is mid-typing a definition or a bare reference). It emits
 // nothing until it completes (suppressing it avoids a one-tick literal "[^id"
@@ -219,6 +341,9 @@ function fenceCloseRe(open: string): RegExp {
 export function mdToBlocks(md: string): TgBlock[] {
   const lines = md.replace(/\r\n?/g, "\n").split("\n");
   const out: TgBlock[] = [];
+  /** Footnote definitions: id → definition text (first definition wins; GFM
+   *  disallows reuse). Consumed by finalizeFootnotes (footer block). */
+  const fnDefs = new Map<string, string>();
   let para: string[] = [];
   const flushPara = () => {
     if (para.length > 0) {
@@ -268,21 +393,26 @@ export function mdToBlocks(md: string): TgBlock[] {
       continue;
     }
     // Footnote definition (line-initial): consume the definition + its
-    // indented continuation lines and emit NOTHING. A half-typed definition
-    // mid-stream ("[^id]" / "[^id]:" without the text yet) must emit nothing
-    // too — an empty paragraph would 400, and the definition text is never
-    // rendered regardless (see FN_DEF_RE). The inline [^id] references in the
-    // body become RichTextReference entities via inlineToRichText.
+    // indented continuation lines and stash them in fnDefs — mdToBlocks
+    // finalizes them into a `footer` block (the blocks tier's canonical
+    // definition home, spike 2026-10-06). A half-typed definition mid-stream
+    // ("[^id]" / "[^id]:" without the text yet) must emit nothing too — an
+    // empty definition would 400, and the text lands on the next tick.
+    // The inline [^id] references in the body become intermediate reference
+    // entities via inlineToRichText (rewritten by finalizeFootnotes).
     if (FN_PARTIAL_RE.test(line)) { flushPara(); i++; continue; }
     const fnDef = FN_DEF_RE.exec(line);
     if (fnDef) {
       flushPara();
+      const id = fnDef[1].trim();
+      const parts = [fnDef[2].trim()];
       i++;
-      while (i < lines.length && (FN_DEF_CONT_RE.test(lines[i]) || lines[i].trim() === "")) {
-        // a blank line ends the definition; an indented line continues it
-        if (lines[i].trim() === "") break;
+      while (i < lines.length && FN_DEF_CONT_RE.test(lines[i])) {
+        // an indented line continues the definition; a blank line ends it
+        parts.push(lines[i].trim());
         i++;
       }
+      if (id !== "" && !fnDefs.has(id)) fnDefs.set(id, parts.filter((p) => p !== "").join(" "));
       continue;
     }
     const fence = FENCE_OPEN_RE.exec(line);
@@ -445,7 +575,7 @@ export function mdToBlocks(md: string): TgBlock[] {
     i++;
   }
   flushPara();
-  return out;
+  return finalizeFootnotes(out, fnDefs);
 }
 
 const paraBlock = (text: string): TgBlock => ({ type: "paragraph", text: inlineToRichText(text) });
@@ -475,6 +605,7 @@ function tableBlock(rows: string[]): TgBlock {
 export function richTextLen(rt: TgRichText): number {
   if (typeof rt === "string") return rt.length;
   if (Array.isArray(rt)) return rt.reduce((n, x) => n + richTextLen(x), 0);
+  if (rt.type === "anchor") return 0; // no text — pure navigation
   return richTextLen(rt.text);
 }
 
@@ -490,6 +621,9 @@ export function blocksLen(blocks: TgBlock[]): number {
         break;
       case "pre":
         n += b.text.length;
+        break;
+      case "footer":
+        n += richTextLen(b.text);
         break;
       case "divider":
       case "anchor":
@@ -770,9 +904,9 @@ function splitList(b: Extract<TgBlock, { type: "list" }>, cap: number, capB: num
   return pieces.length > 0 ? pieces : [b];
 }
 
-/** Last resort: hard-cut a block's text (paragraph/heading/thinking). */
+/** Last resort: hard-cut a block's text (paragraph/heading/thinking/footer). */
 function hardSplitBlock(b: TgBlock, cap: number): TgBlock[] {
-  if (b.type !== "paragraph" && b.type !== "heading" && b.type !== "thinking") return [b];
+  if (b.type !== "paragraph" && b.type !== "heading" && b.type !== "thinking" && b.type !== "footer") return [b];
   const text = richTextToPlain(b.text);
   const pieces: TgBlock[] = [];
   for (let i = 0; i < text.length; i += cap) {
@@ -797,6 +931,9 @@ export function blocksToPlainText(blocks: TgBlock[]): string {
     for (const b of bs) {
       if (b.type === "anchor") continue; // zero content
       switch (b.type) {
+        case "footer":
+          lines.push(richTextToPlain(b.text));
+          continue;
         case "paragraph":
         case "heading":
         case "thinking":
@@ -843,6 +980,12 @@ export function richTextToPlain(rt: TgRichText): string {
   if (typeof rt === "string") return rt;
   if (Array.isArray(rt)) return rt.map(richTextToPlain).join("");
   if (rt.type === "url") return `${richTextToPlain(rt.text)} (${rt.url})`;
-  if (rt.type === "reference") return ""; // the marker was `[^id]` — plain text has no footnote concept
+  if (rt.type === "anchor") return ""; // zero content
+  if (rt.type === "reference") {
+    // canonical footer entry: the definition text; intermediate (un-finalized):
+    // the literal marker
+    return richTextToPlain(rt.text) !== "" ? richTextToPlain(rt.text) : `[^${rt.name}]`;
+  }
+  if (rt.type === "reference_link" || rt.type === "anchor_link") return richTextToPlain(rt.text); // the marker digit / ↩
   return richTextToPlain(rt.text);
 }

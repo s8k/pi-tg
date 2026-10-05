@@ -20,7 +20,7 @@ function deps(over: Partial<{ chatId: number | undefined; enabled: boolean; out:
 }
 
 const richTextPlain = (rt: import("../src/rich-blocks.ts").TgRichText): string =>
-  typeof rt === "string" ? rt : Array.isArray(rt) ? rt.map(richTextPlain).join("") : richTextPlain(rt.text);
+  typeof rt === "string" ? rt : Array.isArray(rt) ? rt.map(richTextPlain).join("") : rt.type === "anchor" ? "" : richTextPlain(rt.text);
 
 test("renderDialog select: title + one numbered button row per option + cancel row, index-based callback data", () => {
   const r = renderDialog({ kind: "select", title: "Pick", options: ["a", "b"] }, 7, false);

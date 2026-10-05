@@ -171,6 +171,7 @@ describe("inlineToRichText", () => {
     const check = (rt: TgRichText): void => {
       if (typeof rt === "string") return;
       if (Array.isArray(rt)) { rt.forEach(check); return; }
+      if (rt.type === "anchor") return; // no text field
       check(rt.text);
     };
     for (const s of samples) {
