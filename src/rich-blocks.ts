@@ -19,7 +19,12 @@ export type TgRichText =
   | TgRichText[]
   | { type: "bold" | "italic" | "underline" | "strikethrough" | "spoiler" | "marked" | "code"; text: TgRichText }
   | { type: "url"; text: TgRichText; url: string }
-  | { type: "subscript" | "superscript"; text: TgRichText };
+  | { type: "subscript" | "superscript"; text: TgRichText }
+  /** A footnote reference (markdown `[^id]`). `text` = optional label; the
+   *    definition text is NOT carried by the blocks tier (docs 2026-10-05: no
+   *    InputRichBlockFootnote exists) — clients render the reference marker.
+   *    Cost model: zero rendered text (the marker is client-drawn). */
+  | { type: "reference"; text: TgRichText; name: string };
 
 /**
  * A table cell: a rich-text entity OBJECT (bare strings 400). Header-row cells
@@ -39,6 +44,13 @@ export type TgBlock =
   | { type: "blockquote"; blocks: TgBlock[] }
   | { type: "table"; cells: TgTableCell[][]; is_bordered?: boolean; caption?: TgRichText }
   | { type: "details"; summary: TgRichText; blocks: TgBlock[]; is_open?: boolean }
+  /** A LaTeX block (markdown `$$…$$` or ```math fence). Zero cost in our
+   *    budget until the client renders it — counted as the source length
+   *    (conservative; the rendered expression is usually shorter). */
+  | { type: "mathematical_expression"; expression: string }
+  /** An in-message anchor (markdown `<a name="id"></a>`). Zero content —
+   *    exists for in-document links (`anchor_link` references). */
+  | { type: "anchor"; name: string }
   | { type: "thinking"; text: TgRichText }; // draft-only — never in persistent sends
 
 export interface TgListItem {
@@ -54,7 +66,15 @@ export interface TgListItem {
 /**
  * Convert ONE line of markdown to structured RichText.
  * Supports: `code`, [t](url), **bold**, __bold__, *italic*, _italic_, ~~strike~~,
- * ==marked==, ||spoiler||.
+ * ==marked==, ||spoiler||, [^id] footnote references (→ RichTextReference).
+ * Footnote DEFINITIONS (`[^id]: text` at the start of a line) are stripped by
+ * mdToBlocks — there is no definition block in the blocks tier (docs
+ * 2026-10-05: no InputRichBlockFootnote; the client renders the reference
+ * marker); mid-line `[^id]:` stays literal (only line-initial definitions
+ * are footnotes).
+ * Display math ($$…$$ whole line / ```math fence) and <a name=…> anchors are
+ * BLOCK-level constructs — see mdToBlocks; a $$…$$ embedded in a text line
+ * stays literal (the blocks tier has no inline math entity).
  * Guarantees: balanced output (unmatched markers stay literal), code-span content
  * verbatim (no formatting parsed inside), links' text parsed recursively.
  */
@@ -71,6 +91,16 @@ export function inlineToRichText(src: string): TgRichText {
     linkStash.push({ text, url });
     return `\u0002${linkStash.length - 1}\u0002`;
   });
+  // 2b) footnote references `[^id]` / `[^id: label]` — stashed before the
+  //     emphasis passes. A `[^id]:` definition is NOT a reference (the colon
+  //     decides; mdToBlocks strips line-initial definitions, everything else
+  //     stays literal).
+  const refStash: { text: string; name: string }[] = [];
+  s = s.replace(/\[\^([^\[\]\n]+?)(?::([^\]\n]+))?\](?!:)/g, (_m, name: string, label: string | undefined) => {
+    const t = (label ?? "").trim();
+    refStash.push({ text: t, name: name.trim() });
+    return `\u0003${refStash.length - 1}\u0003`;
+  });
   // 3) emphasis — same regexes and pass order as the legacy inlineToHtml,
   //    wrapping matches in open/close tags (tags contain no markers → no interference)
   const open = (t: string) => `\u0004${t}\u0004`;
@@ -83,7 +113,7 @@ export function inlineToRichText(src: string): TgRichText {
   s = s.replace(/==(.+?)==/g, (_m, c: string) => open("M") + c + close("M"));
   s = s.replace(/\|\|(.+?)\|\|/g, (_m, c: string) => open("P") + c + close("P"));
   // 4) tag string → tree (stashes resolved here)
-  const out = parseTagged(s, codeStash, linkStash);
+  const out = parseTagged(s, codeStash, linkStash, refStash);
   if (out.length === 0) return "";
   if (out.length === 1) return out[0];
   return out;
@@ -94,7 +124,7 @@ const EMPH_TYPE: Record<string, "bold" | "italic" | "strikethrough" | "marked" |
 };
 
 /** Parse the tagged string into RichText nodes (recursive on emphasis tags). */
-function parseTagged(s: string, codeStash: string[], linkStash: { text: string; url: string }[]): TgRichText[] {
+function parseTagged(s: string, codeStash: string[], linkStash: { text: string; url: string }[], refStash: { text: string; name: string }[] = []): TgRichText[] {
   const out: TgRichText[] = [];
   let buf = "";
   const flush = () => {
@@ -103,14 +133,18 @@ function parseTagged(s: string, codeStash: string[], linkStash: { text: string; 
   let i = 0;
   while (i < s.length) {
     const ch = s.charAt(i);
-    if (ch === "\u0001" || ch === "\u0002") {
+    if (ch === "\u0001" || ch === "\u0002" || ch === "\u0003") {
       const end = s.indexOf(ch, i + 1);
       const idx = Number(s.slice(i + 1, end));
       flush();
       if (ch === "\u0001") out.push({ type: "code", text: codeStash[idx] });
-      else {
+      else if (ch === "\u0002") {
         const l = linkStash[idx];
         out.push({ type: "url", text: inlineToRichText(l.text), url: l.url });
+      } else {
+        const r = refStash[idx];
+        // `text` is the reference label ("" = default marker rendering).
+        out.push({ type: "reference", text: r.text, name: r.name });
       }
       i = end + 1;
       continue;
@@ -142,6 +176,24 @@ const HR_RE = /^\s*((?:-\s*){3,}|(?:\*\s*){3,}|(?:_\s*){3,})$/;
 const UL_RE = /^\s*[-*+]\s+(.*)$/;
 const OL_RE = /^\s*(\d{1,9})\.\s+(.*)$/;
 const BQ_RE = /^\s*>\s?(.*)$/;
+// GFM footnote definition: `[^id]: definition text` at the START of a line.
+// Continuation lines (indented) belong to the definition too. The definition
+// TEXT is dropped (the blocks tier has no definition block — the client
+// renders the reference marker; the docs' "Definition of …" lines are a
+// markdown-tier affordance) — what survives is the inline [^id] reference.
+const FN_DEF_RE = /^\s{0,3}\[\^([^\[\]\n]+)\]:\s?(.*)$/;
+const FN_DEF_CONT_RE = /^\s{1,}\S/;
+// A line that is an INCOMPLETE footnote marker ("[^id", no closing bracket
+// yet — the model is mid-typing a definition or a bare reference). It emits
+// nothing until it completes (suppressing it avoids a one-tick literal "[^id"
+// paragraph that vanishes when the definition form lands — draft stability).
+const FN_PARTIAL_RE = /^\s{0,3}\[\^[^\]\n]*$/;
+// An in-message anchor on its own line: <a name="id"></a> (docs: the HTML
+// tag with the `name` attribute). A half-typed form leaves a bare </a> on the
+// next line — consumed below. Inline <a name=…> inside text is NOT an anchor
+// block (the blocks tier has no inline anchor entity) and stays literal.
+const ANCHOR_LINE_RE = /^\s*<a\s+name="([^"]*)"\s*><\/a>\s*$/;
+
 const DETAILS_OPEN_RE = /^\s*<details>/i;
 const DETAILS_CLOSE_RE = /^\s*<\/details>/i;
 const SUMMARY_RE = /^\s*<summary[^>]*>(.*)<\/summary>\s*$/i;
@@ -181,10 +233,73 @@ export function mdToBlocks(md: string): TgBlock[] {
   let i = 0;
   while (i < lines.length) {
     const line = lines[i];
+    // Display math: `$$…$$` on one line, or a `$$` opener line with the
+    // expression running to a closing `$$` line. An unclosed opener mid-stream
+    // emits nothing (an empty expression 400s; the expression lands on the
+    // next tick — a real structural shift). ```math fences: fence branch below.
+    if (line.trim() === "$$") {
+      flushPara();
+      i++;
+      const expr: string[] = [];
+      while (i < lines.length && lines[i].trim() !== "$$") { expr.push(lines[i]); i++; }
+      if (i < lines.length) i++; // consume the closing $$ (EOF = still streaming)
+      const e = expr.join("\n").trim();
+      if (e !== "") out.push({ type: "mathematical_expression", expression: e });
+      continue;
+    }
+    const inlineMath = /^\s*\$\$([^$]+?)\$\$\s*$/.exec(line.trim());
+    if (inlineMath) {
+      flushPara();
+      out.push({ type: "mathematical_expression", expression: inlineMath[1].trim() });
+      i++;
+      continue;
+    }
+    // A line that STARTS with $$ but is not a complete inline match is an
+    // INCOMPLETE display-math marker ("$$E = mc", no closing $$ yet —
+    // mid-typing). Emit nothing until the closing $$ lands (avoids a one-tick
+    // literal "$$E = mc" paragraph that vanishes — draft stability).
+    if (/^\s*\$\$/.test(line)) { flushPara(); i++; continue; }
+    const anchorLine = ANCHOR_LINE_RE.exec(line);
+    if (anchorLine) {
+      flushPara();
+      out.push({ type: "anchor", name: anchorLine[1] });
+      i++;
+      if (i < lines.length && lines[i].trim() === "</a>") i++; // half-typed closing tag
+      continue;
+    }
+    // Footnote definition (line-initial): consume the definition + its
+    // indented continuation lines and emit NOTHING. A half-typed definition
+    // mid-stream ("[^id]" / "[^id]:" without the text yet) must emit nothing
+    // too — an empty paragraph would 400, and the definition text is never
+    // rendered regardless (see FN_DEF_RE). The inline [^id] references in the
+    // body become RichTextReference entities via inlineToRichText.
+    if (FN_PARTIAL_RE.test(line)) { flushPara(); i++; continue; }
+    const fnDef = FN_DEF_RE.exec(line);
+    if (fnDef) {
+      flushPara();
+      i++;
+      while (i < lines.length && (FN_DEF_CONT_RE.test(lines[i]) || lines[i].trim() === "")) {
+        // a blank line ends the definition; an indented line continues it
+        if (lines[i].trim() === "") break;
+        i++;
+      }
+      continue;
+    }
     const fence = FENCE_OPEN_RE.exec(line);
     if (fence) {
       flushPara();
       const lang = fence[2] || undefined;
+      if (lang !== undefined && /^\s*math\b/i.test(lang)) {
+        // ```math … ``` — the LaTeX block form (docs: equivalent to $$…$$).
+        const closeRe = fenceCloseRe(fence[1]);
+        const body: string[] = [];
+        i++;
+        while (i < lines.length && !closeRe.test(lines[i])) { body.push(lines[i]); i++; }
+        if (i < lines.length) i++; // consume close (EOF = still streaming)
+        const e = body.join("\n").trim();
+        if (e !== "") out.push({ type: "mathematical_expression", expression: e });
+        continue;
+      }
       const closeRe = fenceCloseRe(fence[1]);
       const body: string[] = [];
       i++;
@@ -377,6 +492,7 @@ export function blocksLen(blocks: TgBlock[]): number {
         n += b.text.length;
         break;
       case "divider":
+      case "anchor":
         break;
       case "list":
         for (const it of b.items) n += blocksLen(it.blocks);
@@ -390,6 +506,9 @@ export function blocksLen(blocks: TgBlock[]): number {
       case "table":
         for (const row of b.cells) for (const cell of row) n += richTextLen(cell);
         if (b.caption) n += richTextLen(b.caption);
+        break;
+      case "mathematical_expression":
+        n += b.expression.length;
         break;
     }
   }
@@ -676,6 +795,7 @@ export function blocksToPlainText(blocks: TgBlock[]): string {
   const lines: string[] = [];
   const walk = (bs: TgBlock[]): void => {
     for (const b of bs) {
+      if (b.type === "anchor") continue; // zero content
       switch (b.type) {
         case "paragraph":
         case "heading":
@@ -708,6 +828,9 @@ export function blocksToPlainText(blocks: TgBlock[]): string {
             lines.push("| " + row.map((c) => richTextToPlain(c)).join(" | ") + " |");
           }
           break;
+        case "mathematical_expression":
+          lines.push(b.expression);
+          break;
       }
     }
   };
@@ -720,5 +843,6 @@ export function richTextToPlain(rt: TgRichText): string {
   if (typeof rt === "string") return rt;
   if (Array.isArray(rt)) return rt.map(richTextToPlain).join("");
   if (rt.type === "url") return `${richTextToPlain(rt.text)} (${rt.url})`;
+  if (rt.type === "reference") return ""; // the marker was `[^id]` — plain text has no footnote concept
   return richTextToPlain(rt.text);
 }
