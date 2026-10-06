@@ -1,7 +1,7 @@
 # md4x parser migration
 
-Status: **in progress** (T1–T2 done) — branch `feat/md4x-parser`
-(branched from `feat/rich_blocks_migration` @ `9947938`).
+Status: **T1–T9 done; T10 live verification in progress** — branch
+`feat/md4x-parser` (branched from `feat/rich_blocks_migration` @ `9947938`).
 
 ## Context
 
@@ -211,6 +211,7 @@ test is amended with a comment citing the new (spec-correct) behavior.
 | 15 | `H~2~O` / `X^2^` (sub/superscript) | literal (never supported) | literal (no GFM syntax; md4x has no sub/sup nodes, HTML `<sub>` arrives as raw html) | **No regression** — the old parser never had it either; the Tg `subscript`/`superscript` entities remain (used internally by footnote markers, live-verified) |
 | 16 | `<a name="x"></a>` glued to the next line (no blank line) | anchor block (line-based) | one paragraph with inline html (lazy continuation) → literal | **Fixed in the mapper** (live T10, msg 1548): split line-initial anchors out of the paragraph; mid-line anchors stay literal; stray `</a>` continuation stays literal raw data |
 | 15 | `<a name="id"></a>` on own line | `anchor` block (regex pre-scan) | `p` of two `html` nodes → same mapping (2.3) | unchanged, different mechanism |
+| 17 | streaming draft: trailing lone `` ` `` (odd count) / half-typed closing `**bold *` | old draft: literal markers for a tick (regex needed closed pairs) | heal doubles a lone `` ` `` into a visible literal ` `` ` and leaves a half-typed closing run literal | **Fixed in the mapper** (`608dee1`, live T10): draft-only `sanitizeDraftTail` strips a trailing backtick run (odd total count) and a trailing lone `*`/`~` (odd count) at the streaming edge; completed spans and persistent text untouched |
 
 ### 3.2 Test strategy
 
@@ -268,9 +269,16 @@ that the mapper is behaviorally equivalent (modulo 3.1).
    language; divider; footnote (defined ref + undefined ref literal);
    `$$math$$`; `<a name>` anchor — rendered in the owner's Telegram,
    element by element.
+   ✅ DONE (2026-10-08): msgs 1544–1548 (inline / lists / table+quote+code /
+   footnotes / math), 1551 (anchor no-blank-line fix), 1554 (anchor +
+   anchor_link demo, owner: "works as expected").
 2. **Streaming draft**: a real multi-tool task — the tail heals mid-token
    (no raw `**`/` ``` ` flicker), the committed narration section shows
    formatted markdown (the `3e9ce51` fix), spinner stays last.
+   🔄 IN PROGRESS (2026-10-08): first pass showed two heal rough edges at the
+   streaming edge (lone `` ` `` → doubled literal; half-typed closing
+   `**bold *` literal) — fixed in `608dee1` (`sanitizeDraftTail`, 3.1 #17);
+   owner re-validating on a multi-tool task.
 3. **Long transcript**: the 1.5 MB session at full level — no OOM, heap
    < 200 MB, per-tick parse+heal < ~100 ms (T9 numbers attach here).
    T9 MEASURED (2026-10-07, this machine): 1.5 MB mixed doc → 130 ms
@@ -282,6 +290,14 @@ that the mapper is behaviorally equivalent (modulo 3.1).
    the incoming `rich_message` blocks match the server's own shape
    (superscript anchor+reference_link in the body; `footer` block with
    numbered `reference` entries) — same as msg 1516.
+   ✅ DONE (2026-10-08): msg 1547 forwarded back and captured live
+   (`scripts/capture-forward.ts`, update 122167108) — the incoming
+   `rich_message` is byte-for-byte the canonical shape: per-occurrence
+   anchors `fnref-1-1`/`fnref-1-2`, `footer` with `reference` entries +
+   `↩ anchor_link` backlinks to the FIRST occurrences, `\n` merged into the
+   next entry's prefix, undefined `[^zzz]` literal. The server stored our
+   blocks unmodified. (Also re-confirmed R9: incoming rich messages carry
+   `rich_message` and no `text` field — the router currently ignores them.)
 5. **Plain demotion**: a persistent send that 400s falls back to plain text
    that includes the converted narration content.
 6. **Draft 400 cooldown** unchanged (only if cheap to trigger).
