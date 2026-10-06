@@ -55,6 +55,9 @@ export interface TgMessage {
   chat: TgChat;
   from?: TgFrom;
   text?: string;
+  /** R9 (live-confirmed 2026-10-08): an incoming rich message (e.g. a
+   * forwarded rich message) carries blocks and NO `text` field. */
+  rich_message?: InputRichMessage;
   reply_to_message?: { message_id: number };
 }
 

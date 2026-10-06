@@ -1,4 +1,5 @@
 import type { TgUpdate } from "./telegram-client.ts";
+import { blocksToPlainText } from "./rich-blocks.ts";
 
 /** Compact callback_data builders — every value ≤ 64 bytes (Telegram limit). */
 export const CB = {
@@ -100,19 +101,24 @@ export function route(
   }
 
   const msg = update.message;
-  if (!msg || !msg.text) return { kind: "ignore" }; // edited_message, non-text, empty
+  if (!msg) return { kind: "ignore" }; // edited_message, etc.
+  // R9 (live 2026-10-08): an incoming rich message (e.g. forwarded) carries
+  // `rich_message` blocks and NO `text` — project to plain text so it routes
+  // like text instead of being silently ignored. `text` wins if both present.
+  const rawText = msg.text ?? (msg.rich_message ? blocksToPlainText(msg.rich_message.blocks) : undefined);
+  if (!rawText) return { kind: "ignore" }; // non-text (photo, …), empty
   const chatId = msg.chat.id;
   const fromId = msg.from?.id ?? -1;
   if (msg.from?.is_bot) return { kind: "ignore" };
 
   if (ownerId === undefined) {
-    const t = msg.text.trim();
+    const t = rawText.trim();
     if (t === "/start" || t.startsWith("/start@")) return { kind: "pair", chatId, fromId };
     return { kind: "notAuthorized", chatId, fromId };
   }
   if (fromId !== ownerId) return { kind: "notAuthorized", chatId, fromId };
 
-  const text = msg.text.trim();
+  const text = rawText.trim();
   // A reply to a pending dialog message is the dialog's text answer — even when
   // it looks like a command (the owner is answering, not commanding).
   const replyTo = msg.reply_to_message?.message_id;

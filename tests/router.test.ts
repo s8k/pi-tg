@@ -127,3 +127,55 @@ test("plain message with an active text-answer dialog → dialogPlain (no reply-
   assert.equal(route(msgUpdate(4, 5, "5"), 5, { plainAnswer }).kind, "prompt", "mapper says no match → prompt");
   assert.equal(route(msgUpdate(5, 5, "17"), 9, { plainAnswer }).kind, "notAuthorized"); // non-owner never answers dialogs
 });
+
+// R9 (live 2026-10-08): a forwarded rich message carries `rich_message`
+// blocks and NO `text` field — the router used to silently ignore it.
+// Now the blocks are projected to plain text and routed like a text message.
+const richUpdate = (updateId: number, id: number, blocks: unknown[], bot = false): TgUpdate =>
+  ({
+    update_id: updateId,
+    message: { message_id: 1, date: 1, chat, from: from(id, bot), rich_message: { blocks } },
+  }) as TgUpdate;
+
+test("R9: rich_message without text is projected to plain text and routed as text", () => {
+  const owner = 5;
+  const blocks = [
+    { type: "heading", text: "T10-4", size: 2 },
+    {
+      type: "paragraph",
+      text: [
+        "Defined",
+        { type: "superscript", text: [{ type: "anchor", name: "fnref-1-1" }, { type: "reference_link", text: "1", reference_name: "fn-1" }] },
+        " end",
+      ],
+    },
+    { type: "footer", text: ["1. ", { type: "reference", text: "First def.", name: "fn-1" }] },
+  ];
+  assert.deepEqual(route(richUpdate(1, owner, blocks), owner), {
+    kind: "prompt",
+    chatId: 7,
+    text: "T10-4\nDefined1 end\n1. First def.",
+  });
+});
+
+test("R9: projection feeds command + dialog paths like text", () => {
+  const owner = 5;
+  // a rich message whose projection is a command routes as that command
+  assert.deepEqual(route(richUpdate(1, owner, [{ type: "paragraph", text: "/status" }]), owner), { kind: "status", chatId: 7 });
+  // and a projected text answer matches the plain-dialog mapper
+  const plainAnswer = (t: string) => (t.trim() === "17" ? 9 : undefined);
+  assert.deepEqual(route(richUpdate(2, owner, [{ type: "paragraph", text: "17" }]), owner, { plainAnswer }), { kind: "dialogPlain", chatId: 7, dialogId: 9, text: "17" });
+});
+
+test("R9: empty projection is ignored; text wins when both present; auth still enforced", () => {
+  const owner = 5;
+  // only zero-content anchor blocks → empty projection → ignore
+  assert.deepEqual(route(richUpdate(1, owner, [{ type: "anchor", name: "x" }]), owner), { kind: "ignore" });
+  // text takes precedence over rich_message (defensive; the server doesn't send both)
+  assert.deepEqual(
+    route({ update_id: 1, message: { message_id: 1, date: 1, chat, from: from(owner), text: "hello", rich_message: { blocks: [{ type: "paragraph", text: "RICH" }] } } } as TgUpdate, owner),
+    { kind: "prompt", chatId: 7, text: "hello" },
+  );
+  // non-owner rich message is rejected like any non-owner text
+  assert.equal(route(richUpdate(2, 9, [{ type: "paragraph", text: "hi" }]), owner).kind, "notAuthorized");
+});
