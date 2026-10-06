@@ -1062,9 +1062,24 @@ export class Mirror {
    * the post-dialog content (no duplication). Only a purely working draft is
    * segmented (endKind undefined) — an error-end draft has retry-carryover
    * semantics that must not be touched.
+   *
+   * An ALREADY-ENDED run (endKind set) is never segmented — but its final
+   * message may still be pending or in flight (a clean/stop end finalizes at
+   * the confirming message_end / agent_end; an error end at agent_settled or
+   * the grace timer; the one-way `phase` switch flips at the START of
+   * finalize, so it cannot signal "in flight"). The dialog must ALWAYS be the
+   * last message posted, so the wait blocks until settlement: every persistent
+   * send of the finalized message delivered (whenSettled resolves immediately
+   * when the run already settled). A new run that starts meanwhile resolves
+   * the promise too — the dialog then sits mid-stream, chronologically
+   * correct.
    */
   async pauseForDialog(): Promise<void> {
-    if (!this.hasLiveDraft() || this.endKind !== undefined) return;
+    if (this.endKind !== undefined) {
+      await this.whenSettled(); // final message first, dialog last
+      return;
+    }
+    if (!this.hasLiveDraft()) return;
     const chatId = this.deps.getChatId();
     if (chatId === undefined) return;
     const segment = this.content({ kind: "paused" }); // blocks + tail, no bottom line
