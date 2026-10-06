@@ -59,19 +59,53 @@ test("/thinking: levels from model map; ★ current; set confirms", async () => 
   assert.ok(out2.calls[out2.calls.length - 1].text?.includes("No model selected"));
 });
 
-test("/kill: ask → confirm buttons; No keeps running; Yes shuts down", async () => {
+test("/kill: ask → confirm buttons (nonced); No stamps the question (keyboard dies with it); Yes stamps + shuts down", async () => {
   const pi = new FakePi();
   const out = new FakeOut();
   const bridge = new SessionBridge(makeDeps(pi.build(), out));
   await bridge.dispatch({ kind: "killAsk", chatId: 7 });
   const kb = out.calls[out.calls.length - 1].opts!.replyMarkup as { inline_keyboard: { text: string; callback_data: string }[][] };
-  assert.equal(kb.inline_keyboard[0][0].callback_data, "k:1");
-  assert.equal(kb.inline_keyboard[0][1].callback_data, "k:0");
-  await bridge.dispatch({ kind: "kill", chatId: 7, yes: false });
+  const yes = /^k:1:.+/.exec(kb.inline_keyboard[0][0].callback_data);
+  const no = /^k:0:.+/.exec(kb.inline_keyboard[0][1].callback_data);
+  assert.ok(yes && no, "both buttons carry a nonce");
+  const askId = out.calls[out.calls.length - 1].messageId!;
+
+  await bridge.dispatch({ kind: "kill", chatId: 7, yes: false, nonce: no![0].slice(4) });
   assert.equal(pi.shutdownCalls, 0);
-  assert.ok(out.calls[out.calls.length - 1].text?.includes("keeps running"));
-  await bridge.dispatch({ kind: "kill", chatId: 7, yes: true });
+  const stamp = out.calls[out.calls.length - 1];
+  assert.equal(stamp.kind, "editRich", "the question is stamped IN PLACE (no extra message)");
+  assert.equal(stamp.messageId, askId);
+  assert.ok(stamp.text!.includes("Kept running"));
+
+  // a stale tap (same nonce again) is a silent no-op — the keyboard is already gone
+  const before = out.calls.length;
+  await bridge.dispatch({ kind: "kill", chatId: 7, yes: false, nonce: no![0].slice(4) });
+  assert.equal(out.calls.length, before, "stale tap: nothing sent");
+
+  // a fresh ask → fresh nonces → the old ones never match the new question
+  await bridge.dispatch({ kind: "killAsk", chatId: 7 });
+  const kb2 = out.calls[out.calls.length - 1].opts!.replyMarkup as { inline_keyboard: { callback_data: string }[][] };
+  const yes2 = /^k:1:(.+)/.exec(kb2.inline_keyboard[0][0].callback_data)![1];
+  const before2 = out.calls.length;
+  await bridge.dispatch({ kind: "kill", chatId: 7, yes: true, nonce: no![0].slice(4) });
+  assert.equal(out.calls.length, before2, "an old nonce never matches the new question");
+
+  await bridge.dispatch({ kind: "kill", chatId: 7, yes: true, nonce: yes2 });
   assert.equal(pi.shutdownCalls, 1);
+  const yesStamp = out.calls[out.calls.length - 2];
+  assert.equal(yesStamp.kind, "editRich");
+  assert.ok(yesStamp.text!.includes("Shutting down"));
+  assert.ok(out.calls[out.calls.length - 1].text?.includes("👋 Shutting down pi…"));
+});
+
+test("kill/clear: no nonce (legacy) → the old plain-message behavior, no crash", async () => {
+  const pi = new FakePi();
+  const out = new FakeOut();
+  const bridge = new SessionBridge(makeDeps(pi.build(), out));
+  await bridge.dispatch({ kind: "kill", chatId: 7, yes: false });
+  assert.ok(out.calls[out.calls.length - 1].text?.includes("keeps running"));
+  await bridge.dispatch({ kind: "clear", chatId: 7, doIt: false });
+  assert.ok(out.calls[out.calls.length - 1].text?.includes("chat history kept"));
 });
 
 test("clear: Keep → no deletes; Clear → drains tracker, deletes each, throttled, summarizes", async () => {
@@ -85,11 +119,36 @@ test("clear: Keep → no deletes; Clear → drains tracker, deletes each, thrott
   let sleeps = 0;
   deps.sleep = async () => { sleeps++; };
 
-  await bridge.dispatch({ kind: "clear", chatId: 7, doIt: false });
+  // nonced taps: the question is stamped in place, then the delete flow
+  deps.cfg.pendingAction = { type: "new", chatId: 7 };
+  await bridge.onSessionReplaced(7); // posts card + the nonced clear question
+  const q = out.calls[out.calls.length - 1];
+  const keepNonce = (q.opts!.replyMarkup as { inline_keyboard: { callback_data: string }[][] }).inline_keyboard[0][1].callback_data.slice(4);
+  const clearNonce = (q.opts!.replyMarkup as { inline_keyboard: { callback_data: string }[][] }).inline_keyboard[0][0].callback_data.slice(4);
+  await bridge.dispatch({ kind: "clear", chatId: 7, doIt: false, nonce: keepNonce });
   assert.equal(out.calls.filter((c) => c.kind === "delete").length, 0);
   assert.equal(deps.state.sentIds().length, 3);
+  const keepStamp = out.calls[out.calls.length - 1];
+  assert.equal(keepStamp.kind, "editRich");
+  assert.equal(keepStamp.messageId, q.messageId);
+  assert.ok(keepStamp.text!.includes("Kept"));
 
-  await bridge.dispatch({ kind: "clear", chatId: 7, doIt: true });
+  // stale: the same nonce twice → nothing
+  const b2 = out.calls.length;
+  await bridge.dispatch({ kind: "clear", chatId: 7, doIt: false, nonce: keepNonce });
+  assert.equal(out.calls.length, b2);
+
+  // a fresh question (second session switch) → fresh nonce
+  deps.cfg.pendingAction = { type: "new", chatId: 7 };
+  await bridge.onSessionReplaced(7);
+  const q2 = out.calls[out.calls.length - 1];
+  assert.notEqual(q2.messageId, q.messageId);
+  const b3 = out.calls.length;
+  await bridge.dispatch({ kind: "clear", chatId: 7, doIt: true, nonce: keepNonce }); // the OLD nonce
+  assert.equal(out.calls.length, b3, "the old nonce never matches the new question");
+
+  const clearNonce2 = (q2.opts!.replyMarkup as { inline_keyboard: { callback_data: string }[][] }).inline_keyboard[0][0].callback_data.slice(4);
+  await bridge.dispatch({ kind: "clear", chatId: 7, doIt: true, nonce: clearNonce2 });
   const dels = out.calls.filter((c) => c.kind === "delete");
   assert.deepEqual(dels.map((d) => d.messageId), [13, 12, 11]); // newest first
   assert.equal(sleeps, 3);
@@ -104,7 +163,7 @@ test("compact: spinner draft (canStop, keepOnStop) + stamped persistent result",
   await bridge.dispatch({ kind: "compact", chatId: 7 });
   const draft = out.calls[0]!;
   assert.equal(draft.kind, "sendDraft"); // the in-progress state is an EPHEMERAL draft, never a message
-  assert.equal(draft.text, "<tg-thinking>🗜 Compacting context…</tg-thinking>");
+  assert.equal(draft.text, "🗜 Compacting context…"); // thinking block's plain rendering
   assert.equal(draft.canStop, true); // the native Stop button cancels the compaction
   assert.equal(draft.keepOnStop, true);
   assert.ok(draft.draftId! >= 1_000_000, "compact drafts live in their own id namespace");

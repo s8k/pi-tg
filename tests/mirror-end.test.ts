@@ -36,8 +36,8 @@ const textMsg = (text: string, extra: Partial<MirrorMessage> = {}): MirrorMessag
 
 const richCalls = (h: H): Call[] => h.out.calls.filter((c) => c.kind === "sendRich");
 
-/** the last blank-line-separated part of a composed message */
-const lastBlock = (md: string): string => md.trimEnd().split(/\n\n+/).pop() ?? "";
+/** the last line of a plain-rendered composed message (the bottom line) */
+const lastBlock = (md: string): string => md.trimEnd().split("\n").pop() ?? "";
 
 /**
  * A run with one stamped tool block (non-empty log) whose answer message has
@@ -105,15 +105,15 @@ test("clean end, with log: m1 = log + Completed ✔️ (answer cut), m2 = the an
   assert.ok(m1.includes("Let me check."), "the committed narration is in m1");
   assert.ok(m1.includes("Completed ✔️"), "the marker ends m1");
   assert.ok(!m1.includes("The answer is 42."), "the answer is cut from m1");
-  assert.ok(!m1.includes("---"), "no divider in m1 (there is no answer after it)");
-  assert.ok(!m1.includes("<tg-thinking>"), "the spinner is gone");
+  assert.ok(!m1.includes("─"), "no divider in m1 (there is no answer after it)");
+  assert.ok(!m1.includes("…"), "the spinner is gone");
   assert.equal(rich[1]?.text, "The answer is 42.", "m2 is the answer");
 
   // the draft's completed state (visible before m1 lands) carried the full
   // composed message: log → marker → answer (NO divider)
   const drafts = h.out.calls.filter((c) => c.kind === "sendDraft");
   const preview = drafts[drafts.length - 1]?.text ?? "";
-  assert.ok(!preview.includes("---"), "no divider in the completed state");
+  assert.ok(!preview.includes("─"), "no divider in the completed state");
   const order = [preview.indexOf("⚙ read ✔"), preview.indexOf("Completed ✔️"), preview.indexOf("The answer is 42.")];
   assert.ok(order.every((i) => i >= 0), `all parts in the preview, got: ${JSON.stringify(preview)}`);
   assert.ok(order[0]! < order[1]! && order[1]! < order[2]!, `wrong preview order: ${order}`);
@@ -128,7 +128,7 @@ test("manual stop: ONE message — log + partial answer + bottom line ⚠️ Req
   // live draft at the stop end: the aborted bottom line, no spinner
   const lastDraft = h.out.calls.filter((c) => c.kind === "sendDraft").pop()?.text ?? "";
   assert.ok(lastDraft.endsWith("⚠️ Request was aborted"), `the draft ends with the aborted bottom line: ${JSON.stringify(lastDraft)}`);
-  assert.ok(!lastDraft.includes("<tg-thinking>"), "no spinner in the stopped draft");
+  assert.ok(!h.out.calls.filter((c) => c.kind === "sendDraft").pop()?.blocks?.some((b) => b.type === "thinking"), "no spinner in the stopped draft");
 
   await m.onAgentEnd([]);
   await tick();
@@ -140,8 +140,8 @@ test("manual stop: ONE message — log + partial answer + bottom line ⚠️ Req
   assert.ok(text.includes("The answer is 42."), "the partial answer is preserved");
   assert.ok(!text.includes("Completed ✔️"), "no Completed marker on stop");
   assert.ok(!text.includes("⚠ Error"), "no error marker on stop");
-  assert.ok(!text.includes("---"), "no divider without a marker");
-  assert.ok(!text.includes("<tg-thinking>"), "no spinner");
+  assert.ok(!text.includes("─"), "no divider without a marker");
+  assert.ok(!rich[0]?.blocks?.some((b) => b.type === "thinking"), "no spinner");
   assert.equal(lastBlock(text), "⚠️ Request was aborted", "the ⚠️ line is the BOTTOM line (last), not a log line");
   assert.equal(text.split("⚠️ Request was aborted").length - 1, 1, "exactly one ⚠️ line");
   assert.equal(rich[0]?.opts?.disableNotification, true, "D4 is SILENT — no notification");
@@ -189,9 +189,9 @@ test("error end: agent_end does NOT finalize (pi may retry); agent_settled persi
   const order = [text.indexOf("⚙ read ✔"), text.indexOf("The answer is 42."), text.indexOf("⚠ incomplete"), text.lastIndexOf("⚠️ error:")];
   assert.ok(order.every((i) => i >= 0), `all parts present, got: ${JSON.stringify(text)}`);
   assert.ok(order[0]! < order[1]! && order[1]! < order[2]! && order[2]! < order[3]!, `wrong order: ${order}`);
-  const blocks = text.trimEnd().split(/\n\n+/);
-  assert.equal(blocks[blocks.length - 2], "⚠️ error: Provider timeout", "the ⚠️ line is the bottom line, not a log line");
-  assert.equal(blocks[blocks.length - 1], "---", "the persistent error message ENDS with the divider (content beyond the bare ⚠️ line)");
+  const mBlocks = rich[0]?.blocks ?? [];
+  assert.equal(mBlocks[mBlocks.length - 2]?.type, "paragraph", "the ⚠️ line is the bottom line, not a log line");
+  assert.equal(mBlocks[mBlocks.length - 1]?.type, "divider", "the persistent error message ENDS with the divider (content beyond the bare ⚠️ line)");
   assert.ok(!rich[0]?.opts?.disableNotification, "D3 NOTIFIES — the error is the final word");
 });
 
@@ -203,14 +203,16 @@ test("error end: while the stream is open (a retry may come) the draft shows ⚠
   await m.onAgentEnd([]);
   await tick();
 
-  const lastDraft = h.out.calls.filter((c) => c.kind === "sendDraft").pop()?.text ?? "";
-  assert.ok(/<tg-thinking>[^<>]+…<\/tg-thinking>$/.test(lastDraft), `the draft ends with the spinner (pi may still retry): ${JSON.stringify(lastDraft)}`);
-  const oErr = lastDraft.lastIndexOf("⚠️ error: 502 status code (no body)");
-  const oHr = lastDraft.lastIndexOf("---");
-  const oSpin = lastDraft.lastIndexOf("<tg-thinking>");
-  assert.ok(oErr >= 0, `the ⚠️ line is in the draft: ${JSON.stringify(lastDraft)}`);
-  assert.ok(oErr < oHr && oHr < oSpin, `⚠️ line → divider → spinner, got: ${JSON.stringify(lastDraft)}`);
-  assert.ok(!lastDraft.includes("⚠ incomplete"), "no finalize trailer while the stream is open");
+  const lastCall = h.out.calls.filter((c) => c.kind === "sendDraft").pop()!;
+  const dBlocks = lastCall.blocks ?? [];
+  assert.equal(dBlocks[dBlocks.length - 1]?.type, "thinking", `the draft ends with the spinner (pi may still retry): ${JSON.stringify(lastCall.text)}`);
+  const dTypes = dBlocks.map((b) => b.type);
+  const oErr = dTypes.lastIndexOf("paragraph"); // the ⚠️ line (last paragraph before the divider)
+  const oHr = dTypes.lastIndexOf("divider");
+  const oSpin = dTypes.lastIndexOf("thinking");
+  assert.ok((lastCall.text ?? "").includes("⚠️ error: 502 status code (no body)"), `the ⚠️ line is in the draft: ${JSON.stringify(lastCall.text)}`);
+  assert.ok(oErr >= 0 && oErr < oHr && oHr < oSpin, `⚠️ line → divider → spinner, got: ${JSON.stringify(dTypes)}`);
+  assert.ok(!(lastCall.text ?? "").includes("⚠ incomplete"), "no finalize trailer while the stream is open");
 });
 
 test("error end, no partial answer: agent_settled persists log + error block only, no marker", async () => {
@@ -233,7 +235,7 @@ test("error end, no partial answer: agent_settled persists log + error block onl
   const text = rich[0]?.text ?? "";
   assert.ok(text.includes("⚠️ error: boom"), "error line");
   assert.equal(lastBlock(text), "⚠️ error: boom", "the ⚠️ line is the bottom line");
-  assert.ok(!text.includes("---"), "a BARE error (nothing beyond the ⚠️ line) ends with NO divider");
+  assert.ok(!text.includes("─"), "a BARE error (nothing beyond the ⚠️ line) ends with NO divider");
   assert.ok(!text.includes("⚠ Error"), "no legacy error marker");
 });
 
@@ -257,7 +259,7 @@ test("retryable error (502): nothing is persisted, the draft stays alive, and th
   const draftsAfterRetry = h.out.calls.filter((c) => c.kind === "sendDraft");
   const retryDraft = draftsAfterRetry[draftsAfterRetry.length - 1]?.text ?? "";
   assert.ok(retryDraft.includes("⚠️ error: 502 status code (no body)"), "the carried error line is in the retry draft");
-  assert.ok(retryDraft.indexOf("---") > retryDraft.indexOf("⚠️ error: 502"), `the divider follows the carried error in the retry draft: ${retryDraft}`);
+  assert.ok(retryDraft.includes("─") && retryDraft.indexOf("─") > retryDraft.indexOf("⚠️ error: 502"), `the divider follows the carried error in the retry draft: ${retryDraft}`);
   m.onAssistantStart(textMsg(""));
   m.onAssistantUpdate(textMsg("The retried answer."));
   await tick();
@@ -269,7 +271,7 @@ test("retryable error (502): nothing is persisted, the draft stays alive, and th
   assert.equal(rich[1]?.text, "The retried answer.", "m2 is the retried answer");
   const m1 = rich[0]?.text ?? "";
   const b1 = m1.indexOf("⚠️ error: 502");
-  const b2 = m1.indexOf("---");
+  const b2 = m1.indexOf("─");
   const b3 = m1.indexOf("Completed ✔️");
   assert.ok(b1 >= 0 && b1 < b2 && b2 < b3, `m1: carried error → divider → marker, got: ${m1}`);
   assert.ok(rich[0]?.text?.includes("⚠️ error: 502 status code (no body)"), "the failed attempt's error block is CARRIED INTO the retried run's m1 (no wipe of the live log)");
@@ -307,10 +309,9 @@ test("error → retry → error again: the CARRIED log persists exactly once, at
   assert.equal(rich.length, 1, "the combined carried log persists exactly once");
   const text = rich[0]?.text ?? "";
   assert.equal(text.match(/⚠️ error: 502 status code \(no body\)/g)!.length, 2, "both failed attempts' error blocks are in the one message");
-  assert.ok(!text.includes("<tg-thinking>"), "no spinner in the persistent message");
-  const blocks = text.trimEnd().split(/\n\n+/);
-  assert.equal(blocks[blocks.length - 2], "⚠️ error: 502 status code (no body)", "the bottom ⚠️ line is second-to-last");
-  assert.equal(blocks[blocks.length - 1], "---", "ends with the divider (content beyond the bare ⚠️ line)");
+  const pBlocks = rich[0]?.blocks ?? [];
+  assert.ok(!pBlocks.some((b) => b.type === "thinking"), "no spinner in the persistent message");
+  assert.equal(pBlocks[pBlocks.length - 1]?.type, "divider", "ends with the divider (content beyond the bare ⚠️ line)");
 });
 
 test("muted run: nothing at all — no drafts, no persistent sends", async () => {

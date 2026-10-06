@@ -1,11 +1,11 @@
 // Token usage display (2026-09-05): the live draft's bottom line (the
-// <tg-thinking> spinner / compact status) and the finalized `Completed ✔️`
+//  spinner / compact status) and the finalized `Completed ✔️`
 // line carry the current run's token usage — ` ↑<input> ↓<output>`,
 // human-formatted (fmtTokens). Usage accumulates across ALL of the run's
 // assistant messages (and across pi's auto-retries); a NEW run starts from
 // zero. Error/stop ends carry no suffix (the ⚠️ line is the bottom line).
 // Placement (2026-09-05, field report): the tokens live INSIDE the
-// <tg-thinking> tag — the rich renderer treats the tag as its own line, so
+//  tag — the rich renderer treats the tag as its own line, so
 // text after the closing tag wraps to the NEXT line (observed live on the
 // auto-compact status). Inside the tag is the only same-line placement.
 import { test } from "node:test";
@@ -46,11 +46,11 @@ test("live draft: the spinner line carries the in-flight message's usage", async
   const m = new Mirror(h.deps);
   m.onAgentStart();
   await tick();
-  assert.match(latest(h, 1), /^<tg-thinking>\w+…<\/tg-thinking>$/, "no usage yet → bare spinner, no suffix");
+  assert.match(latest(h, 1), /^\w+…$/, "no usage yet → bare spinner, no suffix");
   m.onAssistantStart(msg(""));
   m.onAssistantUpdate(msg("Thinking hard", { usage: { input: 567, output: 12 } }));
   await tick();
-  assert.match(latest(h, 1), /<tg-thinking>\w+… ↑567 ↓12<\/tg-thinking>$/, "spinner + ` ↑in ↓out` INSIDE the tag (same line)");
+  assert.match(latest(h, 1), /\w+… ↑567 ↓12$/, "spinner + ` ↑in ↓out` on the spinner line");
 });
 
 test("usage-only updates (no text) still refresh the draft", async () => {
@@ -63,7 +63,7 @@ test("usage-only updates (no text) still refresh the draft", async () => {
   );
   m.onAssistantUpdate({ role: "assistant", content: [{ type: "thinking", thinking: "a, b" }], usage: { input: 100, output: 40 } });
   await tick();
-  assert.match(latest(h, 1), /↑100 ↓40<\/tg-thinking>$/, "the latest usage lands in the draft even without a text change");
+  assert.match(latest(h, 1), /↑100 ↓40$/, "the latest usage lands in the draft even without a text change");
 });
 
 test("usage accumulates across the run's assistant messages", async () => {
@@ -83,7 +83,7 @@ test("usage accumulates across the run's assistant messages", async () => {
   m.onAssistantStart(msg(""));
   m.onAssistantUpdate(msg("The answer.", { usage: { input: 300, output: 115 } }));
   await tick();
-  assert.match(latest(h, 1), /↑400 ↓165<\/tg-thinking>$/, "100+300 in, 50+115 out");
+  assert.match(latest(h, 1), /↑400 ↓165$/, "100+300 in, 50+115 out");
 });
 
 test("clean end: m1 shows Completed with the run's total usage", async () => {
@@ -131,7 +131,7 @@ test("a new run resets the counters", async () => {
   m.onAssistantUpdate(msg("Second.", { usage: { input: 10, output: 20 } }));
   await tick();
   const lastDraft = draftCalls(h).slice(-1)[0]?.text ?? "";
-  assert.match(lastDraft, /↑10 ↓20<\/tg-thinking>$/, `the second run shows only its own usage, got: ${JSON.stringify(lastDraft)}`);
+  assert.match(lastDraft, /↑10 ↓20$/, `the second run shows only its own usage, got: ${JSON.stringify(lastDraft)}`);
 });
 
 test("a pi retry carries the tokens over (cumulative across retries)", async () => {
@@ -151,5 +151,5 @@ test("a pi retry carries the tokens over (cumulative across retries)", async () 
   m.onAssistantStart(msg("y"));
   m.onAssistantUpdate(msg("y2", { usage: { input: 200, output: 150 } }));
   await tick();
-  assert.match(latest(h, 1), /↑300 ↓155<\/tg-thinking>$/, "100+200 in, 5+150 out");
+  assert.match(latest(h, 1), /↑300 ↓155$/, "100+200 in, 5+150 out");
 });

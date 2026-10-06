@@ -65,7 +65,8 @@ test("onSessionReplaced: posts card + clear question, clears pendingAction", asy
   assert.ok(texts[1].includes("Clear chat history?"));
   const markup = out.calls[out.calls.length - 1].opts?.replyMarkup as { inline_keyboard: { text: string; callback_data: string }[][] };
   assert.equal(markup.inline_keyboard[0][0].text, "🧹 Clear");
-  assert.equal(markup.inline_keyboard[0][0].callback_data, "c:1");
+  assert.match(markup.inline_keyboard[0][0].callback_data, /^c:1:.+/, "the Clear button carries a one-shot nonce");
+  assert.match(markup.inline_keyboard[0][1].callback_data, /^c:0:.+/, "the Keep button carries a one-shot nonce");
 });
 
 test("onSessionReplaced: no pendingAction → no-op", async () => {

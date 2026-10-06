@@ -4,8 +4,9 @@ import type { OutputLevel, TelegramConfig } from "./config.ts";
 import type { TelegramState, SessionListItem } from "./state.ts";
 import type { PiModel, PiThinkingLevel } from "./thinking.ts";
 import { supportedThinkingLevels } from "./thinking.ts";
-import { pairWelcome, notAuthorizedText } from "./onboarding.ts";
+import { pairWelcomeBlocks, notAuthorizedBlocks } from "./onboarding.ts";
 import { escapeHtml } from "./markdown.ts";
+import { mdToBlocks, type TgBlock, type TgRichText } from "./rich-blocks.ts";
 import { formatGpuLines, type GpuStats } from "./gpu.ts";
 import { COMPACT_CANCELLED_MSG } from "./compact.ts";
 import { AUTO_COMPACT_STATUS, AUTO_COMPACT_DONE_TEXT, fmtTokens } from "./mirror.ts";
@@ -94,10 +95,16 @@ export interface Out {
     opts?: { parseMode?: "HTML" | null; replyMarkup?: unknown }
   ): Promise<boolean>; // false = text unchanged (not an error)
   delete(chatId: number, messageId: number): Promise<void>; // idempotent
-  /** Rich message (markdown pass-through); records the sent id; returns it. `disableNotification` suppresses the notification sound (persistent sends only — drafts cannot). */
-  sendRich(chatId: number, md: string, opts?: { disableNotification?: boolean }): Promise<number | undefined>;
-  /** Ephemeral draft; the same draftId refreshes in place. keepOnStop keeps the draft when Stop is pressed. */
-  sendDraft(chatId: number, draftId: number, md: string, canStop?: boolean, keepOnStop?: boolean): Promise<boolean>;
+  /** Blocks-tier rich message (Bot API 10.2+); records the sent id; returns it. `disableNotification` suppresses the notification sound (persistent sends only — drafts cannot). */
+  sendRich(
+    chatId: number,
+    blocks: TgBlock[],
+    opts?: { disableNotification?: boolean; replyToId?: number; replyMarkup?: unknown }
+  ): Promise<number | undefined>;
+  /** Edits a rich message in place (editMessageText's rich_message parameter). false = unchanged (not an error). Omitting replyMarkup REMOVES the existing keyboard (stamps use this to disable dialog buttons). */
+  editRich(chatId: number, messageId: number, blocks: TgBlock[], opts?: { replyMarkup?: unknown }): Promise<boolean>;
+  /** Ephemeral draft (blocks-tier; `thinking` blocks are allowed here — never in persistent sends). The same draftId refreshes in place. keepOnStop keeps the draft when Stop is pressed. */
+  sendDraft(chatId: number, draftId: number, blocks: TgBlock[], canStop?: boolean, keepOnStop?: boolean): Promise<boolean>;
 }
 
 export interface BridgeDeps {
@@ -140,25 +147,29 @@ const LEVEL_BADGES: Record<OutputLevel, string> = {
   full: "🔊 full",
 };
 
-export function helpText(): string {
+const helpPara = (text: TgRichText): TgBlock => ({ type: "paragraph", text });
+
+/** The /help card as rich blocks — each line a paragraph, the command names bold entities. */
+export function helpBlocks(): TgBlock[] {
+  const cmd = (c: string, desc: string): TgBlock => helpPara([{ type: "bold", text: c }, ` — ${desc}`]);
   return [
-    "<b>pi-tg</b> — drive this pi session from Telegram",
-    "Plain text → prompt (busy → ⚡ queued steer)",
-    "<b>/status</b> — session info",
-    "<b>/stop</b> — Esc (abort the current turn)",
-    "<b>/compact</b> — compact the context (stoppable via the Stop button)",
-    "<b>/new</b> — start a new session",
-    "<b>/sessions</b> — list &amp; switch sessions",
-    "<b>/name &lt;text&gt;</b> — rename this session",
-    "<b>/models</b> — pick a model",
-    "<b>/thinking</b> — pick the thinking level",
-    "<b>/level_mute</b> — no agent output (commands still work)",
-    "<b>/level_minimal</b> — visible text only (no tools, no thinking)",
-    "<b>/level_full</b> — tool log + final answer (default)",
-    "<b>/reload</b> — hot-reload extensions & resources (idle only)",
-    "<b>/kill</b> — shut down pi",
-    "<b>/help</b> — this text",
-  ].join("\n");
+    helpPara([{ type: "bold", text: "pi-tg" }, " — drive this pi session from Telegram"]),
+    helpPara("Plain text → prompt (busy → ⚡ queued steer)"),
+    cmd("/status", "session info"),
+    cmd("/stop", "Esc (abort the current turn)"),
+    cmd("/compact", "compact the context (stoppable via the Stop button)"),
+    cmd("/new", "start a new session"),
+    cmd("/sessions", "list & switch sessions"),
+    cmd("/name <text>", "rename this session"),
+    cmd("/models", "pick a model"),
+    cmd("/thinking", "pick the thinking level"),
+    cmd("/level_mute", "no agent output (commands still work)"),
+    cmd("/level_minimal", "visible text only (no tools, no thinking)"),
+    cmd("/level_full", "tool log + final answer (default)"),
+    cmd("/reload", "hot-reload extensions & resources (idle only)"),
+    cmd("/kill", "shut down pi"),
+    cmd("/help", "this text"),
+  ];
 }
 
 // ── compact draft (Telegram Bot API 10.2 rich message drafts) ──
@@ -168,9 +179,9 @@ export function helpText(): string {
 // Draft ids live in their own namespace: the mirror uses 1.., compact starts
 // at 1_000_000.
 const COMPACT_DRAFT_ID_BASE = 1_000_000;
-export const COMPACT_DRAFT_MD = "<tg-thinking>🗜 Compacting context…</tg-thinking>";
+export const COMPACT_DRAFT: TgBlock[] = [{ type: "thinking", text: "🗜 Compacting context…" }];
 /** Lane-1 auto-compact draft content: the C1 status, wrapped in the ephemeral thinking block. */
-const AUTO_COMPACT_DRAFT_MD = `<tg-thinking>${AUTO_COMPACT_STATUS}</tg-thinking>`;
+const AUTO_COMPACT_DRAFT: TgBlock[] = [{ type: "thinking", text: AUTO_COMPACT_STATUS }];
 
 /** The in-progress state of a TG-initiated /compact (see case "compact"). */
 interface CompactState {
@@ -185,6 +196,14 @@ interface CompactState {
 
 export class SessionBridge {
   private deps: BridgeDeps;
+  /**
+   * One-shot confirmation questions (clear/kill): nonce → the question's
+   * message id + blocks. A tap stamps the question IN PLACE (the edit removes
+   * the keyboard — a Bot API fact, live-verified), so the buttons die with it
+   * and repeat/foreign taps (same batch, old question) are silently ignored.
+   */
+  private oneShotSeq = 0;
+  private oneShot = new Map<string, { chatId: number; messageId: number; blocks: TgBlock[] }>();
   private compactState: CompactState | undefined;
   private compactDraftSeq = 0;
   private compactHbTimer: ReturnType<typeof setTimeout> | undefined;
@@ -229,7 +248,7 @@ export class SessionBridge {
     if (c.draftId !== 0) {
       // The stamped state lands in the draft FIRST — the user sees the draft
       // morph into the result before the persistent message replaces it.
-      const stamp = cancelled ? "⏹️ Stopping… ✔️" : text;
+      const stamp = mdToBlocks(cancelled ? "⏹️ Stopping… ✔️" : text);
       await out.sendDraft(c.chatId, c.draftId, stamp, false /* no Stop button — it is over */).catch(() => {});
     }
     // A failed send must not become an unhandled rejection.
@@ -243,7 +262,7 @@ export class SessionBridge {
       this.compactHbTimer = undefined;
       const c = this.compactState;
       if (!c || c.draftId === 0) return; // finished or the draft never went up
-      void this.deps.out.sendDraft(c.chatId, c.draftId, COMPACT_DRAFT_MD, true, true).catch(() => {});
+      void this.deps.out.sendDraft(c.chatId, c.draftId, COMPACT_DRAFT, true, true).catch(() => {});
       this.armCompactHeartbeat();
     };
     const t = setTimeout(tick, this.deps.cfg.draftHeartbeatMs);
@@ -282,7 +301,7 @@ export class SessionBridge {
     const state: { chatId: number; draftId: number } = { chatId, draftId };
     this.autoCompactState = state;
     void this.deps.out
-      .sendDraft(chatId, draftId, AUTO_COMPACT_DRAFT_MD, false /* no Stop button */, true /* keepOnStop */)
+      .sendDraft(chatId, draftId, AUTO_COMPACT_DRAFT, false /* no Stop button */, true /* keepOnStop */)
       .then((up) => {
         if (this.autoCompactState !== state) return; // finished / superseded meanwhile
         if (up) this.armAutoCompactHeartbeat(); // landed: the draft expires after ~30 s — keep it alive
@@ -312,7 +331,7 @@ export class SessionBridge {
       ? `${AUTO_COMPACT_DONE_TEXT}${detail ? ` ${detail}` : ""}`
       : `⚠️ ${detail ?? "compaction failed"}`;
     if (s.draftId !== 0) {
-      await this.deps.out.sendDraft(s.chatId, s.draftId, text, false).catch(() => {});
+      await this.deps.out.sendDraft(s.chatId, s.draftId, mdToBlocks(text), false).catch(() => {});
     }
     await this.deps.out.send(s.chatId, text, { parseMode: null }).catch(() => {});
   }
@@ -324,7 +343,7 @@ export class SessionBridge {
       this.autoCompactHbTimer = undefined;
       const s = this.autoCompactState;
       if (!s || s.draftId === 0) return;
-      void this.deps.out.sendDraft(s.chatId, s.draftId, AUTO_COMPACT_DRAFT_MD, false, true).catch(() => {});
+      void this.deps.out.sendDraft(s.chatId, s.draftId, AUTO_COMPACT_DRAFT, false, true).catch(() => {});
       this.armAutoCompactHeartbeat();
     };
     const t = setTimeout(tick, this.deps.cfg.draftHeartbeatMs);
@@ -375,13 +394,16 @@ export class SessionBridge {
     // new posted, no clear question (design B: the old instance's ✔️ stamp is
     // the reload's confirmation). /new and session switches post the card.
     if (pa.type !== "reload") {
-      await out.send(chatId, await this.statusText());
+      await out.sendRich(chatId, await this.statusBlocks());
       if (cfg.askClearOnSwitch) {
-        await out.send(chatId, "Clear chat history?", {
+        const nonce = `c${++this.oneShotSeq}`;
+        const blocks: TgBlock[] = [{ type: "paragraph", text: "Clear chat history?" }];
+        const id = await out.sendRich(chatId, blocks, {
           replyMarkup: {
-            inline_keyboard: [[{ text: "🧹 Clear", callback_data: CB.clear(true) }, { text: "Keep", callback_data: CB.clear(false) }]],
+            inline_keyboard: [[{ text: "🧹 Clear", callback_data: CB.clear(true, nonce) }, { text: "Keep", callback_data: CB.clear(false, nonce) }]],
           },
         });
+        if (id !== undefined) this.oneShot.set(nonce, { chatId, messageId: id, blocks });
       }
     }
   }
@@ -403,52 +425,53 @@ export class SessionBridge {
     this.stamp(chatId, messageId, text);
   }
 
-  private async statusText(): Promise<string> {
+  private async statusBlocks(): Promise<TgBlock[]> {
     const { pi, cfg } = this.deps;
     const model = pi.currentModel();
     const usage = pi.contextUsage();
     const name = pi.getSessionName() ?? "Untitled session";
     const tokens = pi.sessionUsage();
-    const lines = [
-      `📌 ${escapeHtml(name)} — ${pi.isIdle() ? "idle" : "busy"} · ${LEVEL_BADGES[cfg.level]}`,
-      `📁 dir: <code>${escapeHtml(pi.cwd)}</code>`,
-      `🤖 model: ${model ? escapeHtml(model.name) : "n/a"} · 🧠 thinking: ${pi.currentThinking() ?? "default"}`,
-      `📖 context: ${usage?.percent != null ? `${Math.round(usage.percent)}%` : "n/a"}${usage?.tokens != null ? ` (${usage.tokens}/${usage.contextWindow})` : ""}`,
+    const blocks: TgBlock[] = [
+      // entity data — the session name / cwd are NEVER parsed or escaped
+      { type: "paragraph", text: ["📌 ", name, ` — ${pi.isIdle() ? "idle" : "busy"} · ${LEVEL_BADGES[cfg.level]}`] },
+      { type: "paragraph", text: ["📁 dir: ", { type: "code", text: pi.cwd }] },
+      { type: "paragraph", text: `🤖 model: ${model?.name ?? "n/a"} · 🧠 thinking: ${pi.currentThinking() ?? "default"}` },
+      { type: "paragraph", text: `📖 context: ${usage?.percent != null ? `${Math.round(usage.percent)}%` : "n/a"}${usage?.tokens != null ? ` (${usage.tokens}/${usage.contextWindow})` : ""}` },
       // The session's cumulative tokens (same ` ↑<in> ↓<out>` display the
       // mirror's bottom line uses) sit ABOVE the messages line. ALWAYS shown
       // — `↑0 ↓0` proves the wiring is live.
-      `🪙 tokens: ↑${fmtTokens(tokens.input)} ↓${fmtTokens(tokens.output)}`,
-      `📨 messages: ${pi.messageCount()}`,
+      { type: "paragraph", text: `🪙 tokens: ↑${fmtTokens(tokens.input)} ↓${fmtTokens(tokens.output)}` },
+      { type: "paragraph", text: `📨 messages: ${pi.messageCount()}` },
     ];
-    // Bounded by the probe's own short timeout; unavailable → line omitted.
+    // Bounded by the probe's own short timeout; unavailable → lines omitted.
     const gpus = await this.deps.probeGpu();
-    if (gpus) lines.push(...formatGpuLines(gpus));
-    return lines.join("\n");
+    if (gpus) for (const line of formatGpuLines(gpus)) blocks.push({ type: "paragraph", text: line });
+    return blocks;
   }
 
   private async sendCardAndHelp(chatId: number): Promise<void> {
-    await this.deps.out.send(chatId, await this.statusText());
-    await this.deps.out.send(chatId, helpText());
+    await this.deps.out.sendRich(chatId, await this.statusBlocks());
+    await this.deps.out.sendRich(chatId, helpBlocks());
   }
 
   private async handle(action: TgAction): Promise<void> {
     const { out, pi, cfg } = this.deps;
     switch (action.kind) {
       case "notAuthorized":
-        await out.send(action.chatId, notAuthorizedText(cfg.ownerId !== undefined));
+        await out.sendRich(action.chatId, notAuthorizedBlocks(cfg.ownerId !== undefined));
         return;
       case "pair":
         cfg.ownerId = action.fromId;
         cfg.ownerChatId = action.chatId; // the /start chat is the owner's chat — persist it
         await this.deps.persist();
-        await out.send(action.chatId, pairWelcome(this.deps.botUsername, action.fromId));
+        await out.sendRich(action.chatId, pairWelcomeBlocks(this.deps.botUsername, action.fromId));
         await this.sendCardAndHelp(action.chatId);
         return;
       case "start":
         await this.sendCardAndHelp(action.chatId);
         return;
       case "help":
-        await out.send(action.chatId, helpText());
+        await out.sendRich(action.chatId, helpBlocks());
         return;
       case "unknown":
         await out.send(action.chatId, `Unknown command ${escapeHtml(action.text)} — see /help`);
@@ -477,7 +500,7 @@ export class SessionBridge {
           // draft to restore).
           const c = this.compactState;
           if (c && c.draftId !== 0)
-            void out.sendDraft(c.chatId, c.draftId, COMPACT_DRAFT_MD, true, true).catch(() => {});
+            void out.sendDraft(c.chatId, c.draftId, COMPACT_DRAFT, true, true).catch(() => {});
           return;
         }
         // T6 early draft: the spinner goes out as soon as the prompt is
@@ -490,7 +513,7 @@ export class SessionBridge {
         return;
       }
       case "status":
-        await out.send(action.chatId, await this.statusText());
+        await out.sendRich(action.chatId, await this.statusBlocks());
         return;
       case "stop": {
         const compacting = this.compactState;
@@ -505,7 +528,7 @@ export class SessionBridge {
           pi.abort();
           if (compacting.draftId !== 0)
             void out
-              .sendDraft(compacting.chatId, compacting.draftId, "⏹️ Stopping…", false /* the draft is about to be stamped (finishCompact) */)
+              .sendDraft(compacting.chatId, compacting.draftId, mdToBlocks("⏹️ Stopping…"), false /* the draft is about to be stamped (finishCompact) */)
               .catch(() => {});
           return; // the final "⚠️ Compaction cancelled" comes via finishCompact
         }
@@ -562,7 +585,7 @@ export class SessionBridge {
         if (!this.compactState.stopRequested) {
           const draftId = COMPACT_DRAFT_ID_BASE + ++this.compactDraftSeq;
           draftUp = await out
-            .sendDraft(action.chatId, draftId, COMPACT_DRAFT_MD, true /* canStop */, true /* keepOnStop — the bot persists it as the stamped result */)
+            .sendDraft(action.chatId, draftId, COMPACT_DRAFT, true /* canStop */, true /* keepOnStop — the bot persists it as the stamped result */)
             .catch(() => false);
           if (!this.compactState) return; // onDone raced past the draft send
           if (draftUp) {
@@ -639,23 +662,34 @@ export class SessionBridge {
           return;
         }
         pi.setSessionName(action.name);
-        await out.send(action.chatId, `📌 Renamed to <b>${escapeHtml(action.name)}</b>.`);
+        await out.sendRich(action.chatId, [
+          { type: "paragraph", text: ["📌 Renamed to ", { type: "bold", text: action.name }, "."] },
+        ]);
         return;
-      case "killAsk":
-        await out.send(action.chatId, "⚠️ This terminates the pi process — the bot goes silent until pi restarts. Sure?", {
+      case "killAsk": {
+        const nonce = `k${++this.oneShotSeq}`;
+        const blocks: TgBlock[] = [{ type: "paragraph", text: "⚠️ This terminates the pi process — the bot goes silent until pi restarts. Sure?" }];
+        const id = await out.sendRich(action.chatId, blocks, {
           replyMarkup: {
-            inline_keyboard: [[{ text: "☠ Yes, kill", callback_data: CB.kill(true) }, { text: "No", callback_data: CB.kill(false) }]],
+            inline_keyboard: [[{ text: "☠ Yes, kill", callback_data: CB.kill(true, nonce) }, { text: "No", callback_data: CB.kill(false, nonce) }]],
           },
         });
+        if (id !== undefined) this.oneShot.set(nonce, { chatId: action.chatId, messageId: id, blocks });
         return;
-      case "kill":
+      }
+      case "kill": {
+        const p = this.consumeOneShot(action.nonce);
+        if (action.nonce && !p) return; // stale tap — the question is already stamped
         if (!action.yes) {
-          await out.send(action.chatId, "OK — pi keeps running.");
+          if (p) await this.stampOneShot(p, "✅ Kept running — pi is still alive.");
+          else await out.send(action.chatId, "OK — pi keeps running."); // legacy (no nonce) — plain message
           return;
         }
+        if (p) await this.stampOneShot(p, "☠ Shutting down…");
         await out.send(action.chatId, "👋 Shutting down pi… (bot goes silent)");
         pi.shutdown();
         return;
+      }
       case "clear":
         await this.handleClear(action);
         return;
@@ -791,17 +825,38 @@ export class SessionBridge {
     await out.send(action.chatId, `✓ Thinking: ${level}.`);
   }
 
+  /** Consume the tap's one-shot question (stale nonce → silent ignore). */
+  private consumeOneShot(nonce: string | undefined): { chatId: number; messageId: number; blocks: TgBlock[] } | undefined {
+    if (!nonce) return undefined;
+    const p = this.oneShot.get(nonce);
+    if (!p) return undefined; // stale: already answered, or a newer question replaced it
+    this.oneShot.delete(nonce);
+    return p;
+  }
+
+  /** Stamp the question in place: original blocks + a status line, NO keyboard —
+    * the edit removes it (Bot API: editMessageText without reply_markup drops
+    * the inline keyboard), so the stamped message can never be tapped again. */
+  private async stampOneShot(p: { chatId: number; messageId: number; blocks: TgBlock[] }, line: string): Promise<void> {
+    await this.deps.out.editRich(p.chatId, p.messageId, [...p.blocks, { type: "paragraph", text: line }]).catch(() => {});
+  }
+
   private async handleClear(action: Extract<TgAction, { kind: "clear" }>): Promise<void> {
     const { out, state, sleep } = this.deps;
+    const p = this.consumeOneShot(action.nonce);
+    if (action.nonce && !p) return; // stale tap — the question is already stamped
     if (!action.doIt) {
-      await out.send(action.chatId, "OK — chat history kept.");
+      if (p) await this.stampOneShot(p, "✅ Kept — chat history stays.");
+      else await out.send(action.chatId, "OK — chat history kept."); // legacy (no nonce) — plain message
       return;
     }
     const ids = state.drainSent();
     if (ids.length === 0) {
-      await out.send(action.chatId, "Nothing to clear.");
+      if (p) await this.stampOneShot(p, "✅ Nothing to clear.");
+      else await out.send(action.chatId, "Nothing to clear.");
       return;
     }
+    if (p) await this.stampOneShot(p, "🧹 Clearing…");
     await out.send(action.chatId, `🧹 Clearing ${ids.length} messages…`);
     let cleared = 0;
     for (const id of ids) {

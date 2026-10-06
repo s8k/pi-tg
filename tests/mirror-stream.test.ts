@@ -5,11 +5,13 @@
 // confirmed text stays as the answer under the final marker.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { Mirror, blocksToMd, type MirrorMessage } from "../src/mirror.ts";
+import { Mirror, type MirrorMessage } from "../src/mirror.ts";
+import { blocksLen, type TgBlock } from "../src/rich-blocks.ts";
+import { RICH_CAP, DRAFT_TAIL_CAP } from "../src/markdown.ts";
 import { makeMirrorDeps, tick } from "./mirror-helpers.ts";
 
 type H = ReturnType<typeof makeMirrorDeps>;
-type DraftCall = { draftId?: number; text?: string; canStop?: boolean; keepOnStop?: boolean };
+type DraftCall = { draftId?: number; text?: string; blocks?: TgBlock[]; canStop?: boolean; keepOnStop?: boolean };
 
 const draftCalls = (h: H): DraftCall[] =>
   h.out.calls.filter((c): c is (typeof h.out.calls)[number] & { kind: "sendDraft" } => c.kind === "sendDraft");
@@ -35,7 +37,7 @@ test("agent_start creates the single draft (id 1) with can_stop + keep_on_stop a
   assert.equal(calls[0]?.draftId, 1);
   assert.equal(calls[0]?.canStop, true);
   assert.equal(calls[0]?.keepOnStop, true);
-  assert.match(calls[0]?.text ?? "", /^<tg-thinking>\w+…<\/tg-thinking>$/);
+  assert.match(calls[0]?.text ?? "", /^\w+…$/, "the draft is the thinking spinner alone");
 });
 
 test("the answer text streams into the SAME draft — no second draft is ever created", async () => {
@@ -48,8 +50,32 @@ test("the answer text streams into the SAME draft — no second draft is ever cr
   await tick();
   assert.deepEqual(draftIds(h), [1], "one draft for the whole run");
   const content = latest(h, 1);
-  assert.ok(content.startsWith("Hello\n\n"), `text on top, got: ${JSON.stringify(content)}`);
-  assert.match(content, /<tg-thinking>\w+…<\/tg-thinking>$/, "the spinner stays below the streaming text");
+  assert.ok(content.startsWith("Hello"), `text on top, got: ${JSON.stringify(content)}`);
+  assert.match(content, /\n\w+…$/, "the spinner stays below the streaming text");
+  assert.ok((draftCalls(h).at(-1)?.blocks ?? []).some((b) => b.type === "thinking"), "the last block is the thinking spinner");
+});
+
+test("the draft tail is capped at DRAFT_TAIL_CAP (8k), the persistent commit at RICH_CAP (16k) — mobile re-render cost (2026-10-08)", async () => {
+  const h = makeMirrorDeps({ streamEditMs: 0 });
+  const m = new Mirror(h.deps);
+  m.onAgentStart();
+  // ~12k of plain text: above the 8k draft-tail cap, below the 16k persistent cap
+  const big = "word ".repeat(2_400).trim(); // 11_996 chars
+  assert.ok(big.length > DRAFT_TAIL_CAP && big.length <= RICH_CAP);
+  m.onAssistantStart(textMsg(""));
+  m.onAssistantUpdate(textMsg(big));
+  await tick();
+  const draft = draftCalls(h).at(-1)!;
+  const dLen = blocksLen(draft.blocks ?? []);
+  assert.ok(dLen <= DRAFT_TAIL_CAP, `draft tail within ${DRAFT_TAIL_CAP}, got ${dLen}`);
+  assert.ok((draft.blocks ?? []).some((b) => b.type === "paragraph" && b.text === "⋯"), "truncation marker present");
+  // the same text, committed persistently, fits ONE message (16k) — no chunking
+  m.onAssistantEnd(textMsg(big, { stopReason: "stop" }));
+  await tick();
+  const rich = h.out.calls.filter((c) => c.kind === "sendRich");
+  const answer = rich.find((c) => c.text === big);
+  assert.ok(answer, "the full 12k text committed as a single persistent send");
+  assert.ok(blocksLen(answer.blocks ?? []) <= RICH_CAP);
 });
 
 test("textless candidates never trigger a draft update", async () => {
@@ -62,6 +88,37 @@ test("textless candidates never trigger a draft update", async () => {
   await tick();
   assert.equal(draftCalls(h).length, 1, "the spawn send only — no update for textless parts");
   assert.deepEqual(draftIds(h), [1]);
+});
+
+test("draft shows tool calls UNcollapsed (⚙ line + visible args pre); the finalized send collapses them (2026-10-08 experiment)", async () => {
+  const h = makeMirrorDeps({ streamEditMs: 0 });
+  const m = new Mirror(h.deps);
+  m.onAgentStart();
+  const toolMsg = {
+    role: "assistant" as const,
+    content: [
+      { type: "thinking" as const, thinking: "reading the file" },
+      { type: "toolCall" as const, id: "c1", name: "read", arguments: { path: "src/app.ts" } },
+    ],
+  };
+  m.onAssistantStart(toolMsg);
+  await tick();
+  // tool blocks enter the log at message_end (the commit) — the draft shows
+  // them from then on, while the tool runs (state "…")
+  await m.onAssistantEnd(toolMsg);
+  await tick();
+  const draft = draftCalls(h).at(-1)!;
+  const db = draft.blocks ?? [];
+  assert.ok(!db.some((b) => b.type === "details"), "no collapsible container in the live draft");
+  assert.ok(db.some((b) => b.type === "pre" && b.text.includes("src/app.ts")), "the args are a visible pre in the draft");
+  // finalize: the persistent m1 carries the COLLAPSED details form
+  m.onToolEnd("c1", false, { content: [{ type: "text", text: "ok" }] });
+  m.onAssistantStart(textMsg(""));
+  m.onAssistantUpdate(textMsg("Done."));
+  m.onAssistantEnd(textMsg("Done.", { stopReason: "stop" }));
+  await tick();
+  const rich = h.out.calls.filter((c) => c.kind === "sendRich");
+  assert.ok(rich.some((c) => (c.blocks ?? []).some((b) => b.type === "details")), "the finalized log message collapses the tool call");
 });
 
 test("a toolCall mid-stream does not wipe the tail — the text keeps showing until the commit", async () => {
@@ -141,7 +198,7 @@ test("no flicker across a tool loop: committed text and streamed text are never 
   assert.ok(firstCommitted >= 0, "the text is visible from the first stream chunk");
   for (let i = firstCommitted; i < all.length; i++) {
     assert.ok(all[i]!.includes("Let me check the file."), `committed text stays visible (send ${i}): ${JSON.stringify(all[i])}`);
-    assert.ok(all[i]!.includes("<tg-thinking>"), `spinner present while working (send ${i})`);
+    assert.ok(all[i]!.includes("…"), `spinner present while working (send ${i})`);
   }
   const firstFixed = all.findIndex((t) => t.includes("Fixed it."));
   assert.ok(firstFixed > firstCommitted, "the next message's text streams in");
@@ -211,7 +268,7 @@ test("a 'length' stop WITH a tool call does NOT confirm — the run continues in
   await tick();
   const log = latest(h, 1);
   assert.ok(log.includes("⚙ bash ✖"), log);
-  assert.ok(log.includes("<pre>not executed: output token limit</pre>"), log);
+  assert.ok(log.includes("not executed: output token limit"), log);
   m.onAssistantStart(textMsg(""));
   m.onAssistantUpdate(textMsg("Retry."));
   await tick();
@@ -291,14 +348,14 @@ test("tool end ✖: error text visible in a <pre>, HTML-escaped and capped at 40
   const errText = "a <b> error ".repeat(40); // 480 chars
   m.onToolEnd("c1", true, errText);
   await tick();
-  const log = latest(h, 1);
+  const call = draftCalls(h)[draftCalls(h).length - 1]!;
+  const log = call.text ?? "";
   assert.ok(log.includes("⚙ bash ✖"), log);
-  const pre = /<pre>([\s\S]*?)<\/pre>/.exec(log);
+  const pre = (call.blocks ?? []).find((b) => b.type === "pre" && b.text.includes("a <b> error"));
   assert.ok(pre, log);
-  const inner = pre[1];
-  assert.ok(inner.includes("a &lt;b&gt; error"), "HTML-escaped");
-  assert.ok(inner.length <= 401, `errorText capped, got ${inner.length}`);
-  assert.ok(inner.endsWith("…"), "cap marked with an ellipsis");
+  assert.ok(pre.type === "pre" && pre.text.includes("a <b> error"), "the pre block carries the raw error text (no HTML tier to escape for)");
+  assert.ok(pre.type === "pre" && pre.text.length <= 401, `errorText capped, got ${pre.type === "pre" ? pre.text.length : "?"}`);
+  assert.ok(pre.type === "pre" && pre.text.endsWith("…"), "cap marked with an ellipsis");
 });
 
 test("a drain firing early (window extended after arming) does not kill the pipeline", async (t) => {
@@ -495,9 +552,9 @@ test("pauseForDialog: an ended run — waits until the FINAL message of the fina
   // Gate the persistent sends: each sendRich parks until explicitly released
   const releases: Array<() => void> = [];
   const realSendRich = h.out.sendRich;
-  h.out.sendRich = async (chatId: number, md: string, opts?: { disableNotification?: boolean }) => {
+  h.out.sendRich = async (chatId: number, blocks: TgBlock[], opts?: { disableNotification?: boolean }) => {
     await new Promise<void>((r) => { releases.push(r); });
-    return realSendRich(chatId, md, opts);
+    return realSendRich(chatId, blocks, opts);
   };
   const waitReleases = async (n: number): Promise<void> => {
     for (;;) {
@@ -544,13 +601,6 @@ test("pauseForDialog: an error-end run — waits for the settled finalization (t
   assert.ok(h.out.calls.length > before, "the error message was persisted before the dialog could land");
 });
 
-test("BottomLine 'paused' renders blocks + tail + the paused status line", () => {
-  assert.equal(
-    blocksToMd([{ type: "narration", text: "work" }], { tail: "tail", bottom: { kind: "paused" } }),
-    "work\n\ntail\n\n⏸️ Paused — answer the dialog below",
-  );
-});
-
 test("post-dialog: the fresh draft re-appears (spinner) at the next assistant MESSAGE START — before any visible text (thinking-only output)", async () => {
   const h = makeMirrorDeps({ streamEditMs: 0 });
   const m = new Mirror(h.deps);
@@ -567,7 +617,7 @@ test("post-dialog: the fresh draft re-appears (spinner) at the next assistant ME
   await tick();
   const fresh = draftCalls(h).slice(n);
   assert.ok(fresh.length > 0, "the draft re-appears at message start (not at the first visible text)");
-  assert.match(fresh[fresh.length - 1]?.text ?? "", /<tg-thinking>/, "it carries the spinner");
+  assert.ok((fresh[fresh.length - 1]?.blocks ?? []).some((b) => b.type === "thinking"), "it carries the spinner");
 
   // a thinking-only update must not be needed to bring it back
   m.onAssistantUpdate({ role: "assistant", content: [{ type: "thinking", thinking: "hmm" }] });
@@ -585,11 +635,11 @@ test("pauseForDialog waits for an in-flight draft send — the segment must land
   // make the NEXT draft send slow (gated)
   let rel: () => void = () => {};
   const realSendDraft = h.out.sendDraft;
-  h.out.sendDraft = async (chatId: number, draftId: number, md: string, canStop?: boolean, keepOnStop?: boolean) => {
+  h.out.sendDraft = async (chatId: number, draftId: number, blocks: TgBlock[], canStop?: boolean, keepOnStop?: boolean) => {
     await new Promise<void>((r) => {
       rel = r;
     });
-    return realSendDraft(chatId, draftId, md, canStop, keepOnStop);
+    return realSendDraft(chatId, draftId, blocks, canStop, keepOnStop);
   };
   // trigger an update → the draft send goes in flight (the gate arms)
   m.onAssistantUpdate(textMsg("pre2"));

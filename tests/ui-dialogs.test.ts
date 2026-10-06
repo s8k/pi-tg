@@ -19,19 +19,33 @@ function deps(over: Partial<{ chatId: number | undefined; enabled: boolean; out:
   return { deps: d, out, notes };
 }
 
+const richTextPlain = (rt: import("../src/rich-blocks.ts").TgRichText): string =>
+  typeof rt === "string" ? rt : Array.isArray(rt) ? rt.map(richTextPlain).join("") : rt.type === "anchor" ? "" : richTextPlain(rt.text);
+
 test("renderDialog select: title + one numbered button row per option + cancel row, index-based callback data", () => {
   const r = renderDialog({ kind: "select", title: "Pick", options: ["a", "b"] }, 7, false);
-  assert.ok(r.text.includes("<b>Pick</b>"));
+  const header = r.blocks[0]!;
+  assert.equal(header.type, "paragraph");
+  assert.ok(richTextPlain(header.text).startsWith("❓"), "the header starts with ❓");
+  assert.ok(richTextPlain(header.text).includes("Pick"), "the title is in the header");
+  const headerEntities = Array.isArray(header.text) ? header.text : [header.text];
+  assert.ok(headerEntities.some((e) => !Array.isArray(e) && typeof e !== "string" && e.type === "bold"), "the title is a bold entity");
+  assert.ok(r.blocks.length >= 2, "a second paragraph ('Choose an option:')");
   const rows = r.buttons as { text: string; callback_data: string }[][];
   // one button per row (the repo's list pattern) + a trailing cancel row
   assert.deepEqual(rows.map((row) => row[0].callback_data), ["da:7:0", "da:7:1", "dc:7"]);
   assert.ok(rows[0][0].text.startsWith("1. ") && rows[1][0].text.startsWith("2. "), "options are numbered");
 });
 
-test("renderDialog confirm: Yes/No buttons, message escaped, no cancel row, ❓ header", () => {
+test("renderDialog confirm: Yes/No buttons, message as RAW data (no escaping), ❓ header", () => {
   const r = renderDialog({ kind: "confirm", title: "Sure?", message: "m & <x>" }, 3, false);
-  assert.ok(r.text.startsWith("❓ <b>Sure?</b>"), `header is ❓ (got: ${r.text.split("\n")[0]})`);
-  assert.ok(r.text.includes("Sure?") && r.text.includes("m &amp; &lt;x&gt;"));
+  const header = r.blocks[0]!;
+  assert.equal(header.type, "paragraph");
+  assert.ok(richTextPlain(header.text).startsWith("❓"), `header starts with ❓ (got: ${richTextPlain(header.text)})`);
+  assert.ok(r.blocks.length >= 2, "the message is its own paragraph");
+  const msg = r.blocks[1]!;
+  assert.equal(msg.type, "paragraph");
+  assert.equal(richTextPlain(msg.text), "m & <x>", "the message is raw data — no HTML escaping");
   const flat = (r.buttons as { callback_data: string }[][]).flat();
   assert.deepEqual(flat.map((b) => b.callback_data), ["da:3:0", "da:3:1"]);
 });
@@ -57,7 +71,7 @@ test("show + tgAnswer(option): resolves the race, stamps ✔️, releases the di
   assert.equal(p.tgAnswer(1, { kind: "option", index: 1 }), true);
   assert.deepEqual(await answer, { kind: "option", index: 1 });
   assert.equal(p.isDialogMessage(100), false); // FakeOut's first send id (100) is released
-  const lastEdit = out.calls.filter((c) => c.kind === "edit").pop()!;
+  const lastEdit = out.calls.filter((c) => c.kind === "editRich").pop()!;
   assert.ok(String(lastEdit.text).includes("Answered: b"));
 });
 
@@ -77,7 +91,7 @@ test("tuiAnswered: releases the dialog, stamp says terminal, race resolves 'expi
   const answer = new Promise<unknown>((res) => p.answer(1, res));
   p.tuiAnswered(1, "Yes");
   assert.deepEqual(await answer, { kind: "expired" });
-  const lastEdit = out.calls.filter((c) => c.kind === "edit").pop();
+  const lastEdit = out.calls.filter((c) => c.kind === "editRich").pop();
   assert.ok(String(lastEdit?.text).includes("terminal"));
 });
 
@@ -87,7 +101,7 @@ test("input: reply-based message with cancel button; tgAnswer(text) resolves {ki
   const out = made.out;
   const id = await p.show({ kind: "input", title: "Name", placeholder: "e.g. alpha" });
   assert.equal(id, 1);
-  const sent = out.calls.filter((c) => c.kind === "send").pop()!;
+  const sent = out.calls.filter((c) => c.kind === "sendRich").pop()!;
   assert.ok(String(sent.text).includes("Reply to this message"));
   assert.ok(String(sent.text).includes("e.g. alpha"));
   const answer = new Promise<unknown>((res) => p.answer(1, res));
@@ -101,7 +115,7 @@ test("numbered select (>20 options): numbered list, numeric reply → option, no
   const out = made.out;
   const opts = Array.from({ length: 25 }, (_, i) => `opt${i}`);
   const id = await p.show({ kind: "select", title: "Many", options: opts });
-  const sent = out.calls.filter((c) => c.kind === "send").pop()!;
+  const sent = out.calls.filter((c) => c.kind === "sendRich").pop()!;
   assert.ok(String(sent.text).includes("Reply with the option number"));
   assert.ok(String(sent.text).includes("25. opt24"));
   const answer = new Promise<unknown>((res) => p.answer(1, res));
@@ -168,14 +182,14 @@ test("cancelAll: stamps every pending and releases with 'expired'", async () => 
   assert.deepEqual(await a1, { kind: "expired" });
   assert.deepEqual(await a2, { kind: "expired" });
   assert.equal(p.size, 0);
-  const edits = out.calls.filter((c) => c.kind === "edit");
+  const edits = out.calls.filter((c) => c.kind === "editRich");
   assert.equal(edits.length, 2);
   assert.ok(edits.every((e) => String(e.text).includes("Expired")));
 });
 
 test("show: send failure → notify + undefined (TUI-only fallback)", async () => {
   const out = new FakeOut();
-  out.sendFailsWith = new Error("network down");
+  out.sendRichFailsWith = new Error("network down");
   const notes: string[] = [];
   const d: PendingDialogsDeps = { out, getChatId: () => 42, enabled: () => true, notify: (m) => notes.push(m) };
   const p = new PendingDialogs(d);
@@ -194,12 +208,12 @@ function slowOut() {
   let rel: () => void = () => {};
   // stable function — `return { release }` would capture the initial ref
   const release = () => rel();
-  const realSend = out.send;
-  out.send = async (chatId, text, opts) => {
+  const realSend = out.sendRich;
+  out.sendRich = async (chatId, blocks, opts) => {
     await new Promise<void>((r) => {
       rel = r;
     });
-    return realSend(chatId, text, opts);
+    return realSend(chatId, blocks, opts);
   };
   return { out, release };
 }
@@ -214,7 +228,7 @@ test("in-flight: tgAnswer during the send is deferred — stamp uses the real id
   assert.equal(p.tgAnswer(1, { kind: "option", index: 0 }), true, "accepted while in flight");
   release();
   assert.equal(await showP, 1, "show still resolves the id");
-  const edits = out.calls.filter((c) => c.kind === "edit");
+  const edits = out.calls.filter((c) => c.kind === "editRich");
   assert.equal(edits.length, 1, "the stamp went out exactly once");
   assert.equal(edits[0]!.messageId, 100, "the stamp used the real message id (not -1)");
   // The wrapper attaches the race resolver only AFTER show() returns — the
@@ -235,7 +249,7 @@ test("in-flight: tuiAnswered during the send is deferred — stamp uses the real
   p.tuiAnswered(1, "a"); // the TUI side wins while the send is in flight
   release();
   await showP;
-  const edits = out.calls.filter((c) => c.kind === "edit");
+  const edits = out.calls.filter((c) => c.kind === "editRich");
   assert.equal(edits.length, 1, "the 💻 stamp went out exactly once");
   assert.equal(edits[0]!.messageId, 100, "the stamp used the real message id (not -1)");
   assert.ok(String(edits[0]!.text).includes("terminal"));
@@ -272,7 +286,7 @@ test("confirm stamps the option NAME (Yes/No), not a bare index", async () => {
     const answer = new Promise<unknown>((res) => p.answer(1, res));
     p.tgAnswer(1, { kind: "option", index });
     await answer;
-    const lastEdit = out.calls.filter((c) => c.kind === "edit").pop();
+    const lastEdit = out.calls.filter((c) => c.kind === "editRich").pop();
     assert.ok(
       String(lastEdit?.text).includes(`Answered: ${name}`) && !String(lastEdit?.text).includes("#"),
       `the ${name} tap stamps 'Answered: ${name}' (got: ${lastEdit?.text})`,
@@ -288,9 +302,9 @@ test("stamp = original question + status line, edited as HTML (bold title kept)"
   const answer = new Promise<unknown>((res) => p.answer(1, res));
   p.tgAnswer(1, { kind: "option", index: 0 });
   await answer;
-  const lastEdit = out.calls.filter((c) => c.kind === "edit").pop();
-  assert.equal(lastEdit?.text, "❓ <b>Sure?</b>\nm\n✔️ Answered: Yes");
-  assert.equal(lastEdit?.opts?.parseMode, "HTML", "stamp keeps the original HTML formatting");
+  const lastEdit = out.calls.filter((c) => c.kind === "editRich").pop();
+  assert.equal(lastEdit?.text, "❓ Sure?\nm\n✔️ Answered: Yes");
+  assert.ok(lastEdit?.blocks?.some((b) => b.type === "paragraph"), "the stamp is blocks");
 });
 
 test("stamp: numbered select names the option with its number", async () => {
@@ -302,7 +316,7 @@ test("stamp: numbered select names the option with its number", async () => {
   const answer = new Promise<unknown>((res) => p.answer(1, res));
   p.tgAnswer(1, { kind: "text", text: "5" }); // numbered reply → option 4
   await answer;
-  const lastEdit = out.calls.filter((c) => c.kind === "edit").pop();
+  const lastEdit = out.calls.filter((c) => c.kind === "editRich").pop();
   assert.ok(String(lastEdit?.text).includes("✔️ Answered: #5 — o4"), `got: ${lastEdit?.text}`);
 });
 
@@ -314,7 +328,7 @@ test("stamp: input answer text is included, truncated when long", async () => {
   const answer = new Promise<unknown>((res) => p.answer(1, res));
   p.tgAnswer(1, { kind: "text", text: "x".repeat(200) });
   await answer;
-  const t = String(out.calls.filter((c) => c.kind === "edit").pop()?.text ?? "");
+  const t = String(out.calls.filter((c) => c.kind === "editRich").pop()?.text ?? "");
   assert.ok(t.includes("✔️ Answered: ") && t.includes("…"), `truncated with ellipsis, got: ${JSON.stringify(t.slice(-60))}`);
   assert.ok(!t.includes("x".repeat(121)), "the 200-char text is clipped");
 });
@@ -327,8 +341,8 @@ test("stamp: TUI confirm answer maps the boolean to Yes/No", async () => {
   const answer = new Promise<unknown>((res) => p.answer(1, res));
   p.tuiAnswered(1, false);
   await answer;
-  const lastEdit = out.calls.filter((c) => c.kind === "edit").pop();
-  assert.equal(lastEdit?.text, "❓ <b>Sure?</b>\nm\n💻 Answered in the terminal: No");
+  const lastEdit = out.calls.filter((c) => c.kind === "editRich").pop();
+  assert.equal(lastEdit?.text, "❓ Sure?\nm\n💻 Answered in the terminal: No");
 });
 
 test("stamp: TUI cancel and cancelAll read as status lines", async () => {
@@ -339,15 +353,15 @@ test("stamp: TUI cancel and cancelAll read as status lines", async () => {
   const answer = new Promise<unknown>((res) => p.answer(1, res));
   p.tuiAnswered(1, undefined);
   await answer;
-  let lastEdit = out.calls.filter((c) => c.kind === "edit").pop();
-  assert.equal(lastEdit?.text, "❓ <b>Sure?</b>\nm\n💻 Cancelled in the terminal");
+  let lastEdit = out.calls.filter((c) => c.kind === "editRich").pop();
+  assert.equal(lastEdit?.text, "❓ Sure?\nm\n💻 Cancelled in the terminal");
 
   const made2 = deps();
   const p2 = new PendingDialogs(made2.deps);
   await p2.show({ kind: "confirm", title: "Again?", message: "n" });
   p2.cancelAll();
-  lastEdit = made2.out.calls.filter((c) => c.kind === "edit").pop();
-  assert.equal(lastEdit?.text, "❓ <b>Again?</b>\nn\n⚠️ Expired");
+  lastEdit = made2.out.calls.filter((c) => c.kind === "editRich").pop();
+  assert.equal(lastEdit?.text, "❓ Again?\nn\n⚠️ Expired");
 });
 
 test("onShown is awaited BEFORE the dialog message is sent (the mirror's draft segment must land first)", async () => {
@@ -366,7 +380,7 @@ test("onShown is awaited BEFORE the dialog message is sent (the mirror's draft s
   await p.show({ kind: "confirm", title: "t", message: "m" });
   order.push("sent");
   assert.deepEqual(order, ["shown", "sent"], "onShown completes before the dialog send");
-  assert.equal(out.calls.filter((c) => c.kind === "send").length, 1);
+  assert.equal(out.calls.filter((c) => c.kind === "sendRich").length, 1);
 });
 
 // ── Fault isolation: a dead generation or a failing pause must never mint

@@ -2,6 +2,7 @@ import type { Out, TelegramPi, PiContextUsage, PiSessionInfo } from "./session-b
 import { compactTokenDetail } from "./mirror.ts";
 import type { PiModel, PiThinkingLevel } from "./thinking.ts";
 import type { TelegramState } from "./state.ts";
+import type { TgBlock } from "./rich-blocks.ts";
 
 // ── Local structural mirrors of pi 0.84.4 (keeps wiring.ts pi-free & testable) ──
 
@@ -44,8 +45,9 @@ export interface ClientLike {
   sendMessage(chatId: number, text: string, opts?: { parseMode?: "HTML" | null; replyToId?: number; replyMarkup?: unknown; disableNotification?: boolean }): Promise<{ message_id: number }>;
   editMessageText(chatId: number, messageId: number, text: string, opts?: { parseMode?: "HTML" | null; replyMarkup?: unknown }): Promise<boolean>;
   deleteMessage(chatId: number, messageId: number): Promise<void>;
-  sendRichMessage(chatId: number, rich: { markdown?: string }, opts?: { replyToId?: number; disableNotification?: boolean }): Promise<{ message_id: number }>;
-  sendRichMessageDraft(chatId: number, draftId: number, rich: { markdown?: string }, canStop?: boolean, keepOnStop?: boolean): Promise<boolean>;
+  sendRichMessage(chatId: number, rich: { blocks: TgBlock[] }, opts?: { replyToId?: number; disableNotification?: boolean; replyMarkup?: unknown }): Promise<{ message_id: number }>;
+  editRichMessage(chatId: number, messageId: number, rich: { blocks: TgBlock[] }, opts?: { replyMarkup?: unknown }): Promise<boolean>;
+  sendRichMessageDraft(chatId: number, draftId: number, rich: { blocks: TgBlock[] }, canStop?: boolean, keepOnStop?: boolean): Promise<boolean>;
 }
 
 // ── Out adapter: client + state tracking + persist ──
@@ -59,14 +61,15 @@ export function makeOut(client: ClientLike, state: TelegramState, persist: () =>
       await persist();
       return sent.message_id;
     },
-    async sendRich(chatId, md, opts) {
-      const sent = await client.sendRichMessage(chatId, { markdown: md }, opts);
+    async sendRich(chatId, blocks, opts) {
+      const sent = await client.sendRichMessage(chatId, { blocks }, opts);
       state.addSent(sent.message_id);
       await persist();
       return sent.message_id;
     },
-    sendDraft: (chatId, draftId, md, canStop, keepOnStop) =>
-      client.sendRichMessageDraft(chatId, draftId, { markdown: md }, canStop, keepOnStop),
+    sendDraft: (chatId, draftId, blocks, canStop, keepOnStop) =>
+      client.sendRichMessageDraft(chatId, draftId, { blocks }, canStop, keepOnStop),
+    editRich: (chatId, messageId, blocks, opts) => client.editRichMessage(chatId, messageId, { blocks }, opts),
     edit: (chatId, messageId, text, opts) => {
       const parseMode: "HTML" | null = opts && opts.parseMode !== undefined ? opts.parseMode : "HTML";
       return client.editMessageText(chatId, messageId, text, { parseMode, replyMarkup: opts?.replyMarkup });
@@ -302,11 +305,26 @@ function withCombinedSignal(
   signal: AbortSignal,
 ): unknown {
   if (method === "editor") return orig(...args);
+  const mergeOpts = (optsArg: unknown): { signal: AbortSignal } => {
+    const opts = (typeof optsArg === "object" && optsArg !== null ? optsArg : {}) as { signal?: AbortSignal };
+    return { ...opts, signal: opts.signal ? AbortSignal.any([opts.signal, signal]) : signal };
+  };
+  if (method === "confirm" || method === "input") {
+    // pi signatures: confirm(title, message?, opts?) / input(title, placeholder?, opts?).
+    // The signal MUST land in slot 3. Pushing it (as the generic branch below
+    // does) drops it into the `message`/`placeholder` slot when the caller
+    // omits that arg — pi renders the dialog title as `${title} ${message}`
+    // (→ "[object Object]"), and `opts` is undefined so pi never registers its
+    // abort listener: TG taps can no longer close the TUI dialog. Fill the
+    // omitted middle slot with "" (a template string would print "undefined").
+    return orig(args[0], args[1] ?? "", mergeOpts(args[2]));
+  }
+  // select: (title, options, opts?) — `options` is a required array, so the
+  // generic last-slot rule is safe.
   const next = [...args];
   const last = next[next.length - 1];
   if (last === undefined || (typeof last === "object" && !Array.isArray(last))) {
-    const opts = (typeof last === "object" && last !== null ? last : {}) as { signal?: AbortSignal };
-    next[next.length - 1] = { ...opts, signal: opts.signal ? AbortSignal.any([opts.signal, signal]) : signal };
+    next[next.length - 1] = mergeOpts(last);
   } else {
     next.push({ signal });
   }

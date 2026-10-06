@@ -14,6 +14,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { blocksToPlainText, type TgBlock } from "../src/rich-blocks.ts";
 
 const agentDir = mkdtempSync(join(tmpdir(), "pi-tg-smoke-"));
 process.env.PI_CODING_AGENT_DIR = agentDir;
@@ -23,6 +24,11 @@ process.env.PI_TELEGRAM_BOT_TOKEN = "TEST-TOKEN";
 writeFileSync(join(agentDir, "pi-telegram.json"), JSON.stringify({ botToken: "TEST-TOKEN", ownerId: 123456 }));
 
 const { default: piTelegram } = await import("../index.ts");
+
+const wireText = (c: WireCall): string => {
+  const blocks = (c.body.rich_message as { blocks?: unknown[] } | undefined)?.blocks;
+  return blocks ? blocksToPlainText(blocks as TgBlock[]) : String(c.body.text ?? "");
+};
 
 interface WireCall {
   method: string;
@@ -112,7 +118,8 @@ function fakeWire(calls: WireCall[]): { restore: () => void; ownerLearned: () =>
     const u = String(url);
     const method = u.split("/").pop() ?? "";
     const body = (init?.body ? JSON.parse(String(init.body)) : {}) as Record<string, unknown>;
-    calls.push({ method, body, markdown: String((body.rich_message as { markdown?: string } | undefined)?.markdown ?? "") });
+    const blocks = (body.rich_message as { blocks?: unknown[] } | undefined)?.blocks;
+    calls.push({ method, body, markdown: blocks ? blocksToPlainText(blocks as TgBlock[]) : "" });
     if (method === "getMe")
       return new Response(JSON.stringify({ ok: true, result: { id: 1, is_bot: true, first_name: "Tg", username: "tgb" } }), { status: 200 });
     if (method === "getUpdates") {
@@ -278,7 +285,7 @@ test("index.ts wiring: events → mirror → client wire (full clean run)", asyn
   const preview = calls
     .filter((c) => c.method === "sendRichMessageDraft" && c.markdown.includes("Completed ✔️"))
     .pop()!;
-  assert.ok(!preview.markdown.includes("---"), "no divider between the log and the answer");
+  assert.ok(!preview.markdown.includes("─"), "no divider between the log and the answer");
   const pOrder = [preview.markdown.indexOf("⚙ read ✖"), preview.markdown.indexOf("Completed ✔️"), preview.markdown.indexOf("The answer is 42.")];
   assert.ok(pOrder.every((i) => i >= 0), `all parts in the preview, got: ${JSON.stringify(preview.markdown)}`);
   assert.ok(pOrder[0]! < pOrder[1]! && pOrder[1]! < pOrder[2]!, `wrong preview order: ${pOrder}`);
@@ -294,7 +301,7 @@ test("index.ts wiring: events → mirror → client wire (full clean run)", asyn
   assert.ok(m1.markdown.includes("⚙ read ✖"), "the failed tool block is in m1");
   assert.ok(m1.markdown.includes("Completed ✔️"), "m1 ends with the marker");
   assert.ok(!m1.markdown.includes("The answer is 42."), "the answer is cut from m1");
-  assert.ok(!m1.markdown.includes("---"), "no divider in m1");
+  assert.ok(!m1.markdown.includes("─"), "no divider in m1");
   assert.equal(m2.markdown, "The answer is 42.", "m2 is the answer, verbatim");
   const draftIdx = calls.indexOf(calls.filter((c) => c.method === "sendRichMessageDraft" && c.markdown.includes("Completed ✔️")).pop()!);
   assert.ok(draftIdx < calls.indexOf(m1) && calls.indexOf(m1) < calls.indexOf(m2), "chronology: completed-state draft → m1 → m2");
@@ -533,7 +540,7 @@ test("dialog mirroring E2E: extension select → TG buttons → owner tap wins (
         resolveLongPoll = (updates) => resolve(new Response(JSON.stringify({ ok: true, result: updates }), { status: 200 }));
       });
     }
-    if (method === "sendMessage")
+    if (method === "sendMessage" || method === "sendRichMessage")
       return new Response(JSON.stringify({ ok: true, result: { message_id: ++msgId } }), { status: 200 });
     return new Response(JSON.stringify({ ok: true, result: true }), { status: 200 });
   }) as typeof fetch;
@@ -576,7 +583,7 @@ test("dialog mirroring E2E: extension select → TG buttons → owner tap wins (
   // 1) TG tap wins: another extension asks via the shared ctx.ui
   const p1 = e2eCtx.ui.select("Pick flavor", ["vanilla", "chocolate"]);
   await waitFor(
-    () => calls.some((c) => c.method === "sendMessage" && JSON.stringify(c.body.reply_markup ?? "").includes("da:1:0")),
+    () => calls.some((c) => c.method === "sendRichMessage" && JSON.stringify(c.body.reply_markup ?? "").includes("da:1:0")),
     "TG dialog with buttons on the wire",
   );
   resolveLongPoll!([
@@ -586,15 +593,21 @@ test("dialog mirroring E2E: extension select → TG buttons → owner tap wins (
     },
   ]);
   assert.equal(await p1, "chocolate", "the extension got the TAPPED option");
+  // every callback query is ANSWERED (silent) — otherwise the tapped button
+  // keeps Telegram's loading animation
   await waitFor(
-    () => calls.some((c) => c.method === "editMessageText" && String(c.body.text ?? "").includes("chocolate")),
-    "✔️ stamp on the wire",
+    () => calls.some((c) => c.method === "answerCallbackQuery" && c.body.callback_query_id === "cb1"),
+    "the tap's callback_query is answered on the wire (stops the button animation)",
+  );
+  await waitFor(
+    () => calls.some((c) => c.method === "editMessageText" && wireText(c).includes("chocolate")),
+    "✔️ stamp on the wire (rich edit carries rich_message, not text)",
   );
 
   // 2) terminal key wins: the TUI answer resolves, the TG message is stamped 'terminal'
   const p2 = e2eCtx.ui.select("Pick again", ["a", "b"]);
   await waitFor(
-    () => calls.some((c) => c.method === "sendMessage" && JSON.stringify(c.body.reply_markup ?? "").includes("da:2:0")),
+    () => calls.some((c) => c.method === "sendRichMessage" && JSON.stringify(c.body.reply_markup ?? "").includes("da:2:0")),
     "second TG dialog on the wire",
   );
   // The TUI dialog opens only after the TG dialog's send settled — a key can
@@ -604,17 +617,13 @@ test("dialog mirroring E2E: extension select → TG buttons → owner tap wins (
   e2ePress!("b");
   assert.equal(await p2, "b");
   await waitFor(
-    () => calls.some((c) => c.method === "editMessageText" && String(c.body.text ?? "").includes("terminal")),
+    () => calls.some((c) => c.method === "editMessageText" && wireText(c).includes("terminal")),
     "💻 terminal stamp on the wire",
   );
 
   // 3) ⚠️ dedupe: a TUI-only prompt keeps the “⚠️ terminal prompt” work-log line
   //    (positive control — proves the mirror is in the work phase), but a MIRROR-ed
   //    dialog must not add one (the TG dialog is the notification itself).
-  // The work-log line lives in the LIVE DRAFT (rich_message.markdown), not in
-  // plain sends — look at both shapes.
-  const wireText = (c: WireCall): string =>
-    String((c.body.rich_message as { markdown?: string } | undefined)?.markdown ?? c.body.text ?? "");
   handlers.get("ui_prompt_start")!({ title: "unmirrored prompt" });
   await waitFor(
     () => calls.some((c) => wireText(c).includes("⚠️ terminal prompt: unmirrored prompt")),
@@ -664,7 +673,7 @@ test("dialog mirroring follows the output level: mute suppresses, minimal/full m
         resolveLongPoll = (updates) => resolve(new Response(JSON.stringify({ ok: true, result: updates }), { status: 200 }));
       });
     }
-    if (method === "sendMessage")
+    if (method === "sendMessage" || method === "sendRichMessage")
       return new Response(JSON.stringify({ ok: true, result: { message_id: ++msgId } }), { status: 200 });
     return new Response(JSON.stringify({ ok: true, result: true }), { status: 200 });
   }) as typeof fetch;
@@ -703,7 +712,7 @@ test("dialog mirroring follows the output level: mute suppresses, minimal/full m
     update_id: updateId,
     message: { message_id: 600 + updateId, date: 1, chat: { id: 42, type: "private" }, from: { id: 123456, is_bot: false }, text },
   });
-  const hasDialog = (id: number) => calls.some((c) => c.method === "sendMessage" && JSON.stringify(c.body.reply_markup ?? "").includes(`da:${id}:0`));
+  const hasDialog = (id: number) => calls.some((c) => c.method === "sendRichMessage" && JSON.stringify(c.body.reply_markup ?? "").includes(`da:${id}:0`));
   // Resolve the Nth getUpdates batch — but only after the poller has actually
   // issued it (resolving an already-consumed promise loses the update).
   // Batches: 1 = "hi" (auto), 2 = tap da:1:0, 3 = /level_mute, 4 = /level_minimal, 5 = tap da:2:1.
@@ -778,7 +787,7 @@ test("replayed /stop update (regressed offset) is answered exactly once", async 
         resolveLongPoll = (updates) => resolve(new Response(JSON.stringify({ ok: true, result: updates }), { status: 200 }));
       });
     }
-    if (method === "sendMessage")
+    if (method === "sendMessage" || method === "sendRichMessage")
       return new Response(JSON.stringify({ ok: true, result: { message_id: ++msgId } }), { status: 200 });
     return new Response(JSON.stringify({ ok: true, result: true }), { status: 200 });
   }) as typeof fetch;

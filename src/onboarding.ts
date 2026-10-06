@@ -1,4 +1,5 @@
 import QRCode from "qrcode";
+import type { TgBlock, TgRichText } from "./rich-blocks.ts";
 
 /**
  * Terminal QR: matrix rendered as █/▁ with a 4-module quiet zone.
@@ -42,13 +43,21 @@ export function tokenLooksValid(token: string): boolean {
   return /^\d+:[A-Za-z0-9_-]{20,}$/.test(token.trim());
 }
 
-export function pairWelcome(botUsername: string | undefined, fromId: number): string {
-  const tip = botUsername ? `\nTip: bookmark https://t.me/${botUsername}` : "";
-  return `✅ Paired. Only your account (ID ${fromId}) can use this bot now.${tip}`;
+export function pairWelcomeBlocks(botUsername: string | undefined, fromId: number): TgBlock[] {
+  const base = `✅ Paired. Only your account (ID ${fromId}) can use this bot now.`;
+  const text: TgRichText = botUsername
+    ? [base, "\nTip: bookmark ", { type: "url", text: `https://t.me/${botUsername}`, url: `https://t.me/${botUsername}` }]
+    : base;
+  return [{ type: "paragraph", text }];
 }
 
-export function notAuthorizedText(alreadyPaired: boolean): string {
-  return alreadyPaired
-    ? "🔒 Not authorized — this bot is paired with another account."
-    : "🔒 Not paired yet. Press the *Start* button in this chat — the first account to press it becomes the owner.";
+export function notAuthorizedBlocks(alreadyPaired: boolean): TgBlock[] {
+  return [
+    {
+      type: "paragraph",
+      text: alreadyPaired
+        ? "🔒 Not authorized — this bot is paired with another account."
+        : "🔒 Not paired yet. Press the *Start* button in this chat — the first account to press it becomes the owner.",
+    },
+  ];
 }

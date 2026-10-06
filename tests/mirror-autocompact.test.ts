@@ -80,7 +80,7 @@ test("lane 2 (threshold): start → C1 status on the live draft; done → spinne
   m.onAutoCompactStart();
   await tick();
   let last = lastDraft(h.out.calls);
-  assert.ok(last?.text?.includes(`<tg-thinking>${AUTO_COMPACT_STATUS}</tg-thinking>`), `C1 status in the draft: ${last?.text}`);
+  assert.ok(last?.text?.includes(AUTO_COMPACT_STATUS), `C1 status in the draft: ${last?.text}`);
 
   m.onAutoCompactDone("128,432 → 21,904 tokens");
   await tick();
@@ -142,8 +142,8 @@ test("lane 2 (overflow-with-retry): the grace is suspended during the compact; t
   const o4 = m1.indexOf("⚙ bash ✖");
   const o5 = m1.indexOf("Completed ✔️");
   assert.ok(o1 < o2 && o2 < o3 && o3 < o4 && o4 < o5, `wrong order in m1: ${m1}`);
-  const oDiv = m1.indexOf("---", o3);
-  assert.ok(oDiv > o3 && oDiv < o4, `the --- separates the carried error from the retried block: ${m1}`);
+  const oDiv = m1.indexOf("─", o3);
+  assert.ok(oDiv > o3 && oDiv < o4, `the divider separates the carried error from the retried block: ${m1}`);
 });
 
 test("lane 2: failed → the draft reverts to the error state; the grace is re-armed", async () => {
@@ -176,9 +176,9 @@ test("error end + auto-compact in flight: the draft shows the C1 status while co
   m.onAutoCompactStart();
   await tick();
   const last = lastDraft(h.out.calls);
-  assert.ok(last?.text?.includes(`<tg-thinking>${AUTO_COMPACT_STATUS}</tg-thinking>`), `C1 status while compacting: ${last?.text}`);
+  assert.ok(last?.text?.includes(AUTO_COMPACT_STATUS), `C1 status while compacting: ${last?.text}`);
   assert.ok(!last?.text?.includes("⚠️ error:"), "the error line is hidden while the compact runs (nothing is persisted yet)");
-  assert.ok(!last?.text?.includes("---"), "no divider while the C1 status is up");
+  assert.ok(!last?.text?.includes("─"), "no divider while the C1 status is up");
 });
 
 test("lane 2 hooks are no-ops without a live draft (lane 1 owns the messaging)", async () => {
@@ -228,7 +228,7 @@ test("lane 1 done: a live run with a dead draft gets its spinner back immediatel
   await tick();
   const after = drafts(h.out.calls).slice(before);
   assert.equal(after.length, 1, "the spinner draft is re-sent at compact-end");
-  assert.ok(String(after[0].text).includes("<tg-thinking>"), `it is the thinking spinner: ${after[0].text}`);
+  assert.ok(after[0].blocks?.some((b) => b.type === "thinking"), `it is the thinking spinner: ${after[0].text}`);
 });
 
 test("lane 1 done guards: a live draft (lane 2 owns it) or a finalized run → no-op", async () => {

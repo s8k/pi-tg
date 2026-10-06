@@ -1,5 +1,6 @@
 /** Structural fetch — the real global `fetch` satisfies it; tests inject a fake. */
 import { BOT_COMMANDS } from "./bot-commands.ts";
+import type { TgBlock } from "./rich-blocks.ts";
 
 export type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
 
@@ -54,6 +55,9 @@ export interface TgMessage {
   chat: TgChat;
   from?: TgFrom;
   text?: string;
+  /** R9 (live-confirmed 2026-10-08): an incoming rich message (e.g. a
+   * forwarded rich message) carries blocks and NO `text` field. */
+  rich_message?: InputRichMessage;
   reply_to_message?: { message_id: number };
 }
 
@@ -73,11 +77,9 @@ export interface TgUpdate {
   stopped_message_generation?: MessageGenerationStopped;
 }
 
-/** One of `markdown` | `html` | `blocks` must be set (Bot API 10.2, InputRichMessage). */
+/** Blocks-tier rich message (Bot API 10.2+, InputRichMessage). The markdown/html tiers retire with this migration. */
 export interface InputRichMessage {
-  markdown?: string;
-  html?: string;
-  blocks?: unknown[];
+  blocks: TgBlock[];
 }
 
 /**
@@ -302,12 +304,37 @@ export class TelegramClient {
   sendRichMessage(
     chatId: number,
     richMessage: InputRichMessage,
-    opts?: { replyToId?: number; disableNotification?: boolean },
+    opts?: { replyToId?: number; disableNotification?: boolean; replyMarkup?: unknown },
   ): Promise<TgSentMessage> {
     const p: Record<string, unknown> = { chat_id: chatId, rich_message: richMessage };
     if (opts?.replyToId) p.reply_to_message = { message_id: opts.replyToId };
     if (opts?.disableNotification) p.disable_notification = true;
+    if (opts?.replyMarkup) p.reply_markup = opts.replyMarkup;
     return this.call("sendRichMessage", p) as Promise<TgSentMessage>;
+  }
+
+  /**
+   * Edits a rich message in place (Bot API: editMessageText takes a
+   * `rich_message` parameter instead of `text`). Omitting `reply_markup`
+   * REMOVES the message's inline keyboard (live-verified) — stamps use this
+   * to disable dialog buttons; pass a new markup to replace it. "Message is
+   * not modified" is not an error (returns false, like editMessageText).
+   */
+  async editRichMessage(
+    chatId: number,
+    messageId: number,
+    richMessage: InputRichMessage,
+    opts?: { replyMarkup?: unknown },
+  ): Promise<boolean> {
+    try {
+      const p: Record<string, unknown> = { chat_id: chatId, message_id: messageId, rich_message: richMessage };
+      if (opts?.replyMarkup) p.reply_markup = opts.replyMarkup;
+      await this.call("editMessageText", p);
+      return true;
+    } catch (err) {
+      if (err instanceof TgError && err.code === 400 && /not modified/i.test(err.description)) return false;
+      throw err;
+    }
   }
 
   /**

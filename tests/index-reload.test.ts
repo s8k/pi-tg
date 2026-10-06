@@ -15,6 +15,13 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { blocksToPlainText, type TgBlock } from "../src/rich-blocks.ts";
+
+/** The wire text of a rich call: the blocks' plain rendering (or the plain body text). */
+const richText = (body: Record<string, unknown> | undefined): string => {
+  const blocks = (body?.rich_message as { blocks?: unknown[] } | undefined)?.blocks;
+  return blocks ? blocksToPlainText(blocks as TgBlock[]) : String(body?.text ?? "");
+};
 
 const agentDir = mkdtempSync(join(tmpdir(), "pi-tg-reload-"));
 process.env.PI_CODING_AGENT_DIR = agentDir;
@@ -88,7 +95,7 @@ test("owner chat survives a reload: gen2 (fresh module) mirrors a dialog to the 
         void resolve;
       });
     }
-    if (method === "sendMessage")
+    if (method === "sendMessage" || method === "sendRichMessage")
       return new Response(JSON.stringify({ ok: true, result: { message_id: ++msgId } }), { status: 200 });
     return new Response(JSON.stringify({ ok: true, result: true }), { status: 200 });
   }) as typeof fetch;
@@ -121,7 +128,7 @@ test("owner chat survives a reload: gen2 (fresh module) mirrors a dialog to the 
   const p = ctx2.ui.select("Post-reload dialog", ["x", "y"]);
   void p;
   await waitFor(
-    () => calls.some((c) => c.method === "sendMessage" && c.body.chat_id === 42 && JSON.stringify(c.body.reply_markup ?? "").includes("da:1:0")),
+    () => calls.some((c) => c.method === "sendRichMessage" && c.body.chat_id === 42 && JSON.stringify(c.body.reply_markup ?? "").includes("da:1:0")),
     "gen2 dialog mirrored to the learned chat (no new owner message)",
   );
 });
@@ -244,7 +251,7 @@ test("process start (reason startup): the persisted chat is NOT restored — the
   const p = ctx.ui.select("Post-startup dialog", ["x"]);
   void p;
   await new Promise((r) => setTimeout(r, 100));
-  assert.equal(calls.filter((c) => c.method === "sendMessage" && JSON.stringify(c.body.reply_markup ?? "").includes("da:1:0")).length, 0, "no TG dialog before the owner speaks");
+  assert.equal(calls.filter((c) => c.method === "sendRichMessage" && JSON.stringify(c.body.reply_markup ?? "").includes("da:1:0")).length, 0, "no TG dialog before the owner speaks");
 
   // the owner speaks — the chat is learned (+ persisted) and dialogs mirror from then on
   resolveLongPoll!([
@@ -258,7 +265,7 @@ test("process start (reason startup): the persisted chat is NOT restored — the
   void p2;
   // (note: the TUI-only first dialog consumed no id — the mirrored one is id 1)
   await waitFor(
-    () => calls.some((c) => c.method === "sendMessage" && c.body.chat_id === 42 && String(c.body.text ?? "").includes("Post-learning dialog")),
+    () => calls.some((c) => c.method === "sendRichMessage" && c.body.chat_id === 42 && richText(c.body).includes("Post-learning dialog")),
     "dialog mirrored after the owner spoke first",
   );
 });
@@ -332,21 +339,21 @@ test("mid-run dialog: the live draft is segmented BEFORE the dialog message, and
   // a mid-run dialog (mirrored)
   void ctx.ui.select("Mid-run dialog", ["x", "y"]);
   await waitFor(
-    () => calls.some((c) => c.method === "sendMessage" && JSON.stringify(c.body.reply_markup ?? "").includes("da:")),
+    () => calls.some((c) => c.method === "sendRichMessage" && JSON.stringify(c.body.reply_markup ?? "").includes("da:")),
     "dialog mirrored",
   );
 
   // THE FIX: the draft segment (persistent rich message) landed BEFORE the dialog
   const segIdx = calls.findIndex((c) => c.method === "sendRichMessage" && c.body.chat_id === 42);
-  const dlgIdx = calls.findIndex((c) => c.method === "sendMessage" && JSON.stringify(c.body.reply_markup ?? "").includes("da:"));
+  const dlgIdx = calls.findIndex((c) => c.method === "sendRichMessage" && JSON.stringify(c.body.reply_markup ?? "").includes("da:"));
   assert.notEqual(segIdx, -1, "the segment was sent");
   assert.ok(segIdx < dlgIdx, "the segment landed before the dialog message (chronological order)");
   assert.ok(
-    String((calls[segIdx]?.body.rich_message as { markdown?: string })?.markdown ?? "").includes("working on it"),
+    richText(calls[segIdx]?.body).includes("working on it"),
     "the segment carries the pre-dialog work",
   );
   assert.ok(
-    String((calls[segIdx]?.body.rich_message as { markdown?: string })?.markdown ?? "").includes("⏸️ Paused — answer the dialog below"),
+    richText(calls[segIdx]?.body).includes("⏸️ Paused — answer the dialog below"),
     "the segment ends with the paused status line",
   );
 
@@ -355,9 +362,9 @@ test("mid-run dialog: the live draft is segmented BEFORE the dialog message, and
   handlersE.get("message_start")!({ message: { role: "assistant", content: [{ type: "text", text: "" }] } }, ctx);
   handlersE.get("message_update")!({ message: { role: "assistant", content: [{ type: "text", text: "post-dialog" }] } }, ctx);
   await waitFor(
-    () => calls.some((c) => c.method === "sendRichMessageDraft" && String((c.body.rich_message as { markdown?: string })?.markdown ?? "").includes("post-dialog")),
+    () => calls.some((c) => c.method === "sendRichMessageDraft" && richText(c.body).includes("post-dialog")),
     "post-answer draft re-spawned",
   );
   const lastDraft = [...calls].reverse().find((c) => c.method === "sendRichMessageDraft")!;
-  assert.ok(!String((lastDraft.body.rich_message as { markdown?: string })?.markdown ?? "").includes("working on it"), "the pre-dialog content was segmented out");
+  assert.ok(!richText(lastDraft.body).includes("working on it"), "the pre-dialog content was segmented out");
 });

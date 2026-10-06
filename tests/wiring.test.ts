@@ -10,6 +10,7 @@ test("makeOut: send → addSent + persist, default parseMode HTML", async () => 
     editMessageText: async (a, b, c, d) => { calls.push(["edit", a, b, c, d]); return true; },
     deleteMessage: async (a, b) => { calls.push(["del", a, b]); },
     sendRichMessage: async () => { throw new Error("unexpected"); },
+    editRichMessage: async () => { throw new Error("unexpected"); },
     sendRichMessageDraft: async () => true,
   };
   const state = new TelegramState();
@@ -29,6 +30,7 @@ test("makeOut: explicit parseMode null survives; edit/delete passthrough", async
     editMessageText: async (a, b, c, d) => { calls.push(["edit", a, b, c, d]); return false; },
     deleteMessage: async (a, b) => { calls.push(["del", a, b]); },
     sendRichMessage: async () => { throw new Error("unexpected"); },
+    editRichMessage: async () => { throw new Error("unexpected"); },
     sendRichMessageDraft: async () => true,
   };
   const out = makeOut(client, new TelegramState(), async () => {});
@@ -253,14 +255,15 @@ test("makeOut: sendRich → client.sendRichMessage + addSent + persist", async (
     editMessageText: async () => true,
     deleteMessage: async () => {},
     sendRichMessage: async (chatId, rich) => { calls.push(["rich", chatId, rich]); return { message_id: 888 }; },
+    editRichMessage: async () => { throw new Error("unexpected"); },
     sendRichMessageDraft: async () => true,
   };
   const state = new TelegramState();
   const out = makeOut(client, state, async () => {});
-  const id = await out.sendRich(7, "a table");
+  const id = await out.sendRich(7, [{ type: "paragraph", text: "a table" }]);
   assert.equal(id, 888);
   assert.deepEqual(state.sentIds(), [888]);
-  assert.deepEqual(calls[0], ["rich", 7, { markdown: "a table" }]);
+  assert.deepEqual(calls[0], ["rich", 7, { blocks: [{ type: "paragraph", text: "a table" }] }]);
 });
 
 test("makeOut: sendRich disableNotification → client.sendRichMessage opts (undefined for notifying)", async () => {
@@ -270,13 +273,14 @@ test("makeOut: sendRich disableNotification → client.sendRichMessage opts (und
     editMessageText: async () => true,
     deleteMessage: async () => {},
     sendRichMessage: async (chatId, rich, opts) => { calls.push(["rich", chatId, rich, opts]); return { message_id: 889 }; },
+    editRichMessage: async () => { throw new Error("unexpected"); },
     sendRichMessageDraft: async () => true,
   };
   const state = new TelegramState();
   const out = makeOut(client, state, async () => {});
-  await out.sendRich(7, "silent table", { disableNotification: true });
-  assert.deepEqual(calls[0], ["rich", 7, { markdown: "silent table" }, { disableNotification: true }]);
-  await out.sendRich(7, "loud table");
+  await out.sendRich(7, [{ type: "paragraph", text: "silent table" }], { disableNotification: true });
+  assert.deepEqual(calls[0], ["rich", 7, { blocks: [{ type: "paragraph", text: "silent table" }] }, { disableNotification: true }]);
+  await out.sendRich(7, [{ type: "paragraph", text: "loud table" }]);
   assert.equal(calls[1]?.[3], undefined, "a notifying send passes no opts");
 });
 
@@ -287,12 +291,13 @@ test("makeOut: sendDraft → passthrough (draftId + canStop + keepOnStop), no ad
     editMessageText: async () => true,
     deleteMessage: async () => {},
     sendRichMessage: async () => { throw new Error("unexpected"); },
+    editRichMessage: async () => { throw new Error("unexpected"); },
     sendRichMessageDraft: async (chatId, draftId, rich, canStop, keepOnStop) => { calls.push(["draft", chatId, draftId, rich, canStop, keepOnStop]); return true; },
   };
   const state = new TelegramState();
   const out = makeOut(client, state, async () => {});
-  assert.equal(await out.sendDraft(7, 3, "working", true, true), true);
-  assert.deepEqual(calls[0], ["draft", 7, 3, { markdown: "working" }, true, true]);
+  assert.equal(await out.sendDraft(7, 3, [{ type: "thinking", text: "working" }], true, true), true);
+  assert.deepEqual(calls[0], ["draft", 7, 3, { blocks: [{ type: "thinking", text: "working" }] }, true, true]);
   assert.deepEqual(state.sentIds(), []);
 });
 
@@ -429,6 +434,107 @@ test("wrapped confirm: TG 'No' → false; TG cancel → false", async () => {
   await uiTick();
   calls.answers.get(2)!({ kind: "cancel" });
   assert.equal(await p2, false);
+});
+
+test("wrapped confirm: title + message pass through untouched; the abort signal arrives as opts (3rd arg)", async () => {
+  const seen: [string, string, { signal?: AbortSignal } | undefined][] = [];
+  const fn = (title: string, message: string, opts?: { signal?: AbortSignal }) => {
+    seen.push([title, message, opts]);
+    return new Promise<string | undefined>((resolve) => {
+      opts?.signal?.addEventListener("abort", () => resolve(undefined), { once: true });
+    });
+  };
+  const { host, calls } = fakeHost();
+  const ui = { select: () => {}, confirm: fn, input: () => {}, editor: () => {} };
+  installUiProxy(ui as never, host);
+  const p = (ui.confirm as (t: string, m: string) => Promise<boolean | undefined>)("Sure?", "the message text");
+  await uiTick();
+  assert.deepEqual(seen[0]?.slice(0, 2), ["Sure?", "the message text"], "the message is NOT clobbered by the opts object");
+  assert.ok(seen[0]?.[2]?.signal instanceof AbortSignal, "the signal arrives as the 3rd arg (opts)");
+  calls.answers.get(1)!({ kind: "option", index: 0 }); // TG 'Yes'
+  assert.equal(await p, true);
+  assert.equal(seen[0]?.[2]?.signal?.aborted, true, "the TG tap aborts the TUI dialog (it closes)");
+});
+
+test("wrapped input: placeholder passes through; signal arrives as opts", async () => {
+  const seen: [string, string, { signal?: AbortSignal } | undefined][] = [];
+  const fn = (title: string, placeholder: string, opts?: { signal?: AbortSignal }) => {
+    seen.push([title, placeholder, opts]);
+    return new Promise<string | undefined>(() => {});
+  };
+  const { host } = fakeHost();
+  const ui = { select: () => {}, confirm: () => {}, input: fn, editor: () => {} };
+  installUiProxy(ui as never, host);
+  const p = (ui.input as (t: string, ph: string) => Promise<string | undefined>)("Name?", "type here");
+  await uiTick();
+  assert.deepEqual(seen[0]?.slice(0, 2), ["Name?", "type here"], "the placeholder is NOT clobbered");
+  assert.ok(seen[0]?.[2]?.signal instanceof AbortSignal, "the signal arrives as the 3rd arg (opts)");
+  void p;
+});
+
+test("wrapped confirm with ONE arg (no message): signal still lands in the opts slot — the live /dialogtest2 bug", async () => {
+  // pi's signature is confirm(title, message?, opts?). A caller that omits the
+  // message must NOT see the injected opts object land in the `message` slot
+  // (pi renders the title as `${title} ${message}` → "[object Object]"), and
+  // the abort signal must still be wired (or TG taps can never close the TUI
+  // dialog — the listener pi registers is `opts?.signal?.addEventListener`).
+  const seen: [unknown, unknown, { signal?: AbortSignal } | undefined][] = [];
+  const fn = (title: unknown, message: unknown, opts?: { signal?: AbortSignal }) => {
+    seen.push([title, message, opts]);
+    return new Promise<string | undefined>((resolve) => {
+      opts?.signal?.addEventListener("abort", () => resolve(undefined), { once: true });
+    });
+  };
+  const { host } = fakeHost();
+  const ui = { select: () => {}, confirm: fn, input: () => {}, editor: () => {} };
+  installUiProxy(ui as never, host);
+  const p = (ui.confirm as (t: string) => Promise<boolean | undefined>)("Are you sure? (probe)");
+  await uiTick();
+  assert.equal(seen[0]?.[0], "Are you sure? (probe)", "title untouched");
+  assert.ok(!(seen[0]?.[1] instanceof Object && seen[0]?.[1] !== null), `the message slot must not receive the opts object (got ${String(seen[0]?.[1])})`);
+  assert.ok(seen[0]?.[2]?.signal instanceof AbortSignal, "the signal arrives in the opts slot (3rd arg)");
+  const signal = seen[0]![2]!.signal!;
+  signal.dispatchEvent(new Event("abort")); // stand-in for ac.abort() in the wrapper
+  assert.equal(await p, undefined, "pi's abort path resolves → the TUI dialog closes");
+});
+
+test("wrapped input with ONE arg (no placeholder): signal still lands in the opts slot", async () => {
+  const seen: [unknown, unknown, { signal?: AbortSignal } | undefined][] = [];
+  const fn = (title: unknown, placeholder: unknown, opts?: { signal?: AbortSignal }) => {
+    seen.push([title, placeholder, opts]);
+    return new Promise<string | undefined>(() => {});
+  };
+  const { host } = fakeHost();
+  const ui = { select: () => {}, confirm: () => {}, input: fn, editor: () => {} };
+  installUiProxy(ui as never, host);
+  const p = (ui.input as (t: string) => Promise<string | undefined>)("Name?");
+  await uiTick();
+  assert.equal(seen[0]?.[0], "Name?");
+  assert.ok(!(seen[0]?.[1] instanceof Object && seen[0]?.[1] !== null), `the placeholder slot must not receive the opts object (got ${String(seen[0]?.[1])})`);
+  assert.ok(seen[0]?.[2]?.signal instanceof AbortSignal, "the signal arrives in the opts slot (3rd arg)");
+  void p;
+});
+
+test("wrapped select: caller-provided opts are merged (both signals honored)", async () => {
+  const seen: [string, string[], { signal?: AbortSignal } | undefined][] = [];
+  const fn = (title: string, options: string[], opts?: { signal?: AbortSignal }) => {
+    seen.push([title, options, opts]);
+    return new Promise<string | undefined>((resolve) => {
+      opts?.signal?.addEventListener("abort", () => resolve(undefined), { once: true });
+    });
+  };
+  const { host, calls } = fakeHost();
+  const ui = { select: fn, confirm: () => {}, input: () => {}, editor: () => {} };
+  installUiProxy(ui as never, host);
+  const callerSignal = new AbortController().signal;
+  const p = (ui.select as (t: string, o: string[], o2?: { signal?: AbortSignal }) => Promise<string | undefined>)("Pick", ["a", "b"], { signal: callerSignal });
+  await uiTick();
+  assert.ok(seen[0]?.[2] !== undefined, "the opts object is present");
+  assert.ok(seen[0]?.[2]?.signal instanceof AbortSignal, "a single merged signal");
+  calls.answers.get(1)!({ kind: "option", index: 1 });
+  assert.equal(await p, "b");
+  assert.equal(seen[0]?.[2]?.signal?.aborted, true);
+  assert.equal(callerSignal.aborted, false, "the caller's own signal is untouched (AbortSignal.any)");
 });
 
 test("wrapped confirm: TG 'Yes' → true; terminal 'Yes' → true (value passthrough)", async () => {

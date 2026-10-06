@@ -12,7 +12,7 @@ import { probeGpu } from "./src/gpu.ts";
 import type { Out, TelegramPi } from "./src/session-bridge.ts";
 import { Mirror, compactTokenDetail } from "./src/mirror.ts";
 import type { MirrorMessage } from "./src/mirror.ts";
-import { renderQr, qrWidgetFactory, tokenLooksValid, notAuthorizedText } from "./src/onboarding.ts";
+import { renderQr, qrWidgetFactory, tokenLooksValid, notAuthorizedBlocks } from "./src/onboarding.ts";
 import { makeOut, makeTelegramPi, ctxIsAlive, wrapWaitForIdle, installUiProxy } from "./src/wiring.ts";
 import { PendingDialogs } from "./src/ui-dialogs.ts";
 import { runTgCompaction } from "./src/compact.ts";
@@ -225,6 +225,12 @@ export default function piTelegram(pi: ExtensionAPI): void {
 
   async function handleUpdate(update: TgUpdate): Promise<void> {
     if (!bridge || !out || !state) return;
+    // Answer EVERY callback query (silent, no toast): Telegram keeps a loading
+    // animation on a tapped button until the callback is answered. Best-effort
+    // — a failure must never block the action itself (the button just animates
+    // a bit longer).
+    const cbId = update.callback_query?.id;
+    if (cbId && client) void client.answerCallbackQuery(cbId).catch(() => {});
     const action = route(
       update,
       cfg.ownerId,
@@ -246,7 +252,7 @@ export default function piTelegram(pi: ExtensionAPI): void {
       }
     }
     if (action.kind === "notAuthorized") {
-      await out.send(action.chatId, notAuthorizedText(false), { parseMode: null });
+      await out.sendRich(action.chatId, notAuthorizedBlocks(false));
       return;
     }
     if (action.kind === "unknown") {

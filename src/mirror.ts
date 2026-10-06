@@ -60,7 +60,8 @@
 import type { Out } from "./session-bridge.ts";
 import type { TelegramState } from "./state.ts";
 import type { OutputLevel, TelegramConfig } from "./config.ts";
-import { RICH_CAP, tailView, escapeHtml, renderToolBlock, toolArgsJson, extractWhy, foldLongFences, chunkRich, chunkMarkdown, chunkText, toPlainText, type ToolState } from "./markdown.ts";
+import { RICH_CAP, DRAFT_TAIL_CAP, escapeHtml, toolArgsJson, extractWhy, chunkText, type ToolState } from "./markdown.ts";
+import { mdToBlocks, foldBlocks, tailBlocks, chunkBlocks, blocksToPlainText, blocksLen, blockCount, type TgBlock } from "./rich-blocks.ts";
 import { TgError } from "./telegram-client.ts";
 
 export interface MirrorMessage {
@@ -77,7 +78,7 @@ export interface MirrorMessage {
 
 /**
  * One committed, chronological block of the work log (message 1). Each block
- * renders on its own lines; `blocksToMd` separates blocks with one blank line.
+ * renders on its own lines; the blocks builder separates blocks structurally.
  */
 export type LogBlock =
   | { type: "narration"; text: string } // a demoted message's visible text, verbatim markdown
@@ -173,58 +174,82 @@ function tokensSuffix(t?: { input: number; output: number }): string {
   return i > 0 || o > 0 ? ` ↑${fmtTokens(i)} ↓${fmtTokens(o)}` : "";
 }
 
-export function blocksToMd(log: LogBlock[], opts: { tail?: string; bottom: BottomLine; tokens?: { input: number; output: number } }): string {
+/**
+ * One tool log block → blocks: [💭 why] + the call + [pre error].
+ * Persistent form: details(⚙ name state → pre json) — collapsed.
+ * Draft form (expandTools, owner-confirmed 2026-10-08): the call stays
+ * UNcollapsed — a plain ⚙ paragraph + the visible args pre — so the live
+ * stream shows what each tool is doing without a tap; the finalized send
+ * collapses it.
+ * (blocksLen counts the details' inner content either way, so the 8k draft
+ * window budget is identical in both forms.)
+ */
+function toolBlocks(b: Extract<LogBlock, { type: "tool" }>, expandTools: boolean): TgBlock[] {
+  const out: TgBlock[] = [];
+  if (b.why) out.push({ type: "paragraph", text: [`💭 `, { type: "italic", text: `"${b.why}"` }] });
+  if (expandTools) {
+    out.push({ type: "paragraph", text: `⚙ ${b.name} ${b.state}` });
+    out.push({ type: "pre", text: b.argsJson, language: "json" });
+  } else {
+    out.push({
+      type: "details",
+      summary: `⚙ ${b.name} ${b.state}`,
+      blocks: [{ type: "pre", text: b.argsJson, language: "json" }],
+      is_open: false,
+    });
+  }
+  if (b.state === "✖" && b.errorText) out.push({ type: "pre", text: b.errorText });
+  return out;
+}
+
+/**
+ * The blocks-tier mirror builder: committed log blocks + the in-flight tail
+ * + the bottom line, in one layout. The SAME array feeds live drafts (the
+ * `thinking` block stays — it is draft-only) and persistent sends (the
+ * caller strips `thinking` + the NBSP gap before sending).
+ */
+export function mirrorBlocks(log: LogBlock[], opts: { tail?: string; bottom: BottomLine; tokens?: { input: number; output: number }; heal?: boolean; expandTools?: boolean }): TgBlock[] {
+  // heal (drafts only): md4x closes half-typed emphasis/fence constructs in
+  // the in-flight text; persistent sends keep them literal (never "completed")
+  const heal = opts.heal ?? false;
+  // expandTools (drafts only, owner-confirmed 2026-10-08): tool calls render
+  // uncollapsed in the live stream; the finalized send keeps the details form
+  const expandTools = opts.expandTools ?? false;
   const suffix = tokensSuffix(opts.tokens);
-  const tail = opts.tail && opts.tail.trim() ? opts.tail : undefined;
-  const bottomText = bottomLineText(opts.bottom);
-  const parts: string[] = [];
+  const tail = opts.tail && opts.tail.trim() ? mdToBlocks(opts.tail, { heal }) : [];
+  const bottom = opts.bottom;
+  const parts: TgBlock[] = [];
+  const bottomText = bottomLineText(bottom);
   log.forEach((b, i) => {
-    parts.push(b.type === "tool" ? renderToolBlock(b) : b.text);
-    // A carried-over ⚠️ error entry (Mirror.onAgentStart moves the failed
-    // run's bottom line into the log on a pi retry) keeps the full-width
-    // divider AFTER it whenever content follows — new tool blocks, the
-    // answer, the spinner, or a bottom line. Without this, the divider the
-    // retry window showed (⚠️ → --- → spinner) would vanish the moment the
-    // retry's first block lands. The last entry only gets one when something
-    // actually renders after it.
-    if (b.type === "agentError" && (i < log.length - 1 || Boolean(tail) || bottomText !== "")) parts.push("---");
+    if (b.type === "tool") parts.push(...toolBlocks(b, expandTools));
+    // narration is LLM text → full markdown conversion (plan spec: "narration →
+    // mdToBlocks(text)"). prompt/agentError are short bot strings → raw paragraph.
+    else if (b.type === "narration") parts.push(...mdToBlocks(b.text, { heal }));
+    else parts.push({ type: "paragraph", text: b.type === "agentError" ? `⚠️ error: ${b.text}` : b.text });
+    if (b.type === "agentError" && (i < log.length - 1 || tail.length > 0 || bottomText !== "")) parts.push({ type: "divider" });
   });
-  if (opts.bottom.kind === "done") {
-    parts.push(`Completed ✔️${suffix}`);
-    if (tail) parts.push(tail); // no divider — the answer is its own message
-    return parts.join("\n\n");
+  const para = (text: string): TgBlock => ({ type: "paragraph", text });
+  if (bottom.kind === "done") {
+    parts.push(para(`Completed ✔️${suffix}`));
+    parts.push(...tail);
+    return parts;
   }
-  if (tail) parts.push(tail);
-  if (opts.bottom.kind === "error" && opts.bottom.thinking) {
-    // Error end, stream still open (pi may auto-retry): the ⚠️ line, then a
-    // full-width horizontal line, then the spinner.
-    const err = bottomLineText(opts.bottom);
-    if (err) parts.push(err);
-    if (parts.length > 0) parts.push(err ? "---" : "\u00a0"); // divider after the ⚠️ line; classic gap without one
-    parts.push(`<tg-thinking>${opts.bottom.word ?? "Working"}…${suffix}</tg-thinking>`);
-    return parts.join("\n\n");
+  parts.push(...tail);
+  if (bottom.kind === "error" && bottom.thinking) {
+    if (bottomText) parts.push(para(bottomText));
+    if (parts.length > 0) parts.push(bottomText ? { type: "divider" } : para("\u00a0"));
+    parts.push({ type: "thinking", text: `${bottom.word ?? "Working"}…${suffix}` });
+    return parts;
   }
-  if (opts.bottom.kind === "thinking" || opts.bottom.kind === "compact") {
-    // text above the spinner → an extra blank line (skipped after a divider —
-    // the --- already separates, so the spinner sits directly under it, the
-    // same layout as the retry window)
-    if (parts.length > 0 && parts[parts.length - 1] !== "---") parts.push("\u00a0");
-    // The run's tokens go INSIDE the tag (same line — the renderer wraps
-    // trailing text below the tag); the label's shimmer covers the numbers
-    // too, which is fine: they're live telemetry, not body text.
-    const label = opts.bottom.kind === "thinking" ? `${opts.bottom.word}…` : opts.bottom.status;
-    parts.push(`<tg-thinking>${label}${suffix}</tg-thinking>`);
-    return parts.join("\n\n");
+  if (bottom.kind === "thinking" || bottom.kind === "compact") {
+    if (parts.length > 0 && parts[parts.length - 1]?.type !== "divider") parts.push(para("\u00a0"));
+    const label = bottom.kind === "thinking" ? `${bottom.word}…` : bottom.status;
+    parts.push({ type: "thinking", text: `${label}${suffix}` });
+    return parts;
   }
-  const bottom = bottomLineText(opts.bottom);
-  if (bottom) parts.push(bottom);
-  // The PERSISTENT error message ends with a full-width divider — but only
-  // when the message has content beyond the bare ⚠️ line (user request: a
-  // tool log / partial answer above the error gets closed off from whatever
-  // follows in the chat; a bare error stays bare). The ⚠️-aborted bottom
-  // never gets one, and a divider without the ⚠️ line would be a stray rule.
-  if (opts.bottom.kind === "error" && bottom && parts.length > 1) parts.push("---");
-  return parts.join("\n\n");
+  if (bottomText) parts.push(para(bottomText));
+  if (bottom.kind === "error" && bottomText && parts.length > 1) parts.push({ type: "divider" });
+  return parts;
 }
 
 export function bottomLineText(bottom: BottomLine): string {
@@ -337,15 +362,10 @@ const RETRY_BACKOFF_MS = [1000, 2000, 4000];
 const PERSIST_ATTEMPTS = 3;
 
 /** Cap a raw error text so its HTML-escaped rendering stays within `cap` chars (+1 for the "…"). */
-function capEscaped(raw: string, cap: number): string {
-  let cut = raw;
-  let esc = escapeHtml(raw);
-  if (esc.length <= cap) return raw;
-  while (esc.length > cap) {
-    cut = cut.slice(0, Math.max(1, Math.floor((cut.length * cap) / esc.length)));
-    esc = escapeHtml(cut);
-  }
-  return cut + "…";
+function capText(raw: string, cap: number): string {
+  // the blocks tier renders pre text verbatim — the cap is a plain length cap
+  // (the HTML-rung escape-budget loop retired with the markdown/html tiers)
+  return raw.length <= cap ? raw : raw.slice(0, cap) + "…";
 }
 
 export interface MirrorDeps {
@@ -424,7 +444,7 @@ export class Mirror {
   // pacing
   private nextDraftAt = 0; // earliest time a new draft attempt is allowed (throttle + failure cooldown)
   private forceNext = false; // one-shot: the first send of a new message breaks through the window
-  private pending = new Map<number, { content: string; canStop: boolean; run: number }>();
+  private pending = new Map<number, { content: TgBlock[]; canStop: boolean; run: number }>();
   private inflight: Promise<void> | undefined;
   private drainTimer: unknown;
   // heartbeat
@@ -734,7 +754,7 @@ export class Mirror {
       b.state = isError ? "✖" : "✔";
       if (isError) {
         const t = toolResultText(result);
-        b.errorText = t ? capEscaped(t, TOOL_ERROR_TEXT_CAP) : undefined;
+        b.errorText = t ? capText(t, TOOL_ERROR_TEXT_CAP) : undefined;
       }
       changed = true;
       break;
@@ -905,9 +925,9 @@ export class Mirror {
           await this.runDraftOnce(this.draftId, this.draftContent(bottom), false /* no Stop button — the run is over */);
         // step 2 — m1: the work log + the Completed marker (the answer is cut).
         // SILENT: the notification belongs to the final answer (m2) only.
-        await this.sendPersistent(chatId, blocksToMd(this.log, { bottom, tokens: this.runTokens() }), { disableNotification: true });
+        await this.sendPersistent(chatId, mirrorBlocks(this.log, { bottom, tokens: this.runTokens() }), { disableNotification: true });
         // step 3 — m2: the final answer, its own message — the only send that notifies.
-        await this.sendPersistent(chatId, this.tail);
+        await this.sendPersistent(chatId, mdToBlocks(this.tail));
         return;
       }
       // minimal (or a clean end with no answer) = ONE persistent message:
@@ -915,11 +935,11 @@ export class Mirror {
       // notification rules as full — only the block filter changes by level.
       const log = blocksForLevel(this.deps.cfg.level, this.log);
       const tail = this.endKind === "error" && this.tail.trim() ? `${this.tail.trimEnd()}\n\n⚠ incomplete` : this.tail;
-      const md = blocksToMd(log, { tail, bottom, tokens: this.runTokens() }); // full content — chunked, never tailView-capped
-      if (md.trim())
+      const blocks = mirrorBlocks(log, { tail, bottom, tokens: this.runTokens() }); // full content — chunked, never tail-capped
+      if (blocks.length > 0)
         // D4: a stop end's message is SILENT (no notification) — an error end
         // notifies (the error is the final word the user must see).
-        await this.sendPersistent(chatId, md, { disableNotification: this.endKind === "stop" });
+        await this.sendPersistent(chatId, blocks, { disableNotification: this.endKind === "stop" });
     } finally {
       // Every exit path (mute level, no chat, sends done, sends threw after all
       // retries) releases the settlement waiters — a hung promise would hang
@@ -930,37 +950,35 @@ export class Mirror {
   }
 
   /**
-   * One persistent send: fold long fences, chunk at the rich cap (block — the
-   * single finalized message can exceed the cap; the draft is capped, the
-   * final message is not.
-   * boundaries), send as rich messages. On a 400 (parse failure — the same
-   * content cannot heal) the WHOLE message is re-sent through the legacy
-   * HTML path; on a 400 there, plain text. A 400 that survives all three
-   * levels rethrows without retrying.
+   * One persistent send: fold long fences, chunk at the cap (the single
+   * finalized message can exceed the cap; the draft is capped, the final
+   * message is not), send as blocks-tier rich messages. On a 400 (the server
+   * rejected the blocks — the same content cannot heal), the UNDELIVERED tail
+   * (the chunk that 400'd and everything after it) is re-sent as plain text —
+   * chunks that already landed are never re-sent (duplication). A 400 that
+   * survives the plain rung rethrows without retrying. The `thinking` block is
+   * draft-only and never reaches this path (finalization builds with a
+   * non-thinking bottom).
    */
-  private async deliverOnce(chatId: number, md: string, opts?: { disableNotification?: boolean }): Promise<void> {
-    // the silence flag survives the rich → HTML → plain fallback chain
+  private async deliverOnce(chatId: number, blocks: TgBlock[], opts?: { disableNotification?: boolean }): Promise<void> {
+    // the silence flag survives the rich → plain fallback chain
     const silence = opts?.disableNotification ? { disableNotification: true } : undefined;
     const { out } = this.deps;
-    const folded = foldLongFences(md, this.deps.cfg.codeFoldLines);
-    const pieces = folded.length <= RICH_CAP ? [folded] : chunkRich(folded);
+    const folded = foldBlocks(blocks, this.deps.cfg.codeFoldLines);
+    const pieces = blocksLen(folded) <= RICH_CAP && blockCount(folded) <= 480 ? [folded] : chunkBlocks(folded, RICH_CAP);
+    let i = 0;
     try {
-      for (const p of pieces) await out.sendRich(chatId, p, silence);
+      for (; i < pieces.length; i++) await out.sendRich(chatId, pieces[i]!, silence);
       return;
     } catch (err) {
       if (!(err instanceof TgError && err.code === 400)) throw err;
     }
-    try {
-      for (const chunk of chunkMarkdown(md)) await out.send(chatId, chunk, { parseMode: "HTML", ...silence });
-      return;
-    } catch (err) {
-      if (!(err instanceof TgError && err.code === 400)) throw err;
-    }
-    for (const chunk of chunkText(toPlainText(md))) await out.send(chatId, chunk, { parseMode: null, ...silence });
+    // chunks 0..i-1 already landed — re-send ONLY i..end as plain text
+    for (const chunk of chunkText(blocksToPlainText(pieces.slice(i).flat()))) await out.send(chatId, chunk, { parseMode: null, ...silence });
   }
 
   /** Up to PERSIST_ATTEMPTS with 1s/2s/4s backoff, honoring a 429's retry_after. */
-  private async sendPersistent(chatId: number, md: string, opts?: { disableNotification?: boolean }): Promise<void> {
+  private async sendPersistent(chatId: number, blocks: TgBlock[], opts?: { disableNotification?: boolean }): Promise<void> {
     let lastErr: unknown;
     for (let attempt = 1; attempt <= PERSIST_ATTEMPTS; attempt++) {
       if (attempt > 1) {
@@ -969,7 +987,7 @@ export class Mirror {
         await this.sleep(delay);
       }
       try {
-        await this.deliverOnce(chatId, md, opts);
+        await this.deliverOnce(chatId, blocks, opts);
         return;
       } catch (err) {
         lastErr = err;
@@ -986,12 +1004,14 @@ export class Mirror {
   // ─────────────────────────── content builders ───────────────────────────
 
   /** The single draft's full content: [log] [tail] [bottom line] — the log filtered by the level. */
-  private content(bottom?: BottomLine): string {
+  private content(bottom?: BottomLine): TgBlock[] {
     const log = blocksForLevel(this.deps.cfg.level, this.log);
-    return blocksToMd(log, {
+    return mirrorBlocks(log, {
       tail: this.tail,
       bottom: bottom ?? this.currentBottom(),
       tokens: this.runTokens(),
+      heal: true, // the live draft parses IN-FLIGHT text — heal half-typed constructs
+      expandTools: true, // uncollapsed tool calls in the live stream (owner-confirmed 2026-10-08)
     });
   }
 
@@ -1013,9 +1033,11 @@ export class Mirror {
     return { kind: "thinking", word: this.thinkingWordNow() };
   }
 
-  /** The draft's content capped for the ephemeral window (the draft has a hard size limit). */
-  private draftContent(bottom?: BottomLine): string {
-    return tailView(this.content(bottom), RICH_CAP);
+  /** The draft's content: fold long fences, then cap for the ephemeral window (the draft has a hard size limit). */
+  private draftContent(bottom?: BottomLine): TgBlock[] {
+    // DRAFT_TAIL_CAP (not RICH_CAP): this message is re-sent every stream tick
+    // and the client re-lays it out each time — keep it light (2026-10-08).
+    return tailBlocks(foldBlocks(this.content(bottom), this.deps.cfg.codeFoldLines), DRAFT_TAIL_CAP, 480);
   }
 
   /** Request a single-draft update (latest wins; paced by the shared window). Re-spawns the run's draft when it was retired (dialog pause). */
@@ -1060,7 +1082,7 @@ export class Mirror {
     if (!this.hasLiveDraft()) return;
     const chatId = this.deps.getChatId();
     if (chatId === undefined) return;
-    const md = this.content({ kind: "paused" }); // blocks + tail, no bottom line
+    const segment = this.content({ kind: "paused" }); // blocks + tail, no bottom line
     this.log = [];
     this.tail = "";
     this.draftId = 0; // retire — the next content event re-spawns via requestUpdate
@@ -1078,9 +1100,9 @@ export class Mirror {
       this.drainTimer = undefined;
     }
     if (this.inflight) await this.inflight;
-    if (md.trim()) {
+    if (segment.length > 0) {
       try {
-        await this.sendPersistent(chatId, md, { disableNotification: true }); // this send also clears the draft
+        await this.sendPersistent(chatId, segment, { disableNotification: true }); // this send also clears the draft
       } catch {
         // best effort — the dialog and the continuation work regardless
       }
@@ -1098,7 +1120,7 @@ export class Mirror {
    *  - at most one call in flight; later requests only replace the queued
    *    content of the same draft (latest wins, no concurrent retry chains).
    */
-  private requestDraftUpdate(draftId: number, content: string, canStop: boolean): void {
+  private requestDraftUpdate(draftId: number, content: TgBlock[], canStop: boolean): void {
     if (this.deps.cfg.level === "mute" || this.phase !== "work") return;
     if (this.deps.getChatId() === undefined) return;
     this.pending.set(draftId, { content, canStop, run: this.runSeq });
@@ -1131,7 +1153,7 @@ export class Mirror {
           for (const [id, e] of [...this.pending.entries()]) {
             if (e.run !== this.runSeq) this.pending.delete(id); // a new run owns the drafts now
           }
-          const next = this.pending.entries().next().value as [number, { content: string; canStop: boolean; run: number }] | undefined;
+          const next = this.pending.entries().next().value as [number, { content: TgBlock[]; canStop: boolean; run: number }] | undefined;
           if (next === undefined) return; // nothing to send — forceNext stays for the real send
           const [draftId, upd] = next;
           this.pending.delete(draftId);
@@ -1160,7 +1182,7 @@ export class Mirror {
    * requestDraftUpdate + the pending map, and finalization calls this
    * directly for the completed-state preview, after the one-way switch).
    */
-  private async runDraftOnce(draftId: number, content: string, canStop: boolean): Promise<void> {
+  private async runDraftOnce(draftId: number, content: TgBlock[], canStop: boolean): Promise<void> {
     const { cfg, out } = this.deps;
     const chatId = this.deps.getChatId();
     if (chatId === undefined) return;

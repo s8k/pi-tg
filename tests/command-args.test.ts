@@ -42,6 +42,18 @@ test("encode: undisplayable actions → null", () => {
   assert.equal(encodeInternal({ kind: "unknown", chatId: 1, text: "x" }), null);
 });
 
+test("kill/clear: nonce round-trip (one-shot confirmations)", () => {
+  assert.equal(encodeInternal({ kind: "kill", chatId: 7, yes: true, nonce: "k7" }), "internal kill 7 1 k7");
+  assert.equal(encodeInternal({ kind: "clear", chatId: 7, doIt: false, nonce: "c9" }), "internal clear 7 0 c9");
+  assert.deepEqual(parseInternal("internal kill 7 1 k7"), { kind: "kill", chatId: 7, yes: true, nonce: "k7" });
+  assert.deepEqual(parseInternal("internal clear 7 0 c9"), { kind: "clear", chatId: 7, doIt: false, nonce: "c9" });
+  // legacy shape (no nonce) still parses
+  assert.deepEqual(parseInternal("internal kill 7 1"), { kind: "kill", chatId: 7, yes: true });
+  assert.deepEqual(parseInternal("internal clear 7 0"), { kind: "clear", chatId: 7, doIt: false });
+  assert.equal(parseInternal("internal kill 7 1 k7 extra"), null); // too many parts
+  assert.equal(parseInternal("internal clear 7 2 c9"), null); // bad doIt
+});
+
 test("parse: garbage → null (never throws)", () => {
   assert.equal(parseInternal(""), null);
   assert.equal(parseInternal("help"), null);

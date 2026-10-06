@@ -1,6 +1,16 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { notAuthorizedText, pairWelcome, renderQr, tokenLooksValid } from "../src/onboarding.ts";
+import { notAuthorizedBlocks, pairWelcomeBlocks, renderQr, tokenLooksValid } from "../src/onboarding.ts";
+
+const richPlain = (blocks: import("../src/rich-blocks.ts").TgBlock[]): string =>
+  blocks
+    .map((b) => {
+      const rt: import("../src/rich-blocks.ts").TgRichText = b.type === "paragraph" || b.type === "heading" ? b.text : "";
+      return typeof rt === "string" ? rt : Array.isArray(rt) ? rt.map(richPlainRt).join("") : richPlainRt(rt);
+    })
+    .join("\n");
+const richPlainRt = (rt: import("../src/rich-blocks.ts").TgRichText): string =>
+  typeof rt === "string" ? rt : Array.isArray(rt) ? rt.map(richPlainRt).join("") : rt.type === "anchor" ? "" : richPlainRt(rt.text);
 
 test("renderQr: uniform width, no ANSI escapes, deterministic, has modules", () => {
   const q1 = renderQr("https://t.me/pi_telegram_bot");
@@ -23,9 +33,9 @@ test("tokenLooksValid: BotFather shape only", () => {
 });
 
 test("pairing texts", () => {
-  assert.ok(pairWelcome("mybot", 42).includes("ID 42"));
-  assert.ok(pairWelcome("mybot", 42).includes("t.me/mybot"));
-  assert.ok(!pairWelcome(undefined, 42).includes("t.me/undefined"));
-  assert.ok(notAuthorizedText(true).includes("another account"));
-  assert.ok(notAuthorizedText(false).includes("Start"));
+  assert.ok(richPlain(pairWelcomeBlocks("mybot", 42)).includes("ID 42"));
+  assert.ok(richPlain(pairWelcomeBlocks("mybot", 42)).includes("t.me/mybot"));
+  assert.ok(!richPlain(pairWelcomeBlocks(undefined, 42)).includes("t.me/undefined"));
+  assert.ok(richPlain(notAuthorizedBlocks(true)).includes("another account"));
+  assert.ok(richPlain(notAuthorizedBlocks(false)).includes("Start"));
 });

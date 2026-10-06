@@ -1,8 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { SessionBridge, helpText, timeAgo, type TelegramPi } from "../src/session-bridge.ts";
+import { SessionBridge, helpBlocks, timeAgo, type TelegramPi } from "../src/session-bridge.ts";
 import { FakeOut, FakePi } from "./fake-pi.ts";
-import { makeDeps, lastSend } from "./helpers.ts";
+import type { TgRichText } from "../src/rich-blocks.ts";
+import { makeDeps, lastSend, lastRichText } from "./helpers.ts";
 
 test("prompt: idle → deliverAs 'now', no ack message", async () => {
   const pi = new FakePi();
@@ -73,22 +74,22 @@ test("status: card format 📌/📁/🤖/📖/📨/🪙, plain session name, rou
   });
   const out = new FakeOut();
   await new SessionBridge(makeDeps(pi.build(), out)).dispatch({ kind: "status", chatId: 7 });
-  const lines = lastSend(out).split("\n");
+  const lines = lastRichText(out).split("\n");
   assert.deepEqual(lines, [
-    "📌 Untitled session — idle · 🔊 full", // plain name (no <b>), always-on level suffix
-    "📁 dir: <code>/proj</code>",
+    "📌 Untitled session — idle · 🔊 full", // plain name, always-on level suffix
+    "📁 dir: /proj", // the cwd is a code ENTITY — the plain rendering shows it untagged
     "🤖 model: Model One · 🧠 thinking: high",
     "📖 context: 76% (90720/120000)",
     "🪙 tokens: ↑12.5k ↓128k", // session cumulative, ALWAYS shown (↑0 ↓0 proves the wiring is live)
     "📨 messages: 171", // tokens sit ABOVE the messages line
   ]);
 
-  // busy + muted + no model + no context usage
+  // busy + muted + no model + no context usage — the session name is RAW data (no escaping)
   const pi2 = new FakePi({ cwd: "/p", busy: true, sessionName: "My <sess>" });
   const out2 = new FakeOut();
   await new SessionBridge(makeDeps(pi2.build(), out2, { level: "mute" })).dispatch({ kind: "status", chatId: 7 });
-  const lines2 = lastSend(out2).split("\n");
-  assert.equal(lines2[0], "📌 My &lt;sess&gt; — busy · 🔇 mute");
+  const lines2 = lastRichText(out2).split("\n");
+  assert.equal(lines2[0], "📌 My <sess> — busy · 🔇 mute");
   assert.equal(lines2[2], "🤖 model: n/a · 🧠 thinking: default");
   assert.equal(lines2[3], "📖 context: n/a");
   assert.equal(lines2[4], "🪙 tokens: ↑0 ↓0"); // no usage yet → zeros, still shown, above the messages line
@@ -107,7 +108,7 @@ test("status: 🔥 GPU line from probeGpu (single + multi); omitted when probe u
   // makeDeps default: probe unavailable → no GPU line (base has no sessionUsage → ↑0 ↓0)
   const out0 = new FakeOut();
   await new SessionBridge(makeDeps(new FakePi(base).build(), out0)).dispatch({ kind: "status", chatId: 7 });
-  const l0 = lastSend(out0).split("\n");
+  const l0 = lastRichText(out0).split("\n");
   assert.equal(l0.length, 6); // 📌 📁 🤖 📖 🪙 📨
   assert.equal(l0[4], "🪙 tokens: ↑0 ↓0");
   assert.ok(l0[5].startsWith("📨 messages: "));
@@ -116,13 +117,13 @@ test("status: 🔥 GPU line from probeGpu (single + multi); omitted when probe u
   const deps1 = makeDeps(new FakePi(base).build(), out1);
   deps1.probeGpu = async () => [gpu];
   await new SessionBridge(deps1).dispatch({ kind: "status", chatId: 7 });
-  assert.equal(lastSend(out1).split("\n")[6], "🔥 GPU: 67°C · 96% · 14.2/24.0 GB");
+  assert.equal(lastRichText(out1).split("\n")[6], "🔥 GPU: 67°C · 96% · 14.2/24.0 GB");
 
   const out2 = new FakeOut();
   const deps2 = makeDeps(new FakePi(base).build(), out2);
   deps2.probeGpu = async () => [gpu, { tempC: 72, utilPct: 50, memUsedGb: 8, memTotalGb: 24 }];
   await new SessionBridge(deps2).dispatch({ kind: "status", chatId: 7 });
-  const lines = lastSend(out2).split("\n");
+  const lines = lastRichText(out2).split("\n");
   assert.ok(lines[6].startsWith("🔥 GPU 0: 67°C"));
   assert.ok(lines[7].startsWith("🔥 GPU 1: 72°C"));
 });
@@ -146,14 +147,14 @@ test("notAuthorized: different text paired vs unpaired", async () => {
   const out = new FakeOut();
   await new SessionBridge(makeDeps(new FakePi().build(), out, { ownerId: undefined }))
     .dispatch({ kind: "notAuthorized", chatId: 1, fromId: 2 });
-  assert.ok(lastSend(out).includes("Start"));
+  assert.ok(lastRichText(out).includes("Start"));
   const out2 = new FakeOut();
   await new SessionBridge(makeDeps(new FakePi().build(), out2)).dispatch({
     kind: "notAuthorized",
     chatId: 1,
     fromId: 2,
   });
-  assert.ok(lastSend(out2).includes("another account"));
+  assert.ok(lastRichText(out2).includes("another account"));
 });
 
 test("unknown + help", async () => {
@@ -162,11 +163,13 @@ test("unknown + help", async () => {
   await bridge.dispatch({ kind: "unknown", chatId: 7, text: "/wat" });
   assert.ok(lastSend(out).includes("/help"));
   await bridge.dispatch({ kind: "help", chatId: 7 });
-  const t = lastSend(out);
+  const t = lastRichText(out);
   for (const c of ["/new", "/sessions", "/models", "/thinking", "/stop", "/compact", "/name", "/kill"]) {
     assert.ok(t.includes(c), `help missing ${c}`);
   }
-  assert.ok(helpText().includes("&lt;text&gt;")); // escaped in HTML mode
+  // blocks tier: the <text> placeholder is RAW data inside the bold entity — nothing to escape
+  const nameLine = helpBlocks().find((b) => b.type === "paragraph" && JSON.stringify(b.text).includes("/name"));
+  assert.ok(nameLine, "the /name line exists");
 });
 
 test("dispatch: handler error → ⚠ to chat + TUI notice, never throws", async () => {
@@ -198,4 +201,46 @@ test("pair: persists ownerChatId (the chat survives a restart right after pairin
   const bridge = new SessionBridge(deps);
   await bridge.dispatch({ kind: "pair", chatId: 99, fromId: 42 });
   assert.equal(deps.cfg.ownerChatId, 99);
+});
+
+// ── Task 8: the status card + help land on the blocks tier ──
+
+test("status card: rich blocks (first line plain rendering + code entity on the dir line)", async () => {
+  const pi = new FakePi({ cwd: "/proj", messageCount: 3 });
+  const out = new FakeOut();
+  await new SessionBridge(makeDeps(pi.build(), out, { level: "full" })).dispatch({ kind: "status", chatId: 7 });
+  const rich = out.calls.filter((c) => c.kind === "sendRich");
+  assert.equal(rich.length, 1, "the status card is ONE rich message");
+  const blocks = rich[0]!.blocks!;
+  assert.ok(blocks.length >= 3, "multi-block card");
+  const first = blocks[0]!;
+  assert.equal(first.type, "paragraph");
+  assert.ok(String(first.type === "paragraph" ? first.text : "").includes("Untitled session"), "first line names the session");
+  const dir = blocks[1]!;
+  assert.equal(dir.type, "paragraph");
+  const dirText = dir.type === "paragraph" ? dir.text : [];
+  const dirParts = Array.isArray(dirText) ? dirText : [dirText];
+  const code = dirParts.find((e): e is { type: "code"; text: TgRichText } => !Array.isArray(e) && typeof e !== "string" && e.type === "code");
+  assert.ok(code && code.text === "/proj", "the cwd is a code entity (raw data, unescaped)");
+});
+
+test("help: rich blocks, each line a paragraph with a bold command entity", async () => {
+  const out = new FakeOut();
+  await new SessionBridge(makeDeps(new FakePi().build(), out)).dispatch({ kind: "help", chatId: 7 });
+  const rich = out.calls.filter((c) => c.kind === "sendRich");
+  assert.equal(rich.length, 1, "help is ONE rich message");
+  const blocks = rich[0]!.blocks!;
+  assert.ok(blocks.length >= 15, `one paragraph per line (${blocks.length})`);
+  const cmds: string[] = [];
+  for (const b of blocks) {
+    if (b.type !== "paragraph") continue;
+    const parts = Array.isArray(b.text) ? b.text : [b.text];
+    for (const p of parts) {
+      if (!Array.isArray(p) && typeof p !== "string" && p.type === "bold" && String(p.text).startsWith("/")) cmds.push(String(p.text));
+    }
+  }
+  assert.deepEqual(cmds, [
+    "/status", "/stop", "/compact", "/new", "/sessions", "/name <text>", "/models", "/thinking",
+    "/level_mute", "/level_minimal", "/level_full", "/reload", "/kill", "/help",
+  ]);
 });
