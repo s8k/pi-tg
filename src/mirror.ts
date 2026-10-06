@@ -177,9 +177,10 @@ function tokensSuffix(t?: { input: number; output: number }): string {
 /**
  * One tool log block → blocks: [💭 why] + the call + [pre error].
  * Persistent form: details(⚙ name state → pre json) — collapsed.
- * Draft form (expandTools, 2026-10-08 experiment): the call stays UNcollapsed
- * — a plain ⚙ paragraph + the visible args pre — so the live stream shows
- * what each tool is doing without a tap; the finalized send collapses it.
+ * Draft form (expandTools, owner-confirmed 2026-10-08): the call stays
+ * UNcollapsed — a plain ⚙ paragraph + the visible args pre — so the live
+ * stream shows what each tool is doing without a tap; the finalized send
+ * collapses it.
  * (blocksLen counts the details' inner content either way, so the 8k draft
  * window budget is identical in both forms.)
  */
@@ -211,7 +212,7 @@ export function mirrorBlocks(log: LogBlock[], opts: { tail?: string; bottom: Bot
   // heal (drafts only): md4x closes half-typed emphasis/fence constructs in
   // the in-flight text; persistent sends keep them literal (never "completed")
   const heal = opts.heal ?? false;
-  // expandTools (drafts only, experiment 2026-10-08): tool calls render
+  // expandTools (drafts only, owner-confirmed 2026-10-08): tool calls render
   // uncollapsed in the live stream; the finalized send keeps the details form
   const expandTools = opts.expandTools ?? false;
   const suffix = tokensSuffix(opts.tokens);
@@ -1010,7 +1011,7 @@ export class Mirror {
       bottom: bottom ?? this.currentBottom(),
       tokens: this.runTokens(),
       heal: true, // the live draft parses IN-FLIGHT text — heal half-typed constructs
-      expandTools: true, // experiment (2026-10-08): uncollapsed tool calls in the live stream
+      expandTools: true, // uncollapsed tool calls in the live stream (owner-confirmed 2026-10-08)
     });
   }
 
