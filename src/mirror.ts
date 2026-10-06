@@ -101,7 +101,8 @@ export type BottomLine =
   | { kind: "done" } // clean end: Completed ✔️
   | { kind: "error"; text: string; thinking?: boolean; word?: string } // error end: ⚠️ error: <text> (text pre-escaped; "" → no line); thinking → stream still open (pi may retry): `---` divider + spinner below the ⚠️ line
   | { kind: "aborted" } // stop end: ⚠️ Request was aborted
-  | { kind: "paused" }; // dialog segment (pauseForDialog): '⏸️ Paused — answer the dialog below'
+  | { kind: "paused" } // dialog segment (pauseForDialog): '⏸️ Paused — answer the dialog below'
+  | { kind: "queued" }; // queued-message segment (moveDraftToBottom): '⚡️ Processing queued message…'
 
 /**
  * Render the single mirror message: committed blocks + the in-flight tail
@@ -266,6 +267,8 @@ export function bottomLineText(bottom: BottomLine): string {
       return "⚠️ Request was aborted";
     case "paused":
       return "⏸️ Paused — answer the dialog below"; // the dialog-segment's bottom line (the dialog message follows)
+    case "queued":
+      return "⚡️ Processing queued message…"; // the queued-message segment's bottom line (the fresh draft follows, below it)
   }
 }
 
@@ -461,6 +464,11 @@ export class Mirror {
   // failure notifications (state-change only)
   private draftFailStreak = 0;
   private draftLastFailNotifyAt = 0;
+  // queued-message draft move (moveDraftToBottom)
+  /** User messages seen in the current run — the FIRST is the run's own prompt, every LATER one is queued (steer/follow-up) input pi is delivering now. */
+  private userMsgsSeen = 0;
+  /** A draft move is in flight: the draft pipeline is HELD (no spawn, no send) until the segment send completes, so a stream event cannot re-spawn the draft in its original position before the segment clears it. */
+  private movingDraft = false;
   // settlement: resolves when the current run's finalization (all persistent
   // sends) has fully completed — or when a NEW run starts (a waiter on the
   // old promise must never hang the bridge behind a stale run)
@@ -527,6 +535,7 @@ export class Mirror {
     this.pending.clear(); // a stale in-flight update from a prior run may settle later; it is gen-guarded
     this.draftFailStreak = 0;
     this.draftLastFailNotifyAt = 0;
+    this.userMsgsSeen = 0; // the run's own prompt is its FIRST user message
     // A new run starts: release any waiter left on the previous run's promise
     // (its finalization, if still in flight, can no longer guarantee the
     // ordering the waiter cares about — a new run already intervened).
@@ -605,6 +614,7 @@ export class Mirror {
     this.clearErrorSettle();
     this.draftFailStreak = 0;
     this.draftLastFailNotifyAt = 0;
+    this.userMsgsSeen = 0;
     // A new run is coming: release waiters left on the previous promise and
     // arm a fresh settlement promise (same contract as onAgentStart).
     this.markSettled();
@@ -619,7 +629,22 @@ export class Mirror {
   // ─────────────────────────── message stream ───────────────────────────
 
   onAssistantStart(msg: MirrorMessage): void {
-    if (msg.role !== "assistant" || this.phase !== "work") return;
+    if (this.phase !== "work") return;
+    if (msg.role === "user") {
+      // A user message mid-run is QUEUED input (steer/follow-up) pi is
+      // delivering now — at the turn boundary (after the previous turn's
+      // tool calls finish, before the next LLM call). The run's OWN prompt
+      // is the run's FIRST user message (no move: its draft is fresh). Every
+      // LATER user message is a queued prompt starting to be processed →
+      // move the draft to the bottom of the chat.
+      this.userMsgsSeen++;
+      if (this.userMsgsSeen > 1)
+        void this.moveDraftToBottom().catch((err) =>
+          this.deps.notify?.(`queued-message draft move failed: ${String(err)}`, "error"),
+        );
+      return;
+    }
+    if (msg.role !== "assistant") return;
     this.tail = ""; // a new message's text accumulates from its parts
     this.liveUsage = { input: 0, output: 0 }; // a new message's usage starts over
     // The first send of a new message is not throttled (the throttled-at-t=0
@@ -1040,8 +1065,65 @@ export class Mirror {
     return tailBlocks(foldBlocks(this.content(bottom), this.deps.cfg.codeFoldLines), DRAFT_TAIL_CAP, 480);
   }
 
-  /** Request a single-draft update (latest wins; paced by the shared window). Re-spawns the run's draft when it was retired (dialog pause). */
+  /**
+   * Pi is delivering a QUEUED (steer/follow-up) user message — a new queued
+   * prompt starts being processed mid-run. The live draft keeps its ORIGINAL
+   * position for its lifetime (client-controlled: no position parameter, no
+   * stop-draft method — see pauseForDialog), so left alone it would keep
+   * streaming above the queued message(s) — waaaay above them after several
+   * queued turns. Move it to the bottom with the same mechanics as the
+   * post-dialog re-spawn: finalize the pre-queue part of the run as a silent
+   * persistent segment (blocks + tail + the "⚡️ Processing queued message…"
+   * marker), retire the draft, then re-spawn it — the fresh draft lands BELOW
+   * the segment, i.e., at the bottom of the chat (live-verified 2026-09-27).
+   *
+   * Only a purely working draft moves (endKind undefined) — an error-end
+   * draft has retry-carryover semantics and an ended run is owned by
+   * finalization. The movingDraft gate holds the draft pipeline for the whole
+   * move: the steer arrives at the turn boundary (no stream in flight), but a
+   * stream event that fires before the segment send must not re-spawn the
+   * draft in its ORIGINAL position and leave it there after the segment.
+   */
+  async moveDraftToBottom(): Promise<void> {
+    if (this.phase !== "work" || this.endKind !== undefined) return;
+    if (!this.hasLiveDraft()) return;
+    const chatId = this.deps.getChatId();
+    if (chatId === undefined) return;
+    this.movingDraft = true;
+    const segment = this.content({ kind: "queued" }); // blocks + tail + marker
+    this.log = [];
+    this.tail = "";
+    this.draftId = 0; // retire — the fresh draft goes out AFTER the segment
+    this.pending.clear();
+    this.forceNext = true; // the first post-move draft send breaks through the stream window
+    this.stopHeartbeat();
+    this.clearErrorSettle();
+    try {
+      // Settle the draft pipeline BEFORE the segment (same as pauseForDialog):
+      // an update in flight (or waiting on the drain timer) that would land
+      // AFTER the segment revives the draft (same stable id) in its ORIGINAL
+      // position.
+      if (this.drainTimer !== undefined) {
+        this.deps.clearTimer(this.drainTimer);
+        this.drainTimer = undefined;
+      }
+      if (this.inflight) await this.inflight;
+      try {
+        await this.sendPersistent(chatId, segment, { disableNotification: true }); // this send also clears the draft
+      } catch {
+        // best effort — the run continues regardless; if the segment failed
+        // after all retries the old draft survives (the next update updates
+        // it in place until the ~30 s ephemeral expiry)
+      }
+    } finally {
+      this.movingDraft = false;
+      this.requestUpdate(); // fresh spinner draft — BELOW the segment (the bottom of the chat)
+    }
+  }
+
+  /** Request a single-draft update (latest wins; paced by the shared window). Re-spawns the run's draft when it was retired (dialog pause / queued-message move). */
   private requestUpdate(): void {
+    if (this.movingDraft) return; // a segment send is in flight — the fresh draft goes out after it
     if (!this.ensureDraft()) return;
     this.requestDraftUpdate(this.draftId, this.draftContent(), true);
   }
@@ -1123,6 +1205,7 @@ export class Mirror {
   private requestDraftUpdate(draftId: number, content: TgBlock[], canStop: boolean): void {
     if (this.deps.cfg.level === "mute" || this.phase !== "work") return;
     if (this.deps.getChatId() === undefined) return;
+    if (this.movingDraft) return; // a segment send is in flight — the fresh draft goes out after it
     this.pending.set(draftId, { content, canStop, run: this.runSeq });
     if (this.deps.now() < this.nextDraftAt && !this.forceNext) {
       this.armDrain();
