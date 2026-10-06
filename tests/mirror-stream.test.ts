@@ -90,6 +90,37 @@ test("textless candidates never trigger a draft update", async () => {
   assert.deepEqual(draftIds(h), [1]);
 });
 
+test("draft shows tool calls UNcollapsed (⚙ line + visible args pre); the finalized send collapses them (2026-10-08 experiment)", async () => {
+  const h = makeMirrorDeps({ streamEditMs: 0 });
+  const m = new Mirror(h.deps);
+  m.onAgentStart();
+  const toolMsg = {
+    role: "assistant" as const,
+    content: [
+      { type: "thinking" as const, thinking: "reading the file" },
+      { type: "toolCall" as const, id: "c1", name: "read", arguments: { path: "src/app.ts" } },
+    ],
+  };
+  m.onAssistantStart(toolMsg);
+  await tick();
+  // tool blocks enter the log at message_end (the commit) — the draft shows
+  // them from then on, while the tool runs (state "…")
+  await m.onAssistantEnd(toolMsg);
+  await tick();
+  const draft = draftCalls(h).at(-1)!;
+  const db = draft.blocks ?? [];
+  assert.ok(!db.some((b) => b.type === "details"), "no collapsible container in the live draft");
+  assert.ok(db.some((b) => b.type === "pre" && b.text.includes("src/app.ts")), "the args are a visible pre in the draft");
+  // finalize: the persistent m1 carries the COLLAPSED details form
+  m.onToolEnd("c1", false, { content: [{ type: "text", text: "ok" }] });
+  m.onAssistantStart(textMsg(""));
+  m.onAssistantUpdate(textMsg("Done."));
+  m.onAssistantEnd(textMsg("Done.", { stopReason: "stop" }));
+  await tick();
+  const rich = h.out.calls.filter((c) => c.kind === "sendRich");
+  assert.ok(rich.some((c) => (c.blocks ?? []).some((b) => b.type === "details")), "the finalized log message collapses the tool call");
+});
+
 test("a toolCall mid-stream does not wipe the tail — the text keeps showing until the commit", async () => {
   const h = makeMirrorDeps({ streamEditMs: 0 });
   const m = new Mirror(h.deps);

@@ -57,6 +57,32 @@ test("tool → details(⚙ name state) + pre(json args)", () => {
   assert.equal(pre.language, "json");
 });
 
+test("expandTools (drafts, 2026-10-08 experiment): tool stays UNcollapsed — ⚙ paragraph + visible args pre, no details", () => {
+  const bs = mirrorBlocks(
+    [{ type: "tool", id: "1", name: "bash", argsJson: '{"a":1}', state: "…" }],
+    { bottom: { kind: "done" }, expandTools: true },
+  );
+  assert.equal(bs.length, 3); // ⚙ line + pre(args) + Completed marker
+  assert.equal(bs[0]?.type, "paragraph");
+  if (bs[0]?.type !== "paragraph") return;
+  assert.equal(blocksToPlainText([bs[0]]), "⚙ bash …");
+  assert.equal(bs[1]?.type, "pre");
+  if (bs[1]?.type !== "pre") return;
+  assert.equal(bs[1].text, '{"a":1}');
+  assert.equal(bs[1].language, "json");
+  assert.ok(!bs.some((b) => b.type === "details"), "no collapsible container in the draft form");
+});
+
+test("expandTools with why + error state: 💭 line, ⚙ line, args pre, error pre — all visible", () => {
+  const bs = mirrorBlocks(
+    [{ type: "tool", id: "1", name: "bash", argsJson: "ls", state: "✖", errorText: "boom", why: "check" }],
+    { bottom: { kind: "done" }, expandTools: true },
+  );
+  assert.deepEqual(bs.map((b) => b.type), ["paragraph", "paragraph", "pre", "pre", "paragraph"]);
+  assert.equal(bs[2]?.type === "pre" ? bs[2].text : "", "ls");
+  assert.equal(bs[3]?.type === "pre" ? bs[3].text : "", "boom");
+});
+
 test("tool with why → leading 💭 italic paragraph", () => {
   const bs = mirrorBlocks(
     [{ type: "tool", id: "1", name: "bash", argsJson: "{}", state: "…", why: "checking" }],

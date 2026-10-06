@@ -174,16 +174,29 @@ function tokensSuffix(t?: { input: number; output: number }): string {
   return i > 0 || o > 0 ? ` ↑${fmtTokens(i)} ↓${fmtTokens(o)}` : "";
 }
 
-/** One tool log block → blocks: [💭 why] + details(⚙ name state → pre json) [+ pre error]. */
-function toolBlocks(b: Extract<LogBlock, { type: "tool" }>): TgBlock[] {
+/**
+ * One tool log block → blocks: [💭 why] + the call + [pre error].
+ * Persistent form: details(⚙ name state → pre json) — collapsed.
+ * Draft form (expandTools, 2026-10-08 experiment): the call stays UNcollapsed
+ * — a plain ⚙ paragraph + the visible args pre — so the live stream shows
+ * what each tool is doing without a tap; the finalized send collapses it.
+ * (blocksLen counts the details' inner content either way, so the 8k draft
+ * window budget is identical in both forms.)
+ */
+function toolBlocks(b: Extract<LogBlock, { type: "tool" }>, expandTools: boolean): TgBlock[] {
   const out: TgBlock[] = [];
   if (b.why) out.push({ type: "paragraph", text: [`💭 `, { type: "italic", text: `"${b.why}"` }] });
-  out.push({
-    type: "details",
-    summary: `⚙ ${b.name} ${b.state}`,
-    blocks: [{ type: "pre", text: b.argsJson, language: "json" }],
-    is_open: false,
-  });
+  if (expandTools) {
+    out.push({ type: "paragraph", text: `⚙ ${b.name} ${b.state}` });
+    out.push({ type: "pre", text: b.argsJson, language: "json" });
+  } else {
+    out.push({
+      type: "details",
+      summary: `⚙ ${b.name} ${b.state}`,
+      blocks: [{ type: "pre", text: b.argsJson, language: "json" }],
+      is_open: false,
+    });
+  }
   if (b.state === "✖" && b.errorText) out.push({ type: "pre", text: b.errorText });
   return out;
 }
@@ -194,17 +207,20 @@ function toolBlocks(b: Extract<LogBlock, { type: "tool" }>): TgBlock[] {
  * `thinking` block stays — it is draft-only) and persistent sends (the
  * caller strips `thinking` + the NBSP gap before sending).
  */
-export function mirrorBlocks(log: LogBlock[], opts: { tail?: string; bottom: BottomLine; tokens?: { input: number; output: number }; heal?: boolean }): TgBlock[] {
+export function mirrorBlocks(log: LogBlock[], opts: { tail?: string; bottom: BottomLine; tokens?: { input: number; output: number }; heal?: boolean; expandTools?: boolean }): TgBlock[] {
   // heal (drafts only): md4x closes half-typed emphasis/fence constructs in
   // the in-flight text; persistent sends keep them literal (never "completed")
   const heal = opts.heal ?? false;
+  // expandTools (drafts only, experiment 2026-10-08): tool calls render
+  // uncollapsed in the live stream; the finalized send keeps the details form
+  const expandTools = opts.expandTools ?? false;
   const suffix = tokensSuffix(opts.tokens);
   const tail = opts.tail && opts.tail.trim() ? mdToBlocks(opts.tail, { heal }) : [];
   const bottom = opts.bottom;
   const parts: TgBlock[] = [];
   const bottomText = bottomLineText(bottom);
   log.forEach((b, i) => {
-    if (b.type === "tool") parts.push(...toolBlocks(b));
+    if (b.type === "tool") parts.push(...toolBlocks(b, expandTools));
     // narration is LLM text → full markdown conversion (plan spec: "narration →
     // mdToBlocks(text)"). prompt/agentError are short bot strings → raw paragraph.
     else if (b.type === "narration") parts.push(...mdToBlocks(b.text, { heal }));
@@ -994,6 +1010,7 @@ export class Mirror {
       bottom: bottom ?? this.currentBottom(),
       tokens: this.runTokens(),
       heal: true, // the live draft parses IN-FLIGHT text — heal half-typed constructs
+      expandTools: true, // experiment (2026-10-08): uncollapsed tool calls in the live stream
     });
   }
 
