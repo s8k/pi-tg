@@ -1,6 +1,6 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { chunkText, escapeHtml, extractWhy, RICH_CAP, richUnits, toolArgsJson } from "../src/markdown.ts";
+import { chunkText, escapeHtml, extractWhy, RICH_CAP, DRAFT_TAIL_CAP, richUnits, toolArgsJson } from "../src/markdown.ts";
 
 describe("escape", () => {
   test("escapeHtml: & < >", () => {
@@ -42,9 +42,15 @@ describe("chunking (plain rung)", () => {
   });
 });
 
-test("RICH_CAP: exported number with margin under the documented 32768", () => {
-  assert.equal(RICH_CAP, 32_000);
-  assert.ok(RICH_CAP < 32_768);
+test("message caps: RICH_CAP 16k (persistent), DRAFT_TAIL_CAP 8k (draft tail), both under the 32768 API limit", () => {
+  // Mobile clients re-layout the ENTIRE message on every draft edit and when
+  // rendering chat history — using the full 32k API budget per message is the
+  // worst case for them (live freeze reports, 2026-10-08). The draft tail is
+  // the repeatedly-edited message (lightest); persistent messages are sent
+  // once (heavier is fine, up to 16k).
+  assert.equal(RICH_CAP, 16_000);
+  assert.equal(DRAFT_TAIL_CAP, 8_000);
+  assert.ok(DRAFT_TAIL_CAP < RICH_CAP && RICH_CAP < 32_768);
 });
 
 test("richUnits: paragraph / heading / fence / list / table / blank handling", () => {

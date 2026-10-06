@@ -6,7 +6,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Mirror, type MirrorMessage } from "../src/mirror.ts";
-import type { TgBlock } from "../src/rich-blocks.ts";
+import { blocksLen, type TgBlock } from "../src/rich-blocks.ts";
+import { RICH_CAP, DRAFT_TAIL_CAP } from "../src/markdown.ts";
 import { makeMirrorDeps, tick } from "./mirror-helpers.ts";
 
 type H = ReturnType<typeof makeMirrorDeps>;
@@ -52,6 +53,29 @@ test("the answer text streams into the SAME draft — no second draft is ever cr
   assert.ok(content.startsWith("Hello"), `text on top, got: ${JSON.stringify(content)}`);
   assert.match(content, /\n\w+…$/, "the spinner stays below the streaming text");
   assert.ok((draftCalls(h).at(-1)?.blocks ?? []).some((b) => b.type === "thinking"), "the last block is the thinking spinner");
+});
+
+test("the draft tail is capped at DRAFT_TAIL_CAP (8k), the persistent commit at RICH_CAP (16k) — mobile re-render cost (2026-10-08)", async () => {
+  const h = makeMirrorDeps({ streamEditMs: 0 });
+  const m = new Mirror(h.deps);
+  m.onAgentStart();
+  // ~12k of plain text: above the 8k draft-tail cap, below the 16k persistent cap
+  const big = "word ".repeat(2_400).trim(); // 11_996 chars
+  assert.ok(big.length > DRAFT_TAIL_CAP && big.length <= RICH_CAP);
+  m.onAssistantStart(textMsg(""));
+  m.onAssistantUpdate(textMsg(big));
+  await tick();
+  const draft = draftCalls(h).at(-1)!;
+  const dLen = blocksLen(draft.blocks ?? []);
+  assert.ok(dLen <= DRAFT_TAIL_CAP, `draft tail within ${DRAFT_TAIL_CAP}, got ${dLen}`);
+  assert.ok((draft.blocks ?? []).some((b) => b.type === "paragraph" && b.text === "⋯"), "truncation marker present");
+  // the same text, committed persistently, fits ONE message (16k) — no chunking
+  m.onAssistantEnd(textMsg(big, { stopReason: "stop" }));
+  await tick();
+  const rich = h.out.calls.filter((c) => c.kind === "sendRich");
+  const answer = rich.find((c) => c.text === big);
+  assert.ok(answer, "the full 12k text committed as a single persistent send");
+  assert.ok(blocksLen(answer.blocks ?? []) <= RICH_CAP);
 });
 
 test("textless candidates never trigger a draft update", async () => {

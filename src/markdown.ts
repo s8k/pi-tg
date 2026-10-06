@@ -81,9 +81,20 @@ const DETAILS_OPEN_RE = /^\s*<details>/i;
 const DETAILS_CLOSE_RE = /^\s*<\/details>/i;
 
 /**
- * Internal rich-message cap (documented: 32768 UTF-8 chars; margin pending Task 0 spike).
+ * Internal rich-message cap for PERSISTENT (final) messages. The API limit is
+ * 32768 chars, but mobile clients render the whole message at once — using the
+ * full budget is the worst case for them (live freeze reports, 2026-10-08),
+ * so persistent messages cap at half the limit.
  */
-export const RICH_CAP = 32_000;
+export const RICH_CAP = 16_000;
+
+/**
+ * Cap for the DRAFT tail — the message that is re-sent (re-laid-out by the
+ * client) on every stream tick. Kept smaller than RICH_CAP for the same
+ * mobile-rendering reason; the draft is transient, so losing older tail
+ * content to the ⋯ truncation is fine.
+ */
+export const DRAFT_TAIL_CAP = 8_000;
 
 export type RichUnitType = "fence" | "table" | "heading" | "list" | "blockquote" | "hr" | "details" | "paragraph";
 

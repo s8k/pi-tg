@@ -14,6 +14,7 @@
  */
 
 import { inlineToRichTextV2, mdToBlocksV2 } from "./md4x-mapper.ts";
+import { RICH_CAP } from "./markdown.ts";
 
 /** RichText: plain string | sequence | entity. Recursive, per the live docs. */
 export type TgRichText =
@@ -211,7 +212,7 @@ export function foldBlocks(blocks: TgBlock[], foldLines = 25): TgBlock[] {
  * block (typically `thinking`) is always kept. A single oversized `pre` is
  * hard-cut to its last lines (the draft is a live preview).
  */
-export function tailBlocks(blocks: TgBlock[], capChars = 32_000, capBlocks = 480): TgBlock[] {
+export function tailBlocks(blocks: TgBlock[], capChars = RICH_CAP, capBlocks = 480): TgBlock[] {
   if (blocksLen(blocks) <= capChars && blockCount(blocks) <= capBlocks) return blocks.slice();
   const budget = Math.max(1, capChars - ELLIPSIS.length);
   const keep: TgBlock[] = [];
@@ -264,7 +265,7 @@ export function tailBlocks(blocks: TgBlock[], capChars = 32_000, capBlocks = 480
  *  - details → unwrapped (summary becomes a leading paragraph, inner re-packed)
  *  - anything else → hard character cut (last resort)
  */
-export function chunkBlocks(blocks: TgBlock[], capChars = 32_000, capBlocks = 480): TgBlock[][] {
+export function chunkBlocks(blocks: TgBlock[], capChars = RICH_CAP, capBlocks = 480): TgBlock[][] {
   // reserve the (continued) marker budget for splitting too — a structural
   // piece packed to the full cap would leave no room for the marker in
   // chunks 2+ (the marker rides ON TOP of the piece's content).

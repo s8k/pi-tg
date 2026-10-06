@@ -60,7 +60,7 @@
 import type { Out } from "./session-bridge.ts";
 import type { TelegramState } from "./state.ts";
 import type { OutputLevel, TelegramConfig } from "./config.ts";
-import { RICH_CAP, escapeHtml, toolArgsJson, extractWhy, chunkText, type ToolState } from "./markdown.ts";
+import { RICH_CAP, DRAFT_TAIL_CAP, escapeHtml, toolArgsJson, extractWhy, chunkText, type ToolState } from "./markdown.ts";
 import { mdToBlocks, foldBlocks, tailBlocks, chunkBlocks, blocksToPlainText, blocksLen, blockCount, type TgBlock } from "./rich-blocks.ts";
 import { TgError } from "./telegram-client.ts";
 
@@ -948,7 +948,7 @@ export class Mirror {
     const silence = opts?.disableNotification ? { disableNotification: true } : undefined;
     const { out } = this.deps;
     const folded = foldBlocks(blocks, this.deps.cfg.codeFoldLines);
-    const pieces = blocksLen(folded) <= RICH_CAP && blockCount(folded) <= 480 ? [folded] : chunkBlocks(folded);
+    const pieces = blocksLen(folded) <= RICH_CAP && blockCount(folded) <= 480 ? [folded] : chunkBlocks(folded, RICH_CAP);
     let i = 0;
     try {
       for (; i < pieces.length; i++) await out.sendRich(chatId, pieces[i]!, silence);
@@ -1017,7 +1017,9 @@ export class Mirror {
 
   /** The draft's content: fold long fences, then cap for the ephemeral window (the draft has a hard size limit). */
   private draftContent(bottom?: BottomLine): TgBlock[] {
-    return tailBlocks(foldBlocks(this.content(bottom), this.deps.cfg.codeFoldLines), RICH_CAP, 480);
+    // DRAFT_TAIL_CAP (not RICH_CAP): this message is re-sent every stream tick
+    // and the client re-lays it out each time — keep it light (2026-10-08).
+    return tailBlocks(foldBlocks(this.content(bottom), this.deps.cfg.codeFoldLines), DRAFT_TAIL_CAP, 480);
   }
 
   /** Request a single-draft update (latest wins; paced by the shared window). Re-spawns the run's draft when it was retired (dialog pause). */
