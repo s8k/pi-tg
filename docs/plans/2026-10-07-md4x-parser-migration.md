@@ -1,7 +1,8 @@
 # md4x parser migration
 
-Status: **T1–T9 done; T10 live verification in progress** — branch
+Status: **done** (T1–T10 complete, all live items owner-verified) — branch
 `feat/md4x-parser` (branched from `feat/rich_blocks_migration` @ `9947938`).
+Pending: merge → `feat/rich_blocks_migration`.
 
 ## Context
 
@@ -275,10 +276,11 @@ that the mapper is behaviorally equivalent (modulo 3.1).
 2. **Streaming draft**: a real multi-tool task — the tail heals mid-token
    (no raw `**`/` ``` ` flicker), the committed narration section shows
    formatted markdown (the `3e9ce51` fix), spinner stays last.
-   🔄 IN PROGRESS (2026-10-08): first pass showed two heal rough edges at the
+   ✅ DONE (2026-10-08): first pass showed two heal rough edges at the
    streaming edge (lone `` ` `` → doubled literal; half-typed closing
    `**bold *` literal) — fixed in `608dee1` (`sanitizeDraftTail`, 3.1 #17);
-   owner re-validating on a multi-tool task.
+   owner re-validated on a multi-tool task: "looks good to me now" (no
+   flicker, narration formatted, spinner last).
 3. **Long transcript**: the 1.5 MB session at full level — no OOM, heap
    < 200 MB, per-tick parse+heal < ~100 ms (T9 numbers attach here).
    T9 MEASURED (2026-10-07, this machine): 1.5 MB mixed doc → 130 ms
@@ -304,13 +306,13 @@ that the mapper is behaviorally equivalent (modulo 3.1).
 
 ### 4.3 Exit criteria
 
-- [ ] `md4x` pinned in package.json; T1 import smoke on the bot's machine
-- [ ] T2 spike results recorded in this doc (open items resolved)
-- [ ] 532+ tests green (amendments only per 3.1, each cited), tsc clean
-- [ ] old parser code deleted (T8); no dead imports
-- [ ] T9 perf numbers recorded
-- [ ] live checklist items 1–4 owner-verified (5–6 if triggered)
-- [ ] this doc's status → done; merge plan: `feat/md4x-parser` →
+- [x] `md4x` pinned in package.json; T1 import smoke on the bot's machine
+- [x] T2 spike results recorded in this doc (open items resolved)
+- [x] 589 tests green (amendments only per 3.1, each cited), tsc clean
+- [x] old parser code deleted (T8); no dead imports
+- [x] T9 perf numbers recorded
+- [x] live checklist items 1–4 owner-verified (5–6 if triggered)
+- [x] this doc's status → done; merge plan: `feat/md4x-parser` →
       `feat/rich_blocks_migration` (or → `main` once that branch merges)
 
 ### 4.4 T2 spike results (2026-10-07, md4x 0.0.30) — all open items resolved
