@@ -41,6 +41,19 @@
  * (2026-09-03 flow revision: the old two-draft log/slot design collapsed
  * into one message.)
  *
+ * Queued (steer/follow-up) messages, 2026-10-12: delivered MID-run (the
+ * draft is working) → the pre-queue work is segmented as a persistent
+ * message and the draft re-spawned at the BOTTOM of the chat
+ * (moveDraftToBottom). Delivered AFTER the confirming message (the segment
+ * is already finalized — phase "finalized") → pi STILL injects the message
+ * inside the same agent run (agent-loop polls getSteeringMessages after the
+ * turn; agent_end fires only after the continuation — NO new agent_start
+ * comes), so the mirror RE-ARMS as a fresh run segment (the user branch of
+ * onAssistantStart → rearmForQueuedContinuation): fresh log, fresh usage,
+ * fresh draft below the segment's final messages. Without the re-arm the
+ * continuation is invisible in Telegram (no draft, no final message) while
+ * the TUI shows it working (field report 2026-10-12).
+ *
  * Draft sending is paced and self-limiting (Bot API allows ~1 msg/s per chat
  * and a 429 must never cascade into a request flood):
  *  - at most ONE draft call in flight; later updates
@@ -469,6 +482,8 @@ export class Mirror {
   private userMsgsSeen = 0;
   /** A draft move is in flight: the draft pipeline is HELD (no spawn, no send) until the segment send completes, so a stream event cannot re-spawn the draft in its original position before the segment clears it. */
   private movingDraft = false;
+  /** agent_settled arrived while the mirror was already finalized — the whole stream is over. A queued-continuation re-arm must then NOT spawn a draft (nothing left to mirror — a stray spinner would heartbeat forever). Reset at every new run (onAgentStart / onPromptAccepted). */
+  private streamEndedWhileFinalized = false;
   // settlement: resolves when the current run's finalization (all persistent
   // sends) has fully completed — or when a NEW run starts (a waiter on the
   // old promise must never hang the bridge behind a stale run)
@@ -536,6 +551,7 @@ export class Mirror {
     this.draftFailStreak = 0;
     this.draftLastFailNotifyAt = 0;
     this.userMsgsSeen = 0; // the run's own prompt is its FIRST user message
+    this.streamEndedWhileFinalized = false;
     // A new run starts: release any waiter left on the previous run's promise
     // (its finalization, if still in flight, can no longer guarantee the
     // ordering the waiter cares about — a new run already intervened).
@@ -615,6 +631,7 @@ export class Mirror {
     this.draftFailStreak = 0;
     this.draftLastFailNotifyAt = 0;
     this.userMsgsSeen = 0;
+    this.streamEndedWhileFinalized = false;
     // A new run is coming: release waiters left on the previous promise and
     // arm a fresh settlement promise (same contract as onAgentStart).
     this.markSettled();
@@ -629,22 +646,35 @@ export class Mirror {
   // ─────────────────────────── message stream ───────────────────────────
 
   onAssistantStart(msg: MirrorMessage): void {
-    if (this.phase !== "work") return;
     if (msg.role === "user") {
-      // A user message mid-run is QUEUED input (steer/follow-up) pi is
-      // delivering now — at the turn boundary (after the previous turn's
-      // tool calls finish, before the next LLM call). The run's OWN prompt
-      // is the run's FIRST user message (no move: its draft is fresh). Every
-      // LATER user message is a queued prompt starting to be processed →
-      // move the draft to the bottom of the chat.
-      this.userMsgsSeen++;
-      if (this.userMsgsSeen > 1)
-        void this.moveDraftToBottom().catch((err) =>
-          this.deps.notify?.(`queued-message draft move failed: ${String(err)}`, "error"),
+      if (this.phase === "work") {
+        // A user message mid-run is QUEUED input (steer/follow-up) pi is
+        // delivering now — at the turn boundary (after the previous turn's
+        // tool calls finish, before the next LLM call). The run's OWN prompt
+        // is the run's FIRST user message (no move: its draft is fresh).
+        // Every LATER user message is a queued prompt starting to be
+        // processed → move the draft to the bottom of the chat.
+        this.userMsgsSeen++;
+        if (this.userMsgsSeen > 1)
+          void this.moveDraftToBottom().catch((err) =>
+            this.deps.notify?.(`queued-message draft move failed: ${String(err)}`, "error"),
+          );
+      } else {
+        // A queued prompt delivered to an ALREADY-FINALIZED run: pi consumes
+        // steering/follow-up messages INSIDE the same agent run (agent-loop
+        // polls getSteeringMessages after the turn and injects the message
+        // with message_start/message_end — NO new agent_start comes;
+        // agent_end fires only after the continuation). Without a re-arm
+        // the continuation would be invisible in Telegram (no draft, no
+        // final message) while the TUI shows it working (field report
+        // 2026-10-12).
+        void this.rearmForQueuedContinuation().catch((err) =>
+          this.deps.notify?.(`queued-continuation re-arm failed: ${String(err)}`, "error"),
         );
+      }
       return;
     }
-    if (msg.role !== "assistant") return;
+    if (msg.role !== "assistant" || this.phase !== "work") return;
     this.tail = ""; // a new message's text accumulates from its parts
     this.liveUsage = { input: 0, output: 0 }; // a new message's usage starts over
     // The first send of a new message is not throttled (the throttled-at-t=0
@@ -899,7 +929,14 @@ export class Mirror {
    * pi flush threw before the finally emitted it).
    */
   async onAgentSettled(): Promise<void> {
-    if (this.phase !== "work") return; // already finalized — one-way switch
+    if (this.phase !== "work") {
+      // The stream ended while the mirror was already finalized (the normal
+      // clean/stop end, or a queued continuation that was never re-armed in
+      // time) — remember it: a late re-arm must not spawn a stray spinner
+      // draft for a stream that is over (it would heartbeat forever).
+      this.streamEndedWhileFinalized = true;
+      return;
+    }
     if (this.endKind === undefined) this.endKind = "stop"; // e.g. the run produced no assistant message
     await this.finalize();
   }
@@ -1119,6 +1156,31 @@ export class Mirror {
       this.movingDraft = false;
       this.requestUpdate(); // fresh spinner draft — BELOW the segment (the bottom of the chat)
     }
+  }
+
+  /**
+   * Re-arm the mirror for a QUEUED continuation delivered to an already-
+   * finalized run (the user branch of onAssistantStart). Waits for the
+   * previous segment's settlement FIRST — its final messages must land
+   * BEFORE the continuation's draft: any message sent to the chat clears
+   * the ephemeral draft, and the chronology must stay (segment's final
+   * messages, then the continuation's draft below them). Then re-arms
+   * exactly like a new run (onAgentStart with phase "finalized": no retry
+   * carry-over — the previous segment is fully finalized; fresh log, fresh
+   * usage, fresh draft below the final messages). userMsgsSeen = 1: THIS
+   * delivered message is the new segment's own prompt (a LATER queued
+   * message in the continuation moves the draft, as usual). Skipped when
+   * the stream already ended (agent_settled arrived while finalized — the
+   * continuation's content is over; a re-arm would spawn a stray spinner
+   * draft that heartbeats forever).
+   */
+  private async rearmForQueuedContinuation(): Promise<void> {
+    if (this.settledPromise === undefined) return; // no run has ever started — nothing to continue
+    await this.whenSettled(); // the previous segment's final messages land first
+    if (this.phase !== "finalized") return; // a new run intervened meanwhile
+    if (this.streamEndedWhileFinalized) return; // the whole stream is over — nothing left to mirror
+    this.onAgentStart();
+    this.userMsgsSeen = 1;
   }
 
   /** Request a single-draft update (latest wins; paced by the shared window). Re-spawns the run's draft when it was retired (dialog pause / queued-message move). */

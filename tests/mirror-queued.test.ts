@@ -167,3 +167,95 @@ test("no move for an error-end run — the draft carries retry-carryover semanti
   await tick();
   assert.equal(h.out.calls.length, before, "no segment for an error-end draft");
 });
+
+// ── re-arm (2026-10-12 field report): a steer delivered AFTER the confirming
+// message ends the mirror's segment (phase → "finalized" at message_end) but pi
+// injects it INSIDE THE SAME agent run (agent-loop polls getSteeringMessages
+// after the turn; agent_end fires only after the continuation) — NO new
+// agent_start comes. Without a re-arm the continuation is invisible in
+// Telegram: no draft, no final message, while the TUI shows it working.
+test("a steer delivered AFTER a clean finalize → the continuation is re-armed: draft + final messages (no new agent_start)", async () => {
+  const h = makeMirrorDeps({ streamEditMs: 0 });
+  const m = new Mirror(h.deps);
+  m.onAgentStart();
+  m.onAssistantStart(userMsg("initial"));
+  m.onAssistantStart(textMsg(""));
+  m.onAssistantUpdate(textMsg("first answer"));
+  await m.onAssistantEnd(textMsg("first answer", { stopReason: "stop" })); // clean confirm → m1 + m2
+  await tick();
+  assert.equal(h.out.calls.filter((c) => c.kind === "sendRich").length, 2, "segment 1: m1 + m2 posted");
+  const before = h.out.calls.length;
+
+  // the queued steer is delivered to the ALREADY-FINALIZED run
+  m.onAssistantStart(userMsg("queued"));
+  await tick(); // the re-arm (waits for the settled segment) runs
+
+  m.onAssistantStart(textMsg(""));
+  m.onAssistantUpdate(textMsg("second answer"));
+  await m.onAssistantEnd(textMsg("second answer", { stopReason: "stop" }));
+  await tick();
+
+  const after = h.out.calls.slice(before);
+  assert.ok(after.some((c) => c.kind === "sendDraft"), "the continuation got a draft");
+  const rich = after.filter((c) => c.kind === "sendRich");
+  assert.equal(rich.length, 2, "the continuation's m1 + m2 were posted");
+  assert.ok((rich.at(-1)?.text ?? "").includes("second answer"), "m2 is the second answer");
+  assert.ok(!(rich.at(-1)?.text ?? "").includes("first answer"), "no duplication of segment 1");
+  assert.ok((draftCalls(h).at(-1)?.text ?? "").includes("second answer"), "the draft streamed the continuation");
+});
+
+test("re-arm WAITS for the previous segment's final messages — its draft must land AFTER them (a late m2 would clear the ephemeral draft)", async () => {
+  const h = makeMirrorDeps({ streamEditMs: 0 });
+  const m = new Mirror(h.deps);
+  m.onAgentStart();
+  m.onAssistantStart(userMsg("initial"));
+  m.onAssistantStart(textMsg(""));
+  m.onAssistantUpdate(textMsg("first answer"));
+  // Park segment 1's persistent sends (m1 work log, m2 answer)
+  const releases: Array<() => void> = [];
+  const realSendRich = h.out.sendRich;
+  h.out.sendRich = async (chatId: number, blocks: TgBlock[], opts?: { disableNotification?: boolean }) => {
+    await new Promise<void>((r) => releases.push(r));
+    return realSendRich(chatId, blocks, opts);
+  };
+  void m.onAssistantEnd(textMsg("first answer", { stopReason: "stop" })); // finalize starts, m1 parked
+  await tick();
+
+  // the steer is delivered while m1/m2 are still in flight
+  m.onAssistantStart(userMsg("queued"));
+  await tick();
+  const draftsAtSteer = draftCalls(h).length;
+  releases[0]?.(); // m1 delivered → m2 starts (parked)
+  await tick();
+  assert.equal(draftCalls(h).length, draftsAtSteer, "no draft spawned while the segment's final messages are in flight");
+  releases[1]?.(); // m2 delivered → settlement → the re-arm may spawn
+  await tick();
+  await tick();
+
+  const all = h.out.calls;
+  const lastRich = all.map((c) => c.kind).lastIndexOf("sendRich");
+  const lastDraft = all.map((c) => c.kind).lastIndexOf("sendDraft");
+  assert.ok(lastDraft > lastRich, "the continuation's draft lands AFTER segment 1's final messages (bottom of the chat)");
+});
+
+test("re-arm is SKIPPED when the stream already ended (agent_settled arrived while finalized) — no stray spinner draft; the next run still works", async () => {
+  const h = makeMirrorDeps({ streamEditMs: 0 });
+  const m = new Mirror(h.deps);
+  m.onAgentStart();
+  m.onAssistantStart(userMsg("initial"));
+  m.onAssistantStart(textMsg(""));
+  m.onAssistantUpdate(textMsg("answer"));
+  await m.onAssistantEnd(textMsg("answer", { stopReason: "stop" }));
+  await m.onAgentSettled(); // the whole stream is over
+  await tick();
+  const before = h.out.calls.length;
+  m.onAssistantStart(userMsg("late")); // a user message that arrives after settlement
+  await tick();
+  await tick();
+  assert.equal(h.out.calls.length, before, "no re-arm, no stray spinner draft");
+
+  // the NEXT real run must work normally (the settled flag is reset)
+  m.onPromptAccepted();
+  await tick();
+  assert.ok(draftCalls(h).length > 0, "the next run's draft spawns");
+});
