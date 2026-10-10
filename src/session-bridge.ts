@@ -10,6 +10,7 @@ import { mdToBlocks, type TgBlock, type TgRichText } from "./rich-blocks.ts";
 import { formatGpuLines, type GpuStats } from "./gpu.ts";
 import { COMPACT_CANCELLED_MSG } from "./compact.ts";
 import { AUTO_COMPACT_STATUS, AUTO_COMPACT_DONE_TEXT, fmtTokens } from "./mirror.ts";
+import { mergeCommands, dispatchFor, actionForDecision, cardText, PICKER_BUTTON } from "./pi-commands.ts";
 
 export interface PiModelInfo {
   model: PiModel;
@@ -42,7 +43,7 @@ export interface TelegramPi {
   newSession(): void; // triggers instance replacement
   switchSession(path: string): void; // triggers instance replacement
   waitForIdle(): Promise<void>;
-  compact(onDone: (ok: boolean, detail?: string) => void): void;
+  compact(onDone: (ok: boolean, detail?: string) => void, instructions?: string): void; // instructions → pi's customInstructions (inline picker /compact <text>)
   /**
    * Hot-reload pi's extensions/skills/prompts/themes/context files (pi's
    * ctx.reload()). Fire-and-forget: pi replaces the extension runtime, so this
@@ -68,6 +69,10 @@ export interface TelegramPi {
   currentSessionPath(): string;
   notifyUi(text: string, level?: "info" | "warning" | "error"): void;
   shutdown(): void;
+  /** Live resource commands (pi.getCommands) — inline command picker. */
+  getCommands(): { name: string; description: string; source: "extension" | "prompt" | "skill" }[];
+  /** Run a session command by name (idle only — the bridge checks first). */
+  runCommand(name: string, args: string): void;
 }
 
 /**
@@ -105,6 +110,8 @@ export interface Out {
   editRich(chatId: number, messageId: number, blocks: TgBlock[], opts?: { replyMarkup?: unknown }): Promise<boolean>;
   /** Ephemeral draft (blocks-tier; `thinking` blocks are allowed here — never in persistent sends). The same draftId refreshes in place. keepOnStop keeps the draft when Stop is pressed. */
   sendDraft(chatId: number, draftId: number, blocks: TgBlock[], canStop?: boolean, keepOnStop?: boolean): Promise<boolean>;
+  /** Stamps the auto-sent inline picker card (its inline_message_id). false = failed (not fatal). */
+  editInline(inlineMessageId: string, text: string): Promise<boolean>;
 }
 
 export interface BridgeDeps {
@@ -169,6 +176,7 @@ export function helpBlocks(): TgBlock[] {
     cmd("/reload", "hot-reload extensions & resources (idle only)"),
     cmd("/kill", "shut down pi"),
     cmd("/help", "this text"),
+    helpPara([{ type: "bold", text: "⌨️ Pi commands" }, " — the button below: browse & run ANY pi session command (built-ins, extensions, templates, skills)"]),
   ];
 }
 
@@ -204,6 +212,35 @@ export class SessionBridge {
    */
   private oneShotSeq = 0;
   private oneShot = new Map<string, { chatId: number; messageId: number; blocks: TgBlock[] }>();
+  /**
+   * Inline-picker one-shots: nonce → the chosen command's NAME. The nonce is
+   * minted by index.ts in the answerInlineQuery results (result_id "c<nonce>")
+   * and consumed exactly once on cmdRun (chosen_inline_result tap or the ▶ Run
+   * button) — double taps and stale results execute nothing. Only the name is
+   * stored: the LIVE session table decides behavior at dispatch time (a
+   * command removed before the tap gets the unknown-command reply). Bounded
+   * (Map insertion order: the oldest evicts).
+   */
+  private pendingRuns = new Map<string, string>();
+  private static readonly PENDING_RUNS_CAP = 32;
+
+  /** index.ts (answerInlineQuery): remember a result that may be chosen. */
+  registerRun(nonce: string, name: string): void {
+    this.pendingRuns.set(nonce, name);
+    while (this.pendingRuns.size > SessionBridge.PENDING_RUNS_CAP) {
+      const oldest = this.pendingRuns.keys().next().value;
+      if (oldest === undefined) return;
+      this.pendingRuns.delete(oldest);
+    }
+  }
+
+  /** One-shot consumption — a second call (or an unknown nonce) yields undefined. */
+  consumeRun(nonce: string): string | undefined {
+    const n = this.pendingRuns.get(nonce);
+    if (n === undefined) return undefined;
+    this.pendingRuns.delete(nonce);
+    return n;
+  }
   private compactState: CompactState | undefined;
   private compactDraftSeq = 0;
   private compactHbTimer: ReturnType<typeof setTimeout> | undefined;
@@ -450,8 +487,8 @@ export class SessionBridge {
   }
 
   private async sendCardAndHelp(chatId: number): Promise<void> {
-    await this.deps.out.sendRich(chatId, await this.statusBlocks());
-    await this.deps.out.sendRich(chatId, helpBlocks());
+    await this.deps.out.sendRich(chatId, await this.statusBlocks(), { replyMarkup: PICKER_BUTTON });
+    await this.deps.out.sendRich(chatId, helpBlocks(), { replyMarkup: PICKER_BUTTON });
   }
 
   private async handle(action: TgAction): Promise<void> {
@@ -471,7 +508,7 @@ export class SessionBridge {
         await this.sendCardAndHelp(action.chatId);
         return;
       case "help":
-        await out.sendRich(action.chatId, helpBlocks());
+        await out.sendRich(action.chatId, helpBlocks(), { replyMarkup: PICKER_BUTTON });
         return;
       case "unknown":
         await out.send(action.chatId, `Unknown command ${escapeHtml(action.text)} — see /help`);
@@ -513,7 +550,7 @@ export class SessionBridge {
         return;
       }
       case "status":
-        await out.sendRich(action.chatId, await this.statusBlocks());
+        await out.sendRich(action.chatId, await this.statusBlocks(), { replyMarkup: PICKER_BUTTON });
         return;
       case "stop": {
         const compacting = this.compactState;
@@ -570,7 +607,7 @@ export class SessionBridge {
         if (busy) {
           // FIRST: abort the in-flight run so its persistent error lands before our draft.
           try {
-            pi.compact(onDone);
+            pi.compact(onDone, action.instructions);
             await pi.waitForIdle(); // wrapped in index.ts: also waits for the mirror to finish flushing the aborted run
           } catch (err) {
             fail(err); // e.g. no live pi context — the state must be finalized either way
@@ -595,11 +632,44 @@ export class SessionBridge {
         }
         if (!busy) {
           try {
-            pi.compact(onDone);
+            pi.compact(onDone, action.instructions);
           } catch (err) {
             fail(err);
           }
         }
+        return;
+      }
+      case "cmdRun": {
+        // One-shot: the nonce was minted in answerInlineQuery; consume it or
+        // do nothing (double tap / stale result / foreign tap).
+        const name = this.consumeRun(action.nonce);
+        if (name === undefined) return;
+        await this.runSessionCommand(action.chatId, name, "", action.inlineMessageId);
+        return;
+      }
+      case "cmdSend":
+        // Typed @bot /name args — the user's own message is the echo; no ack.
+        await this.runSessionCommand(action.chatId, action.name, action.args);
+        return;
+      case "cmdTerminal":
+        await out.send(action.chatId, `🖥 /${action.name} is a terminal-only command — run it in the pi TUI.`, { parseMode: null });
+        return;
+      case "importSet": {
+        // /import <path>: import (switch to) an existing session file — the
+        // same rules as the session list (idle only; instance replacement).
+        if (!action.path) {
+          await out.send(action.chatId, "Usage: /import <path-to-session.jsonl>");
+          return;
+        }
+        if (action.path === pi.currentSessionPath()) {
+          await out.send(action.chatId, "Already active.");
+          return;
+        }
+        if (!pi.isIdle()) {
+          await out.send(action.chatId, "Agent is busy — send /stop first.");
+          return;
+        }
+        await this.doSwitch(action.chatId, action.path);
         return;
       }
       case "new": {
@@ -711,6 +781,58 @@ export class SessionBridge {
         // text against a pending text-answer dialog — deliver as its answer.
         this.deps.dialogs?.tgAnswer(action.dialogId, { kind: "text", text: action.text });
         return;
+    }
+  }
+
+  /**
+   * Executes a session command by name (inline picker taps + typed
+   * `@bot /name args`), dispatching on the LIVE session command table:
+   * mapped built-ins reuse the existing TG flows, resource commands go
+   * through pi's prompt() (extension commands execute; templates/skills
+   * expand), terminal-only built-ins get the 🖥 explanation. Unknown names
+   * are NEVER dispatched (safety: only the live table's names are legal).
+   */
+  private async runSessionCommand(chatId: number, name: string, rest: string, inlineMessageId?: string): Promise<void> {
+    const { out, pi } = this.deps;
+    const table = mergeCommands(pi.getCommands());
+    const d = dispatchFor(name, rest, table);
+    if (!d) {
+      await out.send(chatId, `⚠️ Unknown command /${name} — it may have been removed.`, { parseMode: null });
+      return;
+    }
+    if (d.type === "terminal") {
+      await out.send(chatId, `🖥 /${d.name} is a terminal-only command — run it in the pi TUI.`, { parseMode: null });
+      return;
+    }
+    if (d.type === "action") {
+      // Reuse the existing flow (status card, model picker, kill question…).
+      await this.handle(actionForDecision(d, chatId)!);
+      return;
+    }
+    // Resource command — same guards as a text prompt (B6): a manual
+    // compaction in flight swallows prompts, and a busy agent is refused
+    // (the tap has nowhere to queue — plain steer-queueing is for text).
+    if (this.compactState) {
+      await out.send(chatId, "🗜 Compaction already in progress — try again after it finishes");
+      return;
+    }
+    if (!pi.isIdle()) {
+      await out.send(chatId, "⚡️ Agent is busy — send /stop first, then retry.");
+      return;
+    }
+    try {
+      pi.runCommand(d.name, d.args);
+    } catch (err) {
+      await out.send(chatId, `⚠️ /${name}: ${err instanceof Error ? err.message : String(err)}`, { parseMode: null });
+      return;
+    }
+    // Stamp the auto-sent card (chosen_inline_result taps only) — the tap's
+    // visible confirmation. Best effort: the command already ran.
+    if (inlineMessageId) {
+      const entry = table.find((c) => c.name === name);
+      void out
+        .editInline(inlineMessageId, `${cardText(name, entry?.description ?? "")}\n✅`)
+        .catch(() => {});
     }
   }
 

@@ -12,6 +12,7 @@ test("makeOut: send → addSent + persist, default parseMode HTML", async () => 
     sendRichMessage: async () => { throw new Error("unexpected"); },
     editRichMessage: async () => { throw new Error("unexpected"); },
     sendRichMessageDraft: async () => true,
+    editInlineMessageText: async () => true,
   };
   const state = new TelegramState();
   let persists = 0;
@@ -32,6 +33,7 @@ test("makeOut: explicit parseMode null survives; edit/delete passthrough", async
     sendRichMessage: async () => { throw new Error("unexpected"); },
     editRichMessage: async () => { throw new Error("unexpected"); },
     sendRichMessageDraft: async () => true,
+    editInlineMessageText: async () => true,
   };
   const out = makeOut(client, new TelegramState(), async () => {});
   await out.send(7, "plain", { parseMode: null });
@@ -75,6 +77,7 @@ test("makeTelegramPi: sendPrompt now/steer mapping", () => {
     getSessionName: () => undefined,
     setModel: async () => true,
     setThinkingLevel: () => {},
+    getCommands: () => [],
   };
   const t = makeTelegramPi({ pi, getCmdCtx: () => makeFakeCtx(), getSessionCtx: () => undefined, listSessions: async () => [] });
   t.sendPrompt("hi", "now");
@@ -104,6 +107,7 @@ test("makeTelegramPi: setModel scoped-first, registry fallback, unknown → fals
     getSessionName: () => undefined,
     setModel: async (m) => { calledWith.push(m.id); return true; },
     setThinkingLevel: () => {},
+    getCommands: () => [],
   };
   const scopedB = { id: "b", name: "B", provider: "p", reasoning: true, thinkingLevelMap: { xhigh: "9000" } };
   const ctx = makeFakeCtx({ scopedModels: [{ model: scopedB }], modelRegistry: { getAvailable: () => [{ id: "c", name: "C", provider: "p", reasoning: false }, scopedB] } });
@@ -257,6 +261,7 @@ test("makeOut: sendRich → client.sendRichMessage + addSent + persist", async (
     sendRichMessage: async (chatId, rich) => { calls.push(["rich", chatId, rich]); return { message_id: 888 }; },
     editRichMessage: async () => { throw new Error("unexpected"); },
     sendRichMessageDraft: async () => true,
+    editInlineMessageText: async () => true,
   };
   const state = new TelegramState();
   const out = makeOut(client, state, async () => {});
@@ -275,6 +280,7 @@ test("makeOut: sendRich disableNotification → client.sendRichMessage opts (und
     sendRichMessage: async (chatId, rich, opts) => { calls.push(["rich", chatId, rich, opts]); return { message_id: 889 }; },
     editRichMessage: async () => { throw new Error("unexpected"); },
     sendRichMessageDraft: async () => true,
+    editInlineMessageText: async () => true,
   };
   const state = new TelegramState();
   const out = makeOut(client, state, async () => {});
@@ -293,6 +299,7 @@ test("makeOut: sendDraft → passthrough (draftId + canStop + keepOnStop), no ad
     sendRichMessage: async () => { throw new Error("unexpected"); },
     editRichMessage: async () => { throw new Error("unexpected"); },
     sendRichMessageDraft: async (chatId, draftId, rich, canStop, keepOnStop) => { calls.push(["draft", chatId, draftId, rich, canStop, keepOnStop]); return true; },
+    editInlineMessageText: async () => true,
   };
   const state = new TelegramState();
   const out = makeOut(client, state, async () => {});
@@ -700,4 +707,50 @@ test("installUiProxy never throws on hostile ui objects (throwing get / throwing
   assert.doesNotThrow(() => {
     assert.equal(installUiProxy(markerHostile as never, host, (m) => warns.push(m)), true, "the patch is in place");
   });
+});
+
+// ── inline picker: getCommands + runCommand ──
+
+test("makeTelegramPi: getCommands maps pi.getCommands (description defaults to '')", () => {
+  const pi = {
+    getCommands: () => [
+      { name: "tg", description: "Show session card", source: "extension" },
+      { name: "tpl", source: "prompt" },
+    ],
+  } as unknown as import("../src/wiring.ts").PiLike;
+  const t = makeTelegramPi({ pi, getCmdCtx: () => undefined, getSessionCtx: () => undefined, listSessions: async () => [] });
+  assert.deepEqual(t.getCommands(), [
+    { name: "tg", description: "Show session card", source: "extension" },
+    { name: "tpl", description: "", source: "prompt" },
+  ]);
+});
+
+test("makeTelegramPi: getCommands swallows a stale-runtime throw → []", () => {
+  const pi = { getCommands: () => { throw new Error("stale"); } } as unknown as import("../src/wiring.ts").PiLike;
+  const t = makeTelegramPi({ pi, getCmdCtx: () => undefined, getSessionCtx: () => undefined, listSessions: async () => [] });
+  assert.deepEqual(t.getCommands(), []);
+});
+
+test("makeTelegramPi: runCommand dispatches /name [args] with expandPromptTemplates", () => {
+  const sent: Array<{ text: string; opts: unknown }> = [];
+  const pi = {
+    sendUserMessage: (text: string, opts: unknown) => { sent.push({ text, opts }); },
+  } as unknown as import("../src/wiring.ts").PiLike;
+  const t = makeTelegramPi({ pi, getCmdCtx: () => undefined, getSessionCtx: () => undefined, listSessions: async () => [] });
+  t.runCommand("tg", "");
+  t.runCommand("skill:brainstorming", "build it");
+  assert.deepEqual(sent, [
+    { text: "/tg", opts: { expandPromptTemplates: true } },
+    { text: "/skill:brainstorming build it", opts: { expandPromptTemplates: true } },
+  ]);
+});
+
+test("makeTelegramPi: compact passes customInstructions to ctx.compact only when given", () => {
+  let opts: unknown;
+  const ctx = makeFakeCtx({ compact: (o?: unknown) => { opts = o; } });
+  const t = makeTelegramPi({ pi: {} as PiLike, getCmdCtx: () => ctx, getSessionCtx: () => undefined, listSessions: async () => [] });
+  t.compact(() => {});
+  assert.equal((opts as { customInstructions?: string }).customInstructions, undefined);
+  t.compact(() => {}, "keep the tests");
+  assert.equal((opts as { customInstructions?: string }).customInstructions, "keep the tests");
 });

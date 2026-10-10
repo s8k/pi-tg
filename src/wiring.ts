@@ -6,12 +6,21 @@ import type { TgBlock } from "./rich-blocks.ts";
 
 // ── Local structural mirrors of pi 0.84.4 (keeps wiring.ts pi-free & testable) ──
 
+/** Structural mirror of pi's SlashCommandInfo (name is the invocationName). */
+export interface PiSlashCommandInfo {
+  name: string;
+  description?: string;
+  source: "extension" | "prompt" | "skill";
+}
+
 export interface PiLike {
   sendUserMessage(text: string, opts?: { deliverAs?: "steer" | "followUp"; expandPromptTemplates?: boolean }): void;
   setSessionName(name: string): void;
   getSessionName(): string | undefined;
   setModel(model: PiModel): Promise<boolean>;
   setThinkingLevel(level: PiThinkingLevel): void;
+  /** Live resource commands of the current session (pi.getCommands). */
+  getCommands(): PiSlashCommandInfo[];
 }
 
 export interface CtxLike {
@@ -21,7 +30,7 @@ export interface CtxLike {
   isIdle(): boolean;
   abort(): void;
   shutdown(): void;
-  compact(options?: { onComplete?: (result: unknown) => void; onError?: (error: Error) => void }): void;
+  compact(options?: { customInstructions?: string; onComplete?: (result: unknown) => void; onError?: (error: Error) => void }): void;
   getContextUsage(): { tokens: number | null; contextWindow: number; percent: number | null } | undefined;
   model: PiModel | undefined;
   thinkingLevel?: string;
@@ -48,6 +57,8 @@ export interface ClientLike {
   sendRichMessage(chatId: number, rich: { blocks: TgBlock[] }, opts?: { replyToId?: number; disableNotification?: boolean; replyMarkup?: unknown }): Promise<{ message_id: number }>;
   editRichMessage(chatId: number, messageId: number, rich: { blocks: TgBlock[] }, opts?: { replyMarkup?: unknown }): Promise<boolean>;
   sendRichMessageDraft(chatId: number, draftId: number, rich: { blocks: TgBlock[] }, canStop?: boolean, keepOnStop?: boolean): Promise<boolean>;
+  /** Edits an auto-sent inline result card by its inline_message_id (picker stamping). */
+  editInlineMessageText(inlineMessageId: string, text: string): Promise<boolean>;
 }
 
 // ── Out adapter: client + state tracking + persist ──
@@ -75,6 +86,7 @@ export function makeOut(client: ClientLike, state: TelegramState, persist: () =>
       return client.editMessageText(chatId, messageId, text, { parseMode, replyMarkup: opts?.replyMarkup });
     },
     delete: (chatId, messageId) => client.deleteMessage(chatId, messageId),
+    editInline: (inlineMessageId, text) => client.editInlineMessageText(inlineMessageId, text),
   };
 }
 
@@ -145,6 +157,24 @@ export function makeTelegramPi(deps: TelegramPiDeps): TelegramPi {
           : { expandPromptTemplates: true }
       );
     },
+    /**
+     * Run a session command by name (inline picker). pi's prompt() executes
+     * extension commands and expands templates/skills from text — callers
+     * must only pass names from the live table (pi-commands) and only while
+     * idle (see bridge cmdRun/cmdSend). Errors surface synchronously or via
+     * pi's own error handling; the bridge reports the outcome.
+     */
+    runCommand(name, args) {
+      deps.pi.sendUserMessage(args ? `/${name} ${args}` : `/${name}`, { expandPromptTemplates: true });
+    },
+    /** Live resource commands; a stale-runtime throw degrades to []. */
+    getCommands() {
+      try {
+        return deps.pi.getCommands().map((c) => ({ name: c.name, description: c.description ?? "", source: c.source }));
+      } catch {
+        return [];
+      }
+    },
     newSession() {
       const c = requireCtx();
       if (!c.newSession) throw new Error("no active pi context");
@@ -160,8 +190,9 @@ export function makeTelegramPi(deps: TelegramPiDeps): TelegramPi {
       if (!c.waitForIdle) throw new Error("no active pi context");
       await c.waitForIdle();
     },
-    compact(onDone) {
+    compact(onDone, instructions) {
       requireCtx().compact({
+        ...(instructions !== undefined ? { customInstructions: instructions } : {}),
         onComplete: (r) => {
           // Short "before → after tokens" note — NEVER the full summary (it
           // exceeds Telegram's 4096-char limit and the completion message
