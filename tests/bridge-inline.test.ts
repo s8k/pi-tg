@@ -82,7 +82,7 @@ test("cmdRun: with inlineMessageId the auto-sent card gets the ✅ stamp", async
   assert.ok(stamp, "the card is stamped");
   assert.equal(stamp?.inlineMessageId, "inl-1");
   assert.ok(String(stamp?.text).includes("✅"));
-  assert.ok(String(stamp?.text).startsWith("📋 /myext"));
+  assert.equal(String(stamp?.text), "/myext\n✅"); // the card is the bare command
 });
 
 // ── cmdSend (typed @bot /name args) ──

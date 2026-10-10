@@ -829,10 +829,7 @@ export class SessionBridge {
     // Stamp the auto-sent card (chosen_inline_result taps only) — the tap's
     // visible confirmation. Best effort: the command already ran.
     if (inlineMessageId) {
-      const entry = table.find((c) => c.name === name);
-      void out
-        .editInline(inlineMessageId, `${cardText(name, entry?.description ?? "")}\n✅`)
-        .catch(() => {});
+      void out.editInline(inlineMessageId, `${cardText(name)}\n✅`).catch(() => {});
     }
   }
 

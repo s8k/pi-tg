@@ -876,7 +876,8 @@ test("inline picker E2E: inline_query → articles + nonces; chosen_inline_resul
   assert.ok(results.length > 0, "results for the 'qu' query");
   const quit = results.find((r) => r.title === "/quit")!;
   assert.ok(quit, "the /quit built-in is in the results");
-  assert.ok(String(quit.input_message_content.message_text).startsWith("📋 /quit"), "the tap auto-sends the card");
+  assert.equal(quit.input_message_content.message_text, "/quit", "the tap auto-sends the bare command (no emoji, no description)");
+  assert.equal(answer.body.is_personal, true, "results are per-user (no cross-user cache leak)");
   assert.ok(JSON.stringify(quit.reply_markup).includes("cr:"), "the article carries the ▶ Run fallback button");
   assert.ok(/^c[a-z0-9]{1,32}$/.test(quit.id), "the result id is c<nonce> (the one-shot key)");
 
@@ -908,4 +909,5 @@ test("inline picker E2E: inline_query → articles + nonces; chosen_inline_resul
   await waitFor(() => calls.some((c) => c.method === "answerInlineQuery" && c.body.inline_query_id === "iq2"), "the non-owner query is answered");
   const answer2 = calls.find((c) => c.method === "answerInlineQuery" && c.body.inline_query_id === "iq2")!;
   assert.deepEqual(answer2.body.results, [], "non-owner gets zero results");
+  assert.equal(answer2.body.is_personal, true, "the empty answer is per-user too");
 });

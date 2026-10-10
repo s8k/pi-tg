@@ -298,7 +298,7 @@ export default function piTelegram(pi: ExtensionAPI): void {
     const isOwner = cfg.ownerId !== undefined && q.from.id === cfg.ownerId;
     try {
       if (!isOwner) {
-        await client.answerInlineQuery(q.id, []);
+        await client.answerInlineQuery(q.id, [], { isPersonal: true });
         return;
       }
       const table = mergeCommands(piAdapter?.getCommands() ?? []);
@@ -309,7 +309,10 @@ export default function piTelegram(pi: ExtensionAPI): void {
       const base = Date.now().toString(36);
       const results = toInlineResults(filtered, () => `${base}${(n++).toString(36)}`);
       for (let i = 0; i < results.length; i++) bridge?.registerRun(results[i]!.id.slice(1), filtered[i]!.name);
-      await client.answerInlineQuery(q.id, results);
+      // is_personal: the table is THIS session's command menu — a shared
+      // server-side cache (the default) could serve it to a non-owner who
+      // types the same query in any chat, without us ever seeing their query.
+      await client.answerInlineQuery(q.id, results, { isPersonal: true });
     } catch (err) {
       ui(`pi-tg: answerInlineQuery failed: ${String(err)}`, "error");
     }

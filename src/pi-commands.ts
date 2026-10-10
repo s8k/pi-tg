@@ -187,7 +187,6 @@ export const PICKER_BUTTON: { inline_keyboard: { text: string; switch_inline_que
 const MAX_RESULTS = 50;
 const MAX_TITLE = 64;
 const MAX_DESC = 70; // empirical cap on article descriptions
-const MAX_TEXT = 4096;
 
 const SOURCE_TAG: Record<Exclude<SessionCommand["source"], "builtin">, string> = {
   extension: "[ext]",
@@ -206,13 +205,14 @@ export interface InlineArticle {
 
 /**
 /**
- * The auto-sent card text for a chosen command (Flow A) — the exact
- * `message_text` the article carries, so the bridge can stamp it (append ✅)
- * without re-deriving the truncation.
+ * The auto-sent card text for a chosen command (Flow A): the bare
+ * executable command (`/name`) — no emoji, no description. This is what
+ * Telegram auto-sends on a tap, so the chat history reads exactly as if the
+ * command had been typed. The bridge stamps it (appends ✅) via this same
+ * function, so the stamp never re-derives the truncation.
  */
-export function cardText(name: string, description: string): string {
-  const title = `/${name}`.slice(0, MAX_TITLE);
-  return `📋 ${title} — ${description}`.slice(0, MAX_TEXT);
+export function cardText(name: string): string {
+  return `/${name}`.slice(0, MAX_TITLE);
 }
 
 /**
@@ -240,7 +240,7 @@ export function toInlineResults(
       type: "article",
       id: `c${nonce}`,
       title,
-      input_message_content: { message_text: cardText(c.name, c.description) },
+      input_message_content: { message_text: cardText(c.name) },
       reply_markup: { inline_keyboard: [[{ text: "▶ Run", callback_data: `cr:${nonce}` }]] },
     };
     if (desc) r.description = desc;

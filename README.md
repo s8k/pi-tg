@@ -86,7 +86,8 @@ The `/help` and `/status` cards carry a **⌨️ Pi commands** button: pressing
 it opens Telegram's inline search (prefilled with `@bot /`) over the
 session's command table — pi built-ins, extension commands, prompt
 templates and skills (tagged `[ext]` / `[tpl]` / `[skill]`). Tapping a
-result auto-sends a card and executes the command (1 tap): built-ins reuse
+result auto-sends the command itself (e.g. `/mcp`) and executes it (1 tap):
+built-ins reuse
 the TG command paths, resource commands run through pi's command dispatch.
 Terminal-only built-ins (`/tree`, `/login`, … — no extension-API
 equivalent) are NOT listed; typing them still gets a 🖥 explanation. You
@@ -94,8 +95,8 @@ can also just type `@bot /<name> [args]` — the only way to pass arguments.
 
 **One-time setup:** @BotFather → `/mybots` → *Bot Features* → enable
 **Inline feedback**. That delivers the `chosen_inline_result` update the
-1-tap execution needs. Without it, a tap still auto-sends the card — press
-its **▶ Run** button (2 taps, no BotFather change needed).
+1-tap execution needs. Without it, a tap still auto-sends the command —
+press its **▶ Run** button (2 taps, no BotFather change needed).
 
 ## Configuration
 

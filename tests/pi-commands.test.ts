@@ -179,7 +179,7 @@ test("toInlineResults: article shape — id c<nonce> ≤64 bytes, title /name, r
   assert.equal(r.id, "cab12cd");
   assert.ok(Buffer.byteLength(r.id) <= 64);
   assert.equal(r.title, "/compact");
-  assert.equal(r.input_message_content.message_text, "📋 /compact — Compact the context");
+  assert.equal(r.input_message_content.message_text, "/compact");
   assert.ok(r.description && r.description.length <= 70);
 });
 
