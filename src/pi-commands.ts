@@ -205,12 +205,6 @@ export interface InlineArticle {
 }
 
 /**
- * Render (up to 50) session commands as inline-query articles.
- * `makeNonce(name)` must return a UNIQUE nonce per result, ≤61 chars
- * (id = `c<nonce>` ≤ 64 bytes; callback_data = `cr:<nonce>` ≤ 64 bytes).
- * The auto-sent card (`input_message_content`) is the visible echo of a tap;
- * executable commands additionally carry the ▶ Run fallback button.
- */
 /**
  * The auto-sent card text for a chosen command (Flow A) — the exact
  * `message_text` the article carries, so the bridge can stamp it (append ✅)
@@ -221,27 +215,35 @@ export function cardText(name: string, description: string): string {
   return `📋 ${title} — ${description}`.slice(0, MAX_TEXT);
 }
 
+/**
+ * Render (up to 50) session commands as inline-query articles.
+ * TERMINAL-ONLY BUILT-INS ARE NOT LISTED — they are dead ends in the
+ * autocomplete (no extension-API equivalent; a tap could only produce the
+ * 🖥 explanation). The 50-cap applies AFTER that filter. Every listed
+ * result carries the ▶ Run fallback button (the 2-tap path — works
+ * without BotFather's inline feedback).
+ * `makeNonce(name)` must return a UNIQUE nonce per result, ≤61 chars
+ * (id = `c<nonce>` ≤ 64 bytes; callback_data = `cr:<nonce>` ≤ 64 bytes).
+ * The auto-sent card (`input_message_content`) is the visible echo of a tap.
+ */
 export function toInlineResults(
   list: SessionCommand[],
   makeNonce: (name: string) => string,
 ): InlineArticle[] {
-  return list.slice(0, MAX_RESULTS).map((c) => {
+  return list.filter((c) => !c.terminalOnly).slice(0, MAX_RESULTS).map((c) => {
     const nonce = makeNonce(c.name);
     const title = `/${c.name}`.slice(0, MAX_TITLE);
     let desc = c.description;
     if (c.source !== "builtin") desc = `${desc} ${SOURCE_TAG[c.source]}`.trim();
-    if (c.terminalOnly) desc = `${desc} · 🖥 terminal only`.trim();
     desc = desc.slice(0, MAX_DESC);
     const r: InlineArticle = {
       type: "article",
       id: `c${nonce}`,
       title,
       input_message_content: { message_text: cardText(c.name, c.description) },
+      reply_markup: { inline_keyboard: [[{ text: "▶ Run", callback_data: `cr:${nonce}` }]] },
     };
     if (desc) r.description = desc;
-    if (!c.terminalOnly) {
-      r.reply_markup = { inline_keyboard: [[{ text: "▶ Run", callback_data: `cr:${nonce}` }]] };
-    }
     return r;
   });
 }

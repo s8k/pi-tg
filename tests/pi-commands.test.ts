@@ -139,11 +139,31 @@ test("dispatchFor: unknown name → undefined (never dispatch a guess)", () => {
 
 // ── inline result payloads ──
 
-test("toInlineResults: capped at 50 results", () => {
-  const many: SessionCommand[] = Array.from({ length: 80 }, (_, i) => ({
-    name: `cmd${i}`, description: "d", source: "extension" as const, terminalOnly: false,
-  }));
-  assert.equal(toInlineResults(many, (n) => `n${n.length}`).length, 50);
+test("toInlineResults: capped at 50 results (cap applies AFTER the terminal-only filter)", () => {
+  const many: SessionCommand[] = [
+    // 5 terminal-only entries that would push a naive slice past the cap
+    ...Array.from({ length: 5 }, (_, i) => ({
+      name: `term${i}`, description: "d", source: "builtin" as const, terminalOnly: true,
+    })),
+    ...Array.from({ length: 80 }, (_, i) => ({
+      name: `cmd${i}`, description: "d", source: "extension" as const, terminalOnly: false,
+    })),
+  ];
+  const res = toInlineResults(many, (n) => `n${n.length}`);
+  assert.equal(res.length, 50);
+  assert.ok(!res.some((r) => r.title.startsWith("/term")), "no terminal-only in the results");
+});
+
+test("toInlineResults: terminal-only built-ins are NOT listed (dead ends in the autocomplete)", () => {
+  const res = toInlineResults(
+    [
+      { name: "model", description: "Select model", source: "builtin", terminalOnly: false },
+      { name: "tree", description: "Navigate session tree", source: "builtin", terminalOnly: true },
+      { name: "login", description: "Configure provider auth", source: "builtin", terminalOnly: true },
+    ],
+    () => "ab12cd",
+  );
+  assert.deepEqual(res.map((r) => r.title), ["/model"]);
 });
 
 test("toInlineResults: article shape — id c<nonce> ≤64 bytes, title /name, required input_message_content", () => {
@@ -163,29 +183,31 @@ test("toInlineResults: article shape — id c<nonce> ≤64 bytes, title /name, r
   assert.ok(r.description && r.description.length <= 70);
 });
 
-test("toInlineResults: executable results carry the ▶ Run button (cr:<nonce>); terminal-only carry none", () => {
+test("toInlineResults: every listed result carries the ▶ Run button (cr:<nonce>)", () => {
   const res = toInlineResults(
     [
       { name: "model", description: "Select model", source: "builtin", terminalOnly: false },
-      { name: "tree", description: "Navigate tree", source: "builtin", terminalOnly: true },
+      { name: "tg", description: "Show session card", source: "extension", terminalOnly: false },
     ],
     () => "zz99yy",
   );
-  assert.equal(res[0].reply_markup?.inline_keyboard[0][0].callback_data, "cr:zz99yy");
-  assert.ok(res[0].reply_markup?.inline_keyboard[0][0].text.includes("Run"));
-  assert.equal(res[1].reply_markup, undefined);
+  for (const r of res) {
+    assert.equal(r.reply_markup?.inline_keyboard[0][0].callback_data, "cr:zz99yy");
+    assert.ok(r.reply_markup?.inline_keyboard[0][0].text.includes("Run"));
+  }
 });
 
-test("toInlineResults: resource description gets a source tag; terminal-only a 🖥 note", () => {
+test("toInlineResults: resource description gets a source tag (no 🖥 note — those are not listed)", () => {
   const res = toInlineResults(
     [
       { name: "tg", description: "Show session card", source: "extension", terminalOnly: false },
-      { name: "export", description: "Export session", source: "builtin", terminalOnly: true },
+      { name: "my-tpl", description: "Review code", source: "prompt", terminalOnly: false },
     ],
     () => "q1w2e3",
   );
   assert.ok(res[0].description?.includes("[ext]"));
-  assert.ok(res[1].description?.includes("terminal only"));
+  assert.ok(res[1].description?.includes("[tpl]"));
+  assert.ok(!res.some((r) => r.description?.includes("terminal only")));
 });
 
 test("toInlineResults: long names truncate the title to 64 chars, id stays ≤64 bytes", () => {

@@ -15,9 +15,11 @@ run any executable one — via Bot API **inline queries**
 1. **All** session commands are listed. Built-ins are runnable wherever pi's
    extension API offers an equivalent — by mapping them onto the **same
    execution paths pi-tg already uses** (bridge actions / `ctx` operations),
-   exactly like the existing `/new`, `/compact`, `/models`… commands. Built-ins
-   with no extension-API equivalent are listed as "terminal only" (no Run
-   button).
+   exactly like the existing `/new`, `/compact`, `/models`… commands.
+   Built-ins with no extension-API equivalent are **not listed at all**
+   (changed 2026-10-09 after live smoke: they are dead ends in the
+   autocomplete — a tap could only produce the 🖥 explanation; typing one
+   still gets it).
 2. Trigger buttons on the **`/help` and `/status` cards**.
 3. **Flow A (1-tap)**: execution is triggered by the `chosen_inline_result`
    update. A Run button on the auto-sent card stays as a crash-safe fallback
