@@ -181,6 +181,7 @@ test("toCustomResult: id t<nonce>, NO Run button, hint description, message_text
   assert.equal(r.reply_markup, undefined);
   assert.equal(r.title, "/tg serve http://x");
   assert.ok(String(r.description ?? "").toLowerCase().includes("arguments"), "the hint: keep typing arguments/prompt");
+  assert.ok(!String(r.description ?? "").toLowerCase().includes("enter"), "tap is the only reliable send — never promise Enter");
 });
 
 test("toCustomResult: long text → title truncated with a trailing ellipsis, message_text STILL full", () => {

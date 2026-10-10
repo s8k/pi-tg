@@ -286,8 +286,10 @@ export function toInlineResults(
  * shows nothing new, so we ellipsize). */
 const RUNAS_TITLE_LIMIT = 255;
 /** Hint shown while the user is still typing (the command part matches
- * exactly — they can keep typing arguments/prompt to this command). */
-const RUNAS_HINT = "Keep typing arguments or a prompt, then tap or press Enter to send";
+ * exactly — they can keep typing arguments/prompt to this command). Tap is
+ * the only reliable send: clients don't consistently send on Enter while an
+ * inline result is highlighted. */
+const RUNAS_HINT = "Keep typing arguments or a prompt, then tap to send";
 /** Shown instead of the hint when the typed text exceeds the 4096-char
  * message_text limit (the sent text is then truncated to 4096). */
 const RUNAS_OVER_LIMIT = "⚠️ Over the 4096-char limit — the sent text is truncated";
