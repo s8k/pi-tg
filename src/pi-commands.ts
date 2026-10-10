@@ -124,10 +124,11 @@ export function filterCommands(list: SessionCommand[], query: string): SessionCo
  * query contains a space and the part before the first space EXACTLY matches
  * a command name (case-insensitive). `text` is the complete command with
  * arguments, as typed (leading slash normalized to one) — it becomes the
- * article's auto-sent `message_text`, so tapping/Enter posts it to the chat
- * and the router executes it exactly like a typed message.
- * Null when: no space, unknown command, or the text would exceed the
- * 4096-char message limit (never truncate an executable command).
+ * article's auto-sent `message_text`, so tapping posts it to the chat and
+ * the router executes it exactly like a typed message.
+ * Null when: no space, or unknown command. (No length check — the client's
+ * input window caps the typed text at 255 chars, and toCustomResult carries
+ * the at-limit warning.)
  */
 export function customCommandMatch(
   table: SessionCommand[],
@@ -219,7 +220,6 @@ export const PICKER_BUTTON: { inline_keyboard: { text: string; switch_inline_que
 const MAX_RESULTS = 50;
 const MAX_TITLE = 64;
 const MAX_DESC = 70; // empirical cap on article descriptions
-const MAX_TEXT = 4096; // InputMessageText.message_text cap
 
 const SOURCE_TAG: Record<Exclude<SessionCommand["source"], "builtin">, string> = {
   extension: "[ext]",
@@ -302,10 +302,19 @@ const RUNAS_TITLE_LIMIT = 255;
  * exactly — they can keep typing arguments/prompt to this command). Tap is
  * the only reliable send: clients don't consistently send on Enter while an
  * inline result is highlighted. */
+/** Hint shown while the user is still typing (the command part matches
+ * exactly — they can keep typing arguments/prompt to this command). Tap is
+ * the only reliable send: clients don't consistently send on Enter while an
+ * inline result is highlighted. */
 const RUNAS_HINT = "Keep typing arguments or a prompt, then tap to send";
-/** Shown instead of the hint when the typed text exceeds the 4096-char
- * message_text limit (the sent text is then truncated to 4096). */
-const RUNAS_OVER_LIMIT = "⚠️ Over the 4096-char limit — the sent text is truncated";
+/** The client's inline-mode input window caps the typed text at 255 chars —
+ * message_text can never exceed this through the picker, so this is the
+ * practical (and only reachable) length limit for the run-as-typed item. */
+const RUNAS_INPUT_LIMIT = 255;
+/** Shown instead of the hint once the typed text REACHES the 255-char
+ * input cap — the user physically cannot type more, so tell them the
+ * command is cut off by the input window. */
+const RUNAS_AT_LIMIT = "⚠️ 255-char input limit reached — shorten before sending";
 
 /**
  * Render the single "run as typed" result (customCommandMatch). Unlike the
@@ -315,25 +324,27 @@ const RUNAS_OVER_LIMIT = "⚠️ Over the 4096-char limit — the sent text is t
  * command with arguments), which the router handles like a typed message.
  * No ▶ Run button: the tap itself is the execution.
  *
- * title: the typed text, ellipsized at RUNAS_TITLE_LIMIT — the ellipsis
- * REPLACES the last characters (total stays ≤ 255). message_text: ALWAYS the
- * full typed sequence — truncated to 4096 only when unsendable, in which
- * case the description carries the over-limit warning instead of the hint.
+ * message_text: ALWAYS the full typed text — the input window caps it at
+ * RUNAS_INPUT_LIMIT (255), so it is never truncated here. description: the
+ * keep-typing hint, replaced by the at-limit warning once the text reaches
+ * 255 chars (nothing more can be typed). title: the typed text, ellipsized
+ * at RUNAS_TITLE_LIMIT — the ellipsis REPLACES the last characters (kept as
+ * a guard; unreachable while the input cap holds).
  */
 export function toCustomResult(
   match: { entry: SessionCommand; text: string },
   makeNonce: () => string,
 ): InlineArticle {
   const { text } = match;
-  const overLimit = text.length > MAX_TEXT;
+  const atLimit = text.length >= RUNAS_INPUT_LIMIT;
   const title =
     text.length > RUNAS_TITLE_LIMIT ? text.slice(0, RUNAS_TITLE_LIMIT - 1) + "…" : text;
-  const description = (overLimit ? RUNAS_OVER_LIMIT : RUNAS_HINT).slice(0, MAX_DESC);
+  const description = (atLimit ? RUNAS_AT_LIMIT : RUNAS_HINT).slice(0, MAX_DESC);
   return {
     type: "article",
     id: `t${makeNonce()}`,
     title,
     description,
-    input_message_content: { message_text: overLimit ? text.slice(0, MAX_TEXT) : text },
+    input_message_content: { message_text: text },
   };
 }

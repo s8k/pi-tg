@@ -208,24 +208,27 @@ test("toInlineResults: prefix query / no query at all → plain descriptions, no
 test("toCustomResult: long text → title truncated with a trailing ellipsis, message_text STILL full", () => {
   const list = mergeCommands(resources);
   const entry = list.find((c) => c.name === "tg")!;
-  const text = "/tg " + "x".repeat(300); // 305 chars > 255 title limit
+  const text = "/tg " + "x".repeat(300); // 305 chars > 255
   const r = toCustomResult({ entry, text }, () => "abc123");
-  assert.equal(r.input_message_content.message_text, text, "message_text keeps the FULL sequence");
+  assert.equal(r.input_message_content.message_text, text, "message_text keeps the FULL sequence — never truncated");
   assert.ok(r.title.endsWith("…"), "the title ends with an ellipsis (replacing the last characters)");
   assert.ok(r.title.length <= 255, "the title respects the 255 limit");
   assert.equal(r.title, text.slice(0, 254) + "…");
-  assert.ok(String(r.description ?? "").toLowerCase().includes("arguments"), "still the hint (within 4096)");
+  assert.ok(r.description!.includes("255"), "past the input cap → the limit warning, not the hint");
 });
 
-test("toCustomResult: over 4096 → warning description + message_text truncated to 4096", () => {
+test("toCustomResult: the 255-char input cap — at 255 the warning replaces the hint; at 254 the hint stays", () => {
   const list = mergeCommands(resources);
   const entry = list.find((c) => c.name === "tg")!;
-  const text = "/tg " + "x".repeat(4096);
-  const r = toCustomResult({ entry, text }, () => "abc123");
-  assert.equal(r.input_message_content.message_text.length, 4096, "the sendable maximum");
-  assert.ok(r.input_message_content.message_text.startsWith("/tg "), "the command itself survives");
-  assert.ok(r.description!.includes("4096"), "the warning names the limit");
-  assert.ok(!r.description!.toLowerCase().includes("keep typing"), "the hint is replaced by the warning");
+  const atLimit = "/tg " + "x".repeat(251); // exactly 255
+  const justUnder = "/tg " + "x".repeat(250); // exactly 254
+  assert.equal(atLimit.length, 255);
+  const rAt = toCustomResult({ entry, text: atLimit }, () => "abc123");
+  assert.equal(rAt.input_message_content.message_text, atLimit, "message_text is the FULL text at the cap");
+  assert.ok(rAt.description!.includes("255"), "the warning names the 255-char input limit");
+  assert.ok(!rAt.description!.toLowerCase().includes("keep typing"), "the hint is replaced by the warning");
+  const rUnder = toCustomResult({ entry, text: justUnder }, () => "abc124");
+  assert.ok(rUnder.description!.toLowerCase().includes("tap to send"), "just under the cap → still the hint");
 });
 
 // ── dispatch decision ──
