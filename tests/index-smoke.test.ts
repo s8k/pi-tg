@@ -942,4 +942,26 @@ test("inline picker E2E: inline_query → articles + nonces; chosen_inline_resul
   );
   const iq4Fallback = calls.filter((c) => c.method === "answerInlineQuery" && c.body.inline_query_id === "iq4").pop()!;
   assert.deepEqual(iq4Fallback.body.results, [], "the fallback answer is empty");
+
+  // 6) '<command> <args>' → a SINGLE run-as-typed result: the tap auto-sends
+  //    the full typed text, which the router executes (t-id: the
+  //    chosen_inline_result for it is ignored — no double execution)
+  await resolveBatch(7, [
+    { update_id: 25, inline_query: { id: "iq5", from: { id: 123456 }, query: "compact be brief", chat_type: "private" } },
+  ]);
+  await waitFor(() => calls.some((c) => c.method === "answerInlineQuery" && c.body.inline_query_id === "iq5"), "the args query is answered");
+  const answer5 = calls.find((c) => c.method === "answerInlineQuery" && c.body.inline_query_id === "iq5")!;
+  const r5 = answer5.body.results as { id: string; title: string; input_message_content: { message_text: string }; reply_markup?: unknown }[];
+  assert.equal(r5.length, 1, "exactly one result (the run-as-typed entry)");
+  assert.ok(r5[0]!.id.startsWith("t"), "t-id — NOT executed via chosen_inline_result");
+  assert.equal(r5[0]!.input_message_content.message_text, "/compact be brief", "the tap auto-sends the full typed command");
+  assert.equal(r5[0]!.reply_markup, undefined, "no ▶ Run button — the auto-send IS the execution");
+
+  // 7) unknown command + args → empty answer (the spinner clears)
+  await resolveBatch(8, [
+    { update_id: 26, inline_query: { id: "iq6", from: { id: 123456 }, query: "definitely-not-a-command serve x", chat_type: "private" } },
+  ]);
+  await waitFor(() => calls.some((c) => c.method === "answerInlineQuery" && c.body.inline_query_id === "iq6"), "the unknown-args query is answered");
+  const answer6 = calls.find((c) => c.method === "answerInlineQuery" && c.body.inline_query_id === "iq6")!;
+  assert.deepEqual(answer6.body.results, [], "unknown command with args → no results");
 });

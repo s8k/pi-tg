@@ -4,6 +4,8 @@ import {
   BUILTIN_PI_COMMANDS,
   mergeCommands,
   filterCommands,
+  customCommandMatch,
+  toCustomResult,
   dispatchFor,
   toInlineResults,
 } from "../src/pi-commands.ts";
@@ -103,11 +105,74 @@ test("filterCommands: leading slash(es) stripped, name match", () => {
   assert.ok(filterCommands(list, "/mod").some((c) => c.name === "model")); // substring: also scoped-models ("models")
 });
 
-test("filterCommands: case-insensitive match on name or description", () => {
+test("filterCommands: case-insensitive name PREFIX only — description text never matches", () => {
+  // The query is a command being typed after the bot name: "@bot /m" must
+  // return the "/m*" commands — nothing else.
   const list = mergeCommands(resources);
-  assert.ok(filterCommands(list, "PAIR").some((c) => c.name === "tg:pair"));
-  assert.ok(filterCommands(list, "session card").some((c) => c.name === "tg"));
+  assert.ok(filterCommands(list, "model").some((c) => c.name === "model"));
+  // "pair" is a word INSIDE tg:pair, not a prefix of it → no match
+  assert.deepEqual(filterCommands(list, "pair"), []);
+  // "session card" is a description phrase → no match
+  assert.deepEqual(filterCommands(list, "session card"), []);
+  // "m" → every result STARTS with m (no description-substring noise)
+  const ms = filterCommands(list, "m");
+  assert.ok(ms.length > 0);
+  assert.ok(ms.every((c) => c.name.toLowerCase().startsWith("m")));
   assert.deepEqual(filterCommands(list, "zzz-no-match"), []);
+});
+
+test("filterCommands: a query containing a space is not a name search (custom-args mode owns it)", () => {
+  const list = mergeCommands(resources);
+  assert.deepEqual(filterCommands(list, "tg serve x"), []);
+});
+
+test("mergeCommands: duplicate resource names collapse (case-insensitively, incl. against built-ins)", () => {
+  const list = mergeCommands([
+    { name: "tg", description: "a", source: "extension" },
+    { name: "TG", description: "b", source: "extension" },
+    { name: "Model", description: "c", source: "extension" },
+  ]);
+  assert.deepEqual(
+    list.filter((c) => c.name.toLowerCase() === "tg").map((c) => c.description),
+    ["a"],
+    "same-name resources: the first wins, no duplicates",
+  );
+  assert.ok(list.every((c) => c.name !== "Model"), "case-clash with a built-in drops the resource");
+  assert.ok(list.some((c) => c.name === "model" && c.source === "builtin"));
+});
+
+// ── custom-args mode: '<command> <args>' → the single run-as-typed entry ──
+
+test("customCommandMatch: '<command> <args>' → the run-as-typed entry with the full text", () => {
+  const list = mergeCommands(resources);
+  const m = customCommandMatch(list, "/tg serve http://x");
+  assert.ok(m);
+  assert.equal(m.entry.name, "tg");
+  assert.equal(m.text, "/tg serve http://x");
+  // case-insensitive command part (the text keeps the user's casing)
+  assert.equal(customCommandMatch(list, "/TG:PAIR q")?.text, "/TG:PAIR q");
+  // trailing space, no args yet → the bare command
+  assert.equal(customCommandMatch(list, "/tg ")?.text, "/tg");
+  // leading slash(es) stripped before matching
+  assert.equal(customCommandMatch(list, "//compact be brief")?.text, "/compact be brief");
+});
+
+test("customCommandMatch: no space / unknown command / unsendable length → null", () => {
+  const list = mergeCommands(resources);
+  assert.equal(customCommandMatch(list, "tg"), null);
+  assert.equal(customCommandMatch(list, "nope serve x"), null);
+  assert.equal(customCommandMatch(list, "tg " + "a".repeat(4096)), null); // > 4096-char message_text
+});
+
+test("toCustomResult: id t<nonce>, NO Run button, message_text = the full typed command", () => {
+  const list = mergeCommands(resources);
+  const m = customCommandMatch(list, "/tg serve http://x")!;
+  const r = toCustomResult(m, () => "abc123");
+  assert.equal(r.id, "tabc123"); // t-prefix: chosen_inline_result ignores it — the auto-send message executes
+  assert.equal(r.input_message_content.message_text, "/tg serve http://x");
+  assert.equal(r.reply_markup, undefined);
+  assert.equal(r.title, "/tg serve http://x");
+  assert.ok(String(r.description ?? "").includes("[ext]"), "the entry's description + source tag");
 });
 
 // ── dispatch decision ──

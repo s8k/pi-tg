@@ -16,7 +16,7 @@ import { renderQr, qrWidgetFactory, tokenLooksValid, notAuthorizedBlocks } from 
 import { makeOut, makeTelegramPi, ctxIsAlive, wrapWaitForIdle, installUiProxy } from "./src/wiring.ts";
 import { PendingDialogs } from "./src/ui-dialogs.ts";
 import { runTgCompaction } from "./src/compact.ts";
-import { mergeCommands, filterCommands, toInlineResults, dispatchFor, actionForDecision } from "./src/pi-commands.ts";
+import { mergeCommands, filterCommands, customCommandMatch, toInlineResults, toCustomResult, dispatchFor, actionForDecision } from "./src/pi-commands.ts";
 import type { TgInlineQuery } from "./src/telegram-client.ts";
 
 // pi's agent dir honors PI_CODING_AGENT_DIR (tests point it at a temp dir).
@@ -330,6 +330,16 @@ export default function piTelegram(pi: ExtensionAPI): void {
       return;
     }
     const table = mergeCommands(piAdapter?.getCommands() ?? []);
+    // "<command> <args>" while typing arguments → a SINGLE run-as-typed
+    // result: the tap/Enter auto-sends the full text, the router executes it.
+    // t-id: NOT registered in pendingRuns (the chosen update is ignored —
+    // the auto-sent message is the execution, exactly once).
+    const custom = customCommandMatch(table, q.query);
+    if (custom) {
+      const base = Date.now().toString(36);
+      await answer([toCustomResult(custom, () => base + "a")]);
+      return;
+    }
     const filtered = filterCommands(table, q.query);
     // base36 timestamp + per-answer counter: unique ≤10-char nonces
     // (result_id `c<nonce>` and callback `cr:<nonce>` both fit 64 bytes).

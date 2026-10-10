@@ -283,6 +283,9 @@ test("chosen_inline_result: no learned ownerChatId → ignore (nowhere to reply)
 test("chosen_inline_result: malformed result_id → ignore", () => {
   const owner = 5;
   assert.deepEqual(route(chosenUpdate(1, owner, "xabc"), owner, { ownerChatId: 7 }), { kind: "ignore" });
+  // t<nonce> = the run-as-typed card: it executes via its AUTO-SENT message,
+  // so the chosen_inline_result for it must be ignored (no double execution)
+  assert.deepEqual(route(chosenUpdate(2, owner, "tabc123"), owner, { ownerChatId: 7 }), { kind: "ignore" });
   assert.deepEqual(route(chosenUpdate(2, owner, "c" + "A".repeat(20)), owner, { ownerChatId: 7 }), { kind: "ignore" });
   assert.deepEqual(route(chosenUpdate(3, owner, "c"), owner, { ownerChatId: 7 }), { kind: "ignore" });
 });

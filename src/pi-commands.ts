@@ -91,27 +91,59 @@ export function mergeCommands(resources: ResourceCommand[]): SessionCommand[] {
     source: "builtin" as const,
     terminalOnly: !c.map,
   }));
-  const names = new Set(out.map((c) => c.name));
+  // case-insensitive: the command menu is case-insensitive, so "Model"/
+  // "MODEL" are the same command as "model" — never list a name twice
+  const names = new Set(out.map((c) => c.name.toLowerCase()));
   for (const r of resources) {
-    if (names.has(r.name)) continue;
-    names.add(r.name);
+    if (names.has(r.name.toLowerCase())) continue;
+    names.add(r.name.toLowerCase());
     out.push({ name: r.name, description: r.description ?? "", source: r.source, terminalOnly: false });
   }
   return out;
 }
 
 /**
- * Name = case-insensitive PREFIX (command-menu UX; substring would make
- * "cop" match scOPEd-models), description = substring. Leading slash(es)
+ * The query is the COMMAND being typed after the bot name: "@bot /m" must
+ * return the "/m*" commands — case-insensitive name PREFIX only (no
+ * description matching: "m" is a letter inside dozens of descriptions, and
+ * substring names would make "cop" match scOPEd-models). Leading slash(es)
  * are stripped (the prefilled input bar produces queries like `/mod`).
- * Empty query → the full list, same reference.
+ * A query containing a space is NOT a name search — `customCommandMatch`
+ * owns that mode ("<command> <args>"). Empty query → the full list.
  */
 export function filterCommands(list: SessionCommand[], query: string): SessionCommand[] {
   const q = query.replace(/^\/+/, "").trim().toLowerCase();
   if (!q) return list;
-  return list.filter(
-    (c) => c.name.toLowerCase().startsWith(q) || c.description.toLowerCase().includes(q),
-  );
+  if (q.includes(" ")) return [];
+  return list.filter((c) => c.name.toLowerCase().startsWith(q));
+}
+
+/**
+ * The "run as typed" match (requirement: type a command, keep typing its
+ * arguments, and the FULL text shows up as a single result to send): the
+ * query contains a space and the part before the first space EXACTLY matches
+ * a command name (case-insensitive). `text` is the complete command with
+ * arguments, as typed (leading slash normalized to one) — it becomes the
+ * article's auto-sent `message_text`, so tapping/Enter posts it to the chat
+ * and the router executes it exactly like a typed message.
+ * Null when: no space, unknown command, or the text would exceed the
+ * 4096-char message limit (never truncate an executable command).
+ */
+export function customCommandMatch(
+  table: SessionCommand[],
+  query: string,
+): { entry: SessionCommand; text: string } | null {
+  // trimStart only: the TRAILING space is the signal that the user started
+  // typing arguments ("/tg " → the single run-as-typed entry for /tg)
+  const q = query.replace(/^\/+/, "").trimStart();
+  const sp = q.indexOf(" ");
+  if (sp < 0) return null;
+  const name = q.slice(0, sp).toLowerCase();
+  const entry = table.find((c) => c.name.toLowerCase() === name);
+  if (!entry) return null;
+  const text = `/${q}`.trimEnd();
+  if (text.length > MAX_TEXT) return null;
+  return { entry, text };
 }
 
 /** What happens when a session command is chosen (tap or typed). */
@@ -187,6 +219,7 @@ export const PICKER_BUTTON: { inline_keyboard: { text: string; switch_inline_que
 const MAX_RESULTS = 50;
 const MAX_TITLE = 64;
 const MAX_DESC = 70; // empirical cap on article descriptions
+const MAX_TEXT = 4096; // InputMessageText.message_text cap
 
 const SOURCE_TAG: Record<Exclude<SessionCommand["source"], "builtin">, string> = {
   extension: "[ext]",
@@ -246,4 +279,29 @@ export function toInlineResults(
     if (desc) r.description = desc;
     return r;
   });
+}
+
+/**
+ * Render the single "run as typed" result (customCommandMatch). Unlike the
+ * list results: the id is `t<nonce>` — the router's chosen_inline_result
+ * handler only maps `c<nonce>`, so the tap's chosen update is IGNORED and
+ * execution happens exactly once, via the auto-sent `message_text` (the full
+ * command with arguments), which the router handles like a typed message.
+ * No ▶ Run button: the tap itself is the execution.
+ */
+export function toCustomResult(
+  match: { entry: SessionCommand; text: string },
+  makeNonce: () => string,
+): InlineArticle {
+  const { entry, text } = match;
+  let desc = entry.description;
+  if (entry.source !== "builtin") desc = `${desc} ${SOURCE_TAG[entry.source]}`.trim();
+  const r: InlineArticle = {
+    type: "article",
+    id: `t${makeNonce()}`,
+    title: text.slice(0, MAX_TITLE),
+    input_message_content: { message_text: text },
+  };
+  if (desc) r.description = desc.slice(0, MAX_DESC);
+  return r;
 }
