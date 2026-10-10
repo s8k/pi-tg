@@ -116,7 +116,39 @@ test("getUpdates: offset, timeout, allowed_updates", async () => {
   const c = new TelegramClient("T", { fetchImpl: ff.fetchImpl });
   await c.getUpdates(42, 30);
   const body = JSON.parse(String(ff.calls[0].init?.body ?? "{}"));
-  assert.deepEqual(body, { offset: 42, timeout: 30, allowed_updates: ["message", "callback_query", "edited_message", "stopped_message_generation"] });
+  assert.deepEqual(body, { offset: 42, timeout: 30, allowed_updates: ["message", "callback_query", "edited_message", "stopped_message_generation", "inline_query", "chosen_inline_result"] });
+});
+
+test("answerInlineQuery: sends inline_query_id + results (+ cache_time, is_personal)", async () => {
+  const ff = makeFakeFetch(() => ({ status: 200, body: { ok: true, result: true } }));
+  const c = new TelegramClient("T", { fetchImpl: ff.fetchImpl });
+  const results = [{ type: "article", id: "cab12cd", title: "/compact", input_message_content: { message_text: "x" } }];
+  assert.equal(await c.answerInlineQuery("iq-1", results, { cacheTime: 0, isPersonal: true }), true);
+  assert.equal(ff.calls[0].url, "https://api.telegram.org/botT/answerInlineQuery");
+  const body = JSON.parse(String(ff.calls[0].init?.body));
+  assert.deepEqual(body, { inline_query_id: "iq-1", results, cache_time: 0, is_personal: true });
+});
+
+test("answerInlineQuery: empty results (non-owner) — no optional fields", async () => {
+  const ff = makeFakeFetch(() => ({ status: 200, body: { ok: true, result: true } }));
+  const c = new TelegramClient("T", { fetchImpl: ff.fetchImpl });
+  await c.answerInlineQuery("iq-2", [], { isPersonal: true });
+  const body = JSON.parse(String(ff.calls[0].init?.body));
+  assert.deepEqual(body, { inline_query_id: "iq-2", results: [], is_personal: true });
+});
+
+test("editInlineMessageText: edits via inline_message_id; 'not modified' → false", async () => {
+  const ff1 = makeFakeFetch(() => ({ status: 200, body: { ok: true, result: true } }));
+  assert.equal(await new TelegramClient("T", { fetchImpl: ff1.fetchImpl }).editInlineMessageText("inl-1", "✅ done"), true);
+  const body = JSON.parse(String(ff1.calls[0].init?.body));
+  assert.deepEqual(body, { inline_message_id: "inl-1", text: "✅ done" });
+  const ff2 = makeFakeFetch(() => ({ status: 400, body: { ok: false, error_code: 400, description: "Message is not modified" } }));
+  assert.equal(await new TelegramClient("T", { fetchImpl: ff2.fetchImpl }).editInlineMessageText("inl-1", "same"), false);
+});
+
+test("editInlineMessageText: real error → throws TgError", async () => {
+  const ff = makeFakeFetch(() => ({ status: 400, body: { ok: false, error_code: 400, description: "message is too old" } }));
+  await assert.rejects(new TelegramClient("T", { fetchImpl: ff.fetchImpl }).editInlineMessageText("inl-1", "x"), TgError);
 });
 
 async function waitFor(cond: () => boolean, timeoutMs = 2000): Promise<void> {

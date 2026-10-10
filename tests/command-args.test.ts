@@ -92,3 +92,48 @@ test("dialog actions round-trip", () => {
   assert.equal(parseInternal("internal dialogText 42 {\"r\":100}"), null); // missing text
   assert.equal(parseInternal("internal dialogText 42 {\"r\":\"100\",\"t\":\"x\"}"), null); // r must be int
 });
+
+// ── inline command picker actions ──
+
+test("cmdRun: exact format + round-trip (nonce is a plain base36 token)", () => {
+  assert.equal(encodeInternal({ kind: "cmdRun", chatId: 7, nonce: "ab12cd" }), "internal cmdRun 7 ab12cd");
+  assert.deepEqual(parseInternal("internal cmdRun 7 ab12cd"), { kind: "cmdRun", chatId: 7, nonce: "ab12cd" });
+  // optional 2nd token: the inline_message_id of the auto-sent card
+  assert.equal(encodeInternal({ kind: "cmdRun", chatId: 7, nonce: "ab12cd", inlineMessageId: "inl-9" }), "internal cmdRun 7 ab12cd inl-9");
+  assert.deepEqual(parseInternal("internal cmdRun 7 ab12cd inl-9"), { kind: "cmdRun", chatId: 7, nonce: "ab12cd", inlineMessageId: "inl-9" });
+  // malformed: missing nonce, empty, or a third token
+  assert.equal(parseInternal("internal cmdRun 7"), null);
+  assert.equal(parseInternal("internal cmdRun 7 "), null);
+  assert.equal(parseInternal("internal cmdRun 7 ab cd ef"), null);
+});
+
+test("cmdSend: JSON {name,args} round-trip (name may contain a colon, args any string)", () => {
+  assert.equal(
+    encodeInternal({ kind: "cmdSend", chatId: 7, name: "skill:brainstorming", args: "go build it" }),
+    'internal cmdSend 7 {"name":"skill:brainstorming","args":"go build it"}',
+  );
+  assert.deepEqual(parseInternal('internal cmdSend 7 {"name":"skill:brainstorming","args":"go build it"}'), { kind: "cmdSend", chatId: 7, name: "skill:brainstorming", args: "go build it" });
+  assert.deepEqual(parseInternal('internal cmdSend 7 {"name":"tg","args":""}'), { kind: "cmdSend", chatId: 7, name: "tg", args: "" });
+  // malformed
+  assert.equal(parseInternal("internal cmdSend 7 not-json"), null);
+  assert.equal(parseInternal('internal cmdSend 7 {"name":7}'), null);
+  assert.equal(parseInternal('internal cmdSend 7 {}'), null); // missing args key
+});
+
+test("importSet: JSON path round-trip (path may contain spaces)", () => {
+  assert.equal(encodeInternal({ kind: "importSet", chatId: 7, path: "/tmp/my session.jsonl" }), 'internal importSet 7 "/tmp/my session.jsonl"');
+  assert.deepEqual(parseInternal('internal importSet 7 "/tmp/my session.jsonl"'), { kind: "importSet", chatId: 7, path: "/tmp/my session.jsonl" });
+});
+
+test("cmdTerminal: plain name round-trip", () => {
+  assert.equal(encodeInternal({ kind: "cmdTerminal", chatId: 7, name: "tree" }), "internal cmdTerminal 7 tree");
+  assert.deepEqual(parseInternal("internal cmdTerminal 7 tree"), { kind: "cmdTerminal", chatId: 7, name: "tree" });
+  assert.equal(parseInternal("internal cmdTerminal 7 a b"), null);
+});
+
+test("compact with instructions: JSON round-trip; plain compact unchanged", () => {
+  assert.equal(encodeInternal({ kind: "compact", chatId: 7 }), "internal compact 7");
+  assert.deepEqual(parseInternal("internal compact 7"), { kind: "compact", chatId: 7 });
+  assert.equal(encodeInternal({ kind: "compact", chatId: 7, instructions: "keep the tests" }), 'internal compact 7 "keep the tests"');
+  assert.deepEqual(parseInternal('internal compact 7 "keep the tests"'), { kind: "compact", chatId: 7, instructions: "keep the tests" });
+});
