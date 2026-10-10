@@ -184,6 +184,27 @@ test("toCustomResult: id t<nonce>, NO Run button, hint description, message_text
   assert.ok(!String(r.description ?? "").toLowerCase().includes("enter"), "tap is the only reliable send — never promise Enter");
 });
 
+// ── list mode: the hint appears the moment the query EXACTLY matches a name ──
+// (clients strip the trailing space, so "command+space" arrives as the bare
+//  name — that exact match is the observable "the full command is typed")
+
+test("toInlineResults: query EXACTLY matching a name → that item carries the keep-typing hint (case-insensitive)", () => {
+  const list = mergeCommands(resources);
+  const res = toInlineResults(filterCommands(list, "model"), () => "n1", "model");
+  const model = res.find((r) => r.title === "/model")!;
+  assert.ok(model.description!.toLowerCase().includes("tap to send"), "the hint replaces the description");
+  const upper = toInlineResults(filterCommands(list, "MODEL"), () => "n2", "MODEL");
+  assert.ok(upper[0]!.description!.toLowerCase().includes("tap to send"));
+});
+
+test("toInlineResults: prefix query / no query at all → plain descriptions, no hint anywhere", () => {
+  const list = mergeCommands(resources);
+  for (const r of toInlineResults(filterCommands(list, "mod"), () => "n1", "mod"))
+    assert.ok(!String(r.description ?? "").includes("tap to send"), "prefix is not an exact match");
+  for (const r of toInlineResults(filterCommands(list, ""), () => "n1"))
+    assert.ok(!String(r.description ?? "").includes("tap to send"), "no query arg → legacy behavior");
+});
+
 test("toCustomResult: long text → title truncated with a trailing ellipsis, message_text STILL full", () => {
   const list = mergeCommands(resources);
   const entry = list.find((c) => c.name === "tg")!;

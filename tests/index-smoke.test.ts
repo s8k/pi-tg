@@ -964,4 +964,16 @@ test("inline picker E2E: inline_query → articles + nonces; chosen_inline_resul
   await waitFor(() => calls.some((c) => c.method === "answerInlineQuery" && c.body.inline_query_id === "iq6"), "the unknown-args query is answered");
   const answer6 = calls.find((c) => c.method === "answerInlineQuery" && c.body.inline_query_id === "iq6")!;
   assert.deepEqual(answer6.body.results, [], "unknown command with args → no results");
+
+  // 8) the hint appears the moment the query EXACTLY matches a name (the
+  //    client strips the trailing space, so "command+space" arrives as the
+  //    bare name) — before any argument character is typed
+  await resolveBatch(9, [
+    { update_id: 27, inline_query: { id: "iq7", from: { id: 123456 }, query: "quit", chat_type: "private" } },
+  ]);
+  await waitFor(() => calls.some((c) => c.method === "answerInlineQuery" && c.body.inline_query_id === "iq7"), "the exact-name query is answered");
+  const answer7 = calls.find((c) => c.method === "answerInlineQuery" && c.body.inline_query_id === "iq7")!;
+  const r7 = answer7.body.results as { id: string; title: string; description?: string }[];
+  const quitItem = r7.find((r) => r.title === "/quit")!;
+  assert.ok(quitItem.description!.toLowerCase().includes("tap to send"), "the keep-typing hint on the exact match");
 });

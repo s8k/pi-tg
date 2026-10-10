@@ -345,7 +345,7 @@ export default function piTelegram(pi: ExtensionAPI): void {
     // (result_id `c<nonce>` and callback `cr:<nonce>` both fit 64 bytes).
     let n = 0;
     const base = Date.now().toString(36);
-    const results = toInlineResults(filtered, () => `${base}${(n++).toString(36)}`);
+    const results = toInlineResults(filtered, () => `${base}${(n++).toString(36)}`, q.query);
     for (let i = 0; i < results.length; i++) bridge?.registerRun(results[i]!.id.slice(1), filtered[i]!.name);
     await answer(results);
   }

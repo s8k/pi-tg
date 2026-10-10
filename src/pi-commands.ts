@@ -258,16 +258,29 @@ export function cardText(name: string): string {
  * `makeNonce(name)` must return a UNIQUE nonce per result, ≤61 chars
  * (id = `c<nonce>` ≤ 64 bytes; callback_data = `cr:<nonce>` ≤ 64 bytes).
  * The auto-sent card (`input_message_content`) is the visible echo of a tap.
+ *
+ * `query` (the raw inline query): when it EXACTLY matches a result's name
+ * (case-insensitive) that item's description is replaced by the keep-typing
+ * hint — clients strip the trailing space, so "command+space" arrives as the
+ * bare name, and that exact match is the moment the user has finished
+ * typing the command and can start its arguments.
  */
 export function toInlineResults(
   list: SessionCommand[],
   makeNonce: (name: string) => string,
+  query?: string,
 ): InlineArticle[] {
+  const q = query ? query.replace(/^\/+/, "").trim().toLowerCase() : "";
   return list.filter((c) => !c.terminalOnly).slice(0, MAX_RESULTS).map((c) => {
     const nonce = makeNonce(c.name);
     const title = `/${c.name}`.slice(0, MAX_TITLE);
-    let desc = c.description;
-    if (c.source !== "builtin") desc = `${desc} ${SOURCE_TAG[c.source]}`.trim();
+    let desc: string;
+    if (q && c.name.toLowerCase() === q) {
+      desc = RUNAS_HINT;
+    } else {
+      desc = c.description;
+      if (c.source !== "builtin") desc = `${desc} ${SOURCE_TAG[c.source]}`.trim();
+    }
     desc = desc.slice(0, MAX_DESC);
     const r: InlineArticle = {
       type: "article",
