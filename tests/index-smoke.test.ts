@@ -819,6 +819,7 @@ test("inline picker E2E: inline_query → articles + nonces; chosen_inline_resul
   });
   let batch = 0;
   let msgId = 900;
+  let failedIq4 = false;
   let resolveLongPoll: ((updates: unknown[]) => void) | undefined;
   globalThis.fetch = (async (url: string, init?: RequestInit): Promise<Response> => {
     const method = String(url).split("/").pop() ?? "";
@@ -850,6 +851,15 @@ test("inline picker E2E: inline_query → articles + nonces; chosen_inline_resul
     }
     if (method === "sendMessage" || method === "sendRichMessage")
       return new Response(JSON.stringify({ ok: true, result: { message_id: ++msgId } }), { status: 200 });
+    // the first answer for iq4 is REJECTED (400) — the client's spinner must
+    // still be cleared by a fallback EMPTY answer for the same query id
+    if (method === "answerInlineQuery" && body.inline_query_id === "iq4" && !failedIq4) {
+      failedIq4 = true;
+      return new Response(
+        JSON.stringify({ ok: false, error_code: 400, description: "Bad Request: simulated rejection" }),
+        { status: 400 },
+      );
+    }
     return new Response(JSON.stringify({ ok: true, result: true }), { status: 200 });
   }) as typeof fetch;
 
@@ -910,4 +920,26 @@ test("inline picker E2E: inline_query → articles + nonces; chosen_inline_resul
   const answer2 = calls.find((c) => c.method === "answerInlineQuery" && c.body.inline_query_id === "iq2")!;
   assert.deepEqual(answer2.body.results, [], "non-owner gets zero results");
   assert.equal(answer2.body.is_personal, true, "the empty answer is per-user too");
+
+  // 4) the owner's query matching NOTHING → an EMPTY answer (the client's
+  //    spinner must clear so the user can press Enter and send the raw text
+  //    — e.g. "/mcp serve …" — as an ordinary message)
+  await resolveBatch(5, [
+    { update_id: 23, inline_query: { id: "iq3", from: { id: 123456 }, query: "zzz-no-match", chat_type: "private" } },
+  ]);
+  await waitFor(() => calls.some((c) => c.method === "answerInlineQuery" && c.body.inline_query_id === "iq3"), "the no-match query is answered");
+  const answer3 = calls.find((c) => c.method === "answerInlineQuery" && c.body.inline_query_id === "iq3")!;
+  assert.deepEqual(answer3.body.results, [], "no match → empty results (the spinner clears)");
+
+  // 5) a REJECTED results answer must still end in an empty answer — the
+  //    spinner must ALWAYS clear, whatever the API did to the first attempt
+  await resolveBatch(6, [
+    { update_id: 24, inline_query: { id: "iq4", from: { id: 123456 }, query: "qu", chat_type: "private" } },
+  ]);
+  await waitFor(
+    () => calls.filter((c) => c.method === "answerInlineQuery" && c.body.inline_query_id === "iq4").length >= 2,
+    "the rejected answer is followed by an empty fallback answer",
+  );
+  const iq4Fallback = calls.filter((c) => c.method === "answerInlineQuery" && c.body.inline_query_id === "iq4").pop()!;
+  assert.deepEqual(iq4Fallback.body.results, [], "the fallback answer is empty");
 });

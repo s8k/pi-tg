@@ -70,6 +70,18 @@ const CMD_RE = /^\/([a-zA-Z0-9_]+(?::[a-zA-Z0-9_]+)?)(?:@[a-zA-Z0-9_]+)?\s*(.*)$
 const CMD_RUN_RE = /^cr:([a-z0-9]{1,16})$/;
 
 /**
+ * `@<botusername> /cmd args` → `/cmd args`. The ⌨️ entry button (switch_
+ * inline_query_current_chat) inserts the bot's username into the input field,
+ * so text the user sends from inline mode arrives with the prefix — the
+ * `^/`-anchored command regex must not see it as plain text.
+ */
+function stripBotMention(text: string, botUsername: string | undefined): string {
+  if (!botUsername) return text;
+  const escaped = botUsername.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return text.replace(new RegExp(`^@${escaped}\\s+`, "i"), "");
+}
+
+/**
  * Pure: one Telegram update + pairing state → one typed action.
  * - unpaired: only /start gets through (auto-pairs the first account)
  * - paired: only ownerId; bots, edits, non-text → ignore
@@ -89,6 +101,12 @@ export function route(
      * or undefined (→ unknown). Existing TG commands never reach it.
      */
     sessionCommand?: (name: string, rest: string, chatId: number) => TgAction | undefined;
+    /**
+     * The bot's own username (getMe). Text starting with `@<username>` +
+     * whitespace — exactly what the ⌨️ inline entry button inserts into the
+     * input field — has the prefix stripped so it routes as a command.
+     */
+    botUsername?: string;
     /**
      * The owner's learned chat id — chosen_inline_result carries NO chat_id
      * (Bot API fact), so the cmdRun it produces can only be answered there.
@@ -166,7 +184,7 @@ export function route(
   }
   if (fromId !== ownerId) return { kind: "notAuthorized", chatId, fromId };
 
-  const text = rawText.trim();
+  const text = stripBotMention(rawText.trim(), opts?.botUsername);
   // A reply to a pending dialog message is the dialog's text answer — even when
   // it looks like a command (the owner is answering, not commanding).
   const replyTo = msg.reply_to_message?.message_id;

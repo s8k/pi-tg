@@ -74,6 +74,7 @@ export default function piTelegram(pi: ExtensionAPI): void {
   let out: Out | undefined;
   let piAdapter: TelegramPi | undefined;
   let ownerChatId: number | undefined;
+  let botUsername: string | undefined;
   let cmdCtx: ExtensionCommandContext | undefined;
   let sessionCtx: ExtensionContext | undefined;
   let stopping = false;
@@ -179,6 +180,7 @@ export default function piTelegram(pi: ExtensionAPI): void {
       return gen;
     }
     deps.botUsername = username;
+    botUsername = username; // outer-scope mirror (route() opts)
     // Set the bot menu (self-healing: runs on every poller start). Best-effort:
     // a failure logs a TUI warning and must never block or stop polling.
     void client.setMyCommands().catch((err) => ui(`pi-tg: setMyCommands failed: ${String(err)}`, "warning"));
@@ -254,6 +256,10 @@ export default function piTelegram(pi: ExtensionAPI): void {
           const d = dispatchFor(name, rest, mergeCommands(piAdapter?.getCommands() ?? []));
           return d ? actionForDecision(d, chatId) : undefined;
         },
+        // The ⌨️ entry button inserts "@<bot> /…" into the input field — text
+        // sent from inline mode carries the mention; the router strips it so
+        // `@pi-tg /mcp serve …` routes like `/mcp serve …`.
+        botUsername,
       },
     );
     if (action.kind === "ignore") return;
@@ -296,26 +302,42 @@ export default function piTelegram(pi: ExtensionAPI): void {
   async function handleInlineQuery(q: TgInlineQuery): Promise<void> {
     if (!client) return;
     const isOwner = cfg.ownerId !== undefined && q.from.id === cfg.ownerId;
-    try {
-      if (!isOwner) {
-        await client.answerInlineQuery(q.id, [], { isPersonal: true });
-        return;
+    const c = client; // stable binding for the answer closure (narrowing)
+    // The client spins a loader until the query is answered — and blocks the
+    // input field while it does. So if the primary answer fails, an EMPTY
+    // fallback answer MUST still be attempted: it is the API's "no results"
+    // signal, it clears the spinner, and it lets the user press Enter and
+    // send the raw text (e.g. "/mcp serve …") as an ordinary message.
+    const answer = async (results: unknown[]): Promise<void> => {
+      try {
+        // is_personal: the table is THIS session's command menu — a shared
+        // server-side cache (the default) could serve it to a non-owner who
+        // types the same query in any chat, without us ever seeing their query.
+        await c.answerInlineQuery(q.id, results, { isPersonal: true });
+      } catch (err) {
+        ui(`pi-tg: answerInlineQuery failed: ${String(err)}`, "error");
+        if (results.length > 0) {
+          try {
+            await c.answerInlineQuery(q.id, [], { isPersonal: true });
+          } catch (err2) {
+            ui(`pi-tg: empty fallback answerInlineQuery also failed: ${String(err2)}`, "error");
+          }
+        }
       }
-      const table = mergeCommands(piAdapter?.getCommands() ?? []);
-      const filtered = filterCommands(table, q.query);
-      // base36 timestamp + per-answer counter: unique ≤10-char nonces
-      // (result_id `c<nonce>` and callback `cr:<nonce>` both fit 64 bytes).
-      let n = 0;
-      const base = Date.now().toString(36);
-      const results = toInlineResults(filtered, () => `${base}${(n++).toString(36)}`);
-      for (let i = 0; i < results.length; i++) bridge?.registerRun(results[i]!.id.slice(1), filtered[i]!.name);
-      // is_personal: the table is THIS session's command menu — a shared
-      // server-side cache (the default) could serve it to a non-owner who
-      // types the same query in any chat, without us ever seeing their query.
-      await client.answerInlineQuery(q.id, results, { isPersonal: true });
-    } catch (err) {
-      ui(`pi-tg: answerInlineQuery failed: ${String(err)}`, "error");
+    };
+    if (!isOwner) {
+      await answer([]); // nothing leaks — the table is the session's command menu
+      return;
     }
+    const table = mergeCommands(piAdapter?.getCommands() ?? []);
+    const filtered = filterCommands(table, q.query);
+    // base36 timestamp + per-answer counter: unique ≤10-char nonces
+    // (result_id `c<nonce>` and callback `cr:<nonce>` both fit 64 bytes).
+    let n = 0;
+    const base = Date.now().toString(36);
+    const results = toInlineResults(filtered, () => `${base}${(n++).toString(36)}`);
+    for (let i = 0; i < results.length; i++) bridge?.registerRun(results[i]!.id.slice(1), filtered[i]!.name);
+    await answer(results);
   }
 
   function cardLines(): string[] {

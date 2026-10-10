@@ -221,6 +221,30 @@ test("existing TG commands win over the fallback (no fallback call for them)", (
   assert.deepEqual(route(msgUpdate(2, 5, "/name x"), 5, { sessionCommand: spy }), { kind: "nameSet", chatId: 7, name: "x" });
 });
 
+test("@<botusername> prefix (inserted by the ⌨️ entry button) is stripped before routing", () => {
+  // switch_inline_query_current_chat inserts "@botusername /…" into the input
+  // field — pressing Enter with arguments typed sends exactly this shape; it
+  // must route like the bare command, not become a confused prompt.
+  assert.deepEqual(
+    route(msgUpdate(1, 5, "@pi-tg /model"), 5, { sessionCommand, botUsername: "pi-tg" }),
+    { kind: "modelList", chatId: 7 },
+  );
+  assert.deepEqual(
+    route(msgUpdate(2, 5, "@Pi-TG /skill:brainstorming go"), 5, { sessionCommand, botUsername: "pi-tg" }),
+    { kind: "cmdSend", chatId: 7, name: "skill:brainstorming", args: "go" },
+  );
+  // a DIFFERENT bot's mention is not ours — plain text
+  assert.deepEqual(
+    route(msgUpdate(3, 5, "@otherbot /model"), 5, { sessionCommand, botUsername: "pi-tg" }),
+    { kind: "prompt", chatId: 7, text: "@otherbot /model" },
+  );
+  // no botUsername configured → no stripping (unchanged behavior)
+  assert.deepEqual(
+    route(msgUpdate(4, 5, "@pi-tg /model"), 5, { sessionCommand }),
+    { kind: "prompt", chatId: 7, text: "@pi-tg /model" },
+  );
+});
+
 test("colon names match the command regex: /tg:pair and /skill:x@BotName", () => {
   assert.deepEqual(route(msgUpdate(1, 5, "/tg:pair"), 5, { sessionCommand }), { kind: "cmdSend", chatId: 7, name: "tg:pair", args: "" });
   assert.deepEqual(route(msgUpdate(2, 5, "/skill:brainstorming@MyBot"), 5, { sessionCommand }), { kind: "cmdSend", chatId: 7, name: "skill:brainstorming", args: "" });
