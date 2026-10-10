@@ -807,3 +807,105 @@ test("replayed /stop update (regressed offset) is answered exactly once", async 
   await sleep(400); // a duplicate dispatch from the replayed update would have landed by now
   assert.equal(idleAcks().length, 1, "the replayed /stop update must NOT be answered a second time");
 });
+
+// ── inline command picker E2E (index.ts wiring) ────────────────────────────
+
+test("inline picker E2E: inline_query → articles + nonces; chosen_inline_result → executes the command", async (t) => {
+  const calls: WireCall[] = [];
+  const realFetch = globalThis.fetch;
+  t.after(() => {
+    handlers.get("session_shutdown")!(); // stop THIS test's poller
+    globalThis.fetch = realFetch;
+  });
+  let batch = 0;
+  let msgId = 900;
+  let resolveLongPoll: ((updates: unknown[]) => void) | undefined;
+  globalThis.fetch = (async (url: string, init?: RequestInit): Promise<Response> => {
+    const method = String(url).split("/").pop() ?? "";
+    const body = (init?.body ? JSON.parse(String(init.body)) : {}) as Record<string, unknown>;
+    calls.push({ method, body, markdown: "" });
+    if (method === "getMe")
+      return new Response(JSON.stringify({ ok: true, result: { id: 1, is_bot: true, first_name: "Tg", username: "tgb" } }), { status: 200 });
+    if (method === "getUpdates") {
+      batch++;
+      if (batch === 1)
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            result: [
+              { update_id: 1, message: { message_id: 1, date: 1, chat: { id: 42, type: "private" }, from: { id: 123456, is_bot: false, first_name: "O" }, text: "hi" } },
+            ],
+          }),
+          { status: 200 },
+        );
+      return new Promise<Response>((resolve, reject) => {
+        const sig = init?.signal;
+        const onAbort = () => reject(new DOMException("Aborted", "AbortError"));
+        if (sig) {
+          if (sig.aborted) onAbort();
+          else sig.addEventListener("abort", onAbort, { once: true });
+        }
+        resolveLongPoll = (updates) => resolve(new Response(JSON.stringify({ ok: true, result: updates }), { status: 200 }));
+      });
+    }
+    if (method === "sendMessage" || method === "sendRichMessage")
+      return new Response(JSON.stringify({ ok: true, result: { message_id: ++msgId } }), { status: 200 });
+    return new Response(JSON.stringify({ ok: true, result: true }), { status: 200 });
+  }) as typeof fetch;
+
+  const ctx = { cwd: "/tmp", mode: "tui", hasUI: true, isIdle: () => true, ui: { notify: () => {} }, sessionManager: fakeCtx.sessionManager };
+  handlers.get("session_start")!({}, ctx);
+  await waitFor(() => calls.filter((c) => c.method === "getUpdates").length >= 2, "owner chat learned");
+
+  // allowed_updates must include the two inline update types (Bot API)
+  const firstPoll = calls.find((c) => c.method === "getUpdates")!;
+  assert.ok((firstPoll.body.allowed_updates as string[]).includes("inline_query"), "polls for inline_query");
+  assert.ok((firstPoll.body.allowed_updates as string[]).includes("chosen_inline_result"), "polls for chosen_inline_result");
+
+  // 1) the owner's inline search → answerInlineQuery with the command table
+  const resolveBatch = async (n: number, updates: unknown[]) => {
+    await waitFor(() => calls.filter((c) => c.method === "getUpdates").length >= n, `getUpdates batch ${n} issued`);
+    resolveLongPoll!(updates);
+  };
+  await resolveBatch(2, [
+    { update_id: 20, inline_query: { id: "iq1", from: { id: 123456 }, query: "qu", chat_type: "private" } },
+  ]);
+  await waitFor(() => calls.some((c) => c.method === "answerInlineQuery" && c.body.inline_query_id === "iq1"), "the inline query is answered");
+  const answer = calls.find((c) => c.method === "answerInlineQuery" && c.body.inline_query_id === "iq1")!;
+  const results = answer.body.results as { id: string; title: string; input_message_content: { message_text: string }; reply_markup?: unknown }[];
+  assert.ok(results.length > 0, "results for the 'qu' query");
+  const quit = results.find((r) => r.title === "/quit")!;
+  assert.ok(quit, "the /quit built-in is in the results");
+  assert.ok(String(quit.input_message_content.message_text).startsWith("📋 /quit"), "the tap auto-sends the card");
+  assert.ok(JSON.stringify(quit.reply_markup).includes("cr:"), "the article carries the ▶ Run fallback button");
+  assert.ok(/^c[a-z0-9]{1,32}$/.test(quit.id), "the result id is c<nonce> (the one-shot key)");
+
+  // 2) the owner taps it → chosen_inline_result → the mapped action runs
+  //    (/quit → the kill confirmation question in the owner's chat)
+  await resolveBatch(3, [
+    {
+      update_id: 21,
+      chosen_inline_result: {
+        from: { id: 123456 },
+        chat_type: "private",
+        query: "qu",
+        result_id: quit.id,
+        inline_message_id: "inl-77",
+      },
+    },
+  ]);
+  await waitFor(
+    () => calls.some((c) => c.method === "sendRichMessage" && JSON.stringify(c.body).includes("terminates the pi process")),
+    "the kill question (the mapped /quit action) lands in the owner's chat",
+  );
+  const killQ = calls.find((c) => c.method === "sendRichMessage" && JSON.stringify(c.body).includes("terminates the pi process"))!;
+  assert.equal((killQ.body.chat_id as number), 42, "the reply goes to the LEARNED owner chat (the update has no chat_id)");
+
+  // 3) a NON-owner inline search gets an empty answer (nothing leaks)
+  await resolveBatch(4, [
+    { update_id: 22, inline_query: { id: "iq2", from: { id: 999 }, query: "", chat_type: "private" } },
+  ]);
+  await waitFor(() => calls.some((c) => c.method === "answerInlineQuery" && c.body.inline_query_id === "iq2"), "the non-owner query is answered");
+  const answer2 = calls.find((c) => c.method === "answerInlineQuery" && c.body.inline_query_id === "iq2")!;
+  assert.deepEqual(answer2.body.results, [], "non-owner gets zero results");
+});
