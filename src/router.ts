@@ -62,10 +62,14 @@ export type TgAction =
   | { kind: "unknown"; chatId: number; text: string };
 
 /**
- * Command text. The optional `:segment` admits colon names (skills /
-skill:name, extensions /tg:pair) — the inline picker dispatches them.
+ * Command text. The name starts with a letter/digit/underscore and may
+ * continue with letters, digits, underscores, HYPHENS and colons — skill
+ * names are directory names (requesting-code-review), built-ins use
+ * hyphens (scoped-models), and colon names cover skills (skill:name) and
+ * extension sub-commands (tg:pair). The first character is restricted so
+ * `-foo`/`:bar` can never be a command name.
  */
-const CMD_RE = /^\/([a-zA-Z0-9_]+(?::[a-zA-Z0-9_]+)?)(?:@[a-zA-Z0-9_]+)?\s*(.*)$/;
+const CMD_RE = /^\/([a-zA-Z0-9_][a-zA-Z0-9_:.-]*)(?:@[a-zA-Z0-9_]+)?\s*(.*)$/;
 /** cr:<nonce> — the inline picker's ▶ Run fallback button. */
 const CMD_RUN_RE = /^cr:([a-z0-9]{1,16})$/;
 

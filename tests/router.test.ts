@@ -188,6 +188,8 @@ const sessionCommand = (name: string, rest: string, chatId: number): TgAction | 
   if (name === "skill:brainstorming") return { kind: "cmdSend", chatId, name, args: rest };
   if (name === "tg:pair") return { kind: "cmdSend", chatId, name, args: rest };
   if (name === "tree") return { kind: "cmdTerminal", chatId: 7, name };
+  if (name === "skill:requesting-code-review") return { kind: "cmdSend", chatId, name, args: rest };
+  if (name === "scoped-models") return { kind: "cmdTerminal", chatId, name };
   return undefined; // unknown → the router must keep its "unknown" behavior
 };
 
@@ -248,6 +250,17 @@ test("@<botusername> prefix (inserted by the ⌨️ entry button) is stripped be
 test("colon names match the command regex: /tg:pair and /skill:x@BotName", () => {
   assert.deepEqual(route(msgUpdate(1, 5, "/tg:pair"), 5, { sessionCommand }), { kind: "cmdSend", chatId: 7, name: "tg:pair", args: "" });
   assert.deepEqual(route(msgUpdate(2, 5, "/skill:brainstorming@MyBot"), 5, { sessionCommand }), { kind: "cmdSend", chatId: 7, name: "skill:brainstorming", args: "" });
+});
+
+test("hyphenated names route intact (skill names and built-ins like scoped-models contain -)", () => {
+  assert.deepEqual(
+    route(msgUpdate(1, 5, "/skill:requesting-code-review check the only index.ts"), 5, { sessionCommand }),
+    { kind: "cmdSend", chatId: 7, name: "skill:requesting-code-review", args: "check the only index.ts" },
+  );
+  assert.deepEqual(
+    route(msgUpdate(2, 5, "/scoped-models"), 5, { sessionCommand }),
+    { kind: "cmdTerminal", chatId: 7, name: "scoped-models" },
+  );
 });
 
 // ── inline picker: chosen_inline_result (Flow A) ──
