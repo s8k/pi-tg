@@ -141,9 +141,9 @@ export function customCommandMatch(
   const name = q.slice(0, sp).toLowerCase();
   const entry = table.find((c) => c.name.toLowerCase() === name);
   if (!entry) return null;
-  const text = `/${q}`.trimEnd();
-  if (text.length > MAX_TEXT) return null;
-  return { entry, text };
+  // NOTE: no length check here — over-limit text is rendered with a warning
+  // (toCustomResult); the item is never dropped while the user is typing.
+  return { entry, text: `/${q}`.trimEnd() };
 }
 
 /** What happens when a session command is chosen (tap or typed). */
@@ -281,6 +281,17 @@ export function toInlineResults(
   });
 }
 
+/** Observed client-side title cap for the run-as-typed item (255 chars —
+ * the live docs state no API cap for article titles; beyond this the client
+ * shows nothing new, so we ellipsize). */
+const RUNAS_TITLE_LIMIT = 255;
+/** Hint shown while the user is still typing (the command part matches
+ * exactly — they can keep typing arguments/prompt to this command). */
+const RUNAS_HINT = "Keep typing arguments or a prompt, then tap or press Enter to send";
+/** Shown instead of the hint when the typed text exceeds the 4096-char
+ * message_text limit (the sent text is then truncated to 4096). */
+const RUNAS_OVER_LIMIT = "⚠️ Over the 4096-char limit — the sent text is truncated";
+
 /**
  * Render the single "run as typed" result (customCommandMatch). Unlike the
  * list results: the id is `t<nonce>` — the router's chosen_inline_result
@@ -288,20 +299,26 @@ export function toInlineResults(
  * execution happens exactly once, via the auto-sent `message_text` (the full
  * command with arguments), which the router handles like a typed message.
  * No ▶ Run button: the tap itself is the execution.
+ *
+ * title: the typed text, ellipsized at RUNAS_TITLE_LIMIT — the ellipsis
+ * REPLACES the last characters (total stays ≤ 255). message_text: ALWAYS the
+ * full typed sequence — truncated to 4096 only when unsendable, in which
+ * case the description carries the over-limit warning instead of the hint.
  */
 export function toCustomResult(
   match: { entry: SessionCommand; text: string },
   makeNonce: () => string,
 ): InlineArticle {
-  const { entry, text } = match;
-  let desc = entry.description;
-  if (entry.source !== "builtin") desc = `${desc} ${SOURCE_TAG[entry.source]}`.trim();
-  const r: InlineArticle = {
+  const { text } = match;
+  const overLimit = text.length > MAX_TEXT;
+  const title =
+    text.length > RUNAS_TITLE_LIMIT ? text.slice(0, RUNAS_TITLE_LIMIT - 1) + "…" : text;
+  const description = (overLimit ? RUNAS_OVER_LIMIT : RUNAS_HINT).slice(0, MAX_DESC);
+  return {
     type: "article",
     id: `t${makeNonce()}`,
-    title: text.slice(0, MAX_TITLE),
-    input_message_content: { message_text: text },
+    title,
+    description,
+    input_message_content: { message_text: overLimit ? text.slice(0, MAX_TEXT) : text },
   };
-  if (desc) r.description = desc.slice(0, MAX_DESC);
-  return r;
 }

@@ -141,9 +141,9 @@ test("mergeCommands: duplicate resource names collapse (case-insensitively, incl
   assert.ok(list.some((c) => c.name === "model" && c.source === "builtin"));
 });
 
-// ── custom-args mode: '<command> <args>' → the single run-as-typed entry ──
+// ── run-as-typed mode: the single item that follows the user's typing ──
 
-test("customCommandMatch: '<command> <args>' → the run-as-typed entry with the full text", () => {
+test("customCommandMatch: '<command> <args>' → the run-as-typed entry with the full text (user's casing kept)", () => {
   const list = mergeCommands(resources);
   const m = customCommandMatch(list, "/tg serve http://x");
   assert.ok(m);
@@ -157,14 +157,22 @@ test("customCommandMatch: '<command> <args>' → the run-as-typed entry with the
   assert.equal(customCommandMatch(list, "//compact be brief")?.text, "/compact be brief");
 });
 
-test("customCommandMatch: no space / unknown command / unsendable length → null", () => {
+test("customCommandMatch: no space / unknown command → null (the list mode owns those)", () => {
   const list = mergeCommands(resources);
   assert.equal(customCommandMatch(list, "tg"), null);
+  assert.equal(customCommandMatch(list, "t"), null);
+  assert.equal(customCommandMatch(list, "/com"), null);
   assert.equal(customCommandMatch(list, "nope serve x"), null);
-  assert.equal(customCommandMatch(list, "tg " + "a".repeat(4096)), null); // > 4096-char message_text
 });
 
-test("toCustomResult: id t<nonce>, NO Run button, message_text = the full typed command", () => {
+test("customCommandMatch: over-4096 text STILL matches (the renderer warns — the item is never dropped)", () => {
+  const list = mergeCommands(resources);
+  const m = customCommandMatch(list, "tg " + "a".repeat(4096));
+  assert.ok(m, "the item persists past the limit");
+  assert.ok(m!.text.length > 4096);
+});
+
+test("toCustomResult: id t<nonce>, NO Run button, hint description, message_text = the full typed command", () => {
   const list = mergeCommands(resources);
   const m = customCommandMatch(list, "/tg serve http://x")!;
   const r = toCustomResult(m, () => "abc123");
@@ -172,7 +180,30 @@ test("toCustomResult: id t<nonce>, NO Run button, message_text = the full typed 
   assert.equal(r.input_message_content.message_text, "/tg serve http://x");
   assert.equal(r.reply_markup, undefined);
   assert.equal(r.title, "/tg serve http://x");
-  assert.ok(String(r.description ?? "").includes("[ext]"), "the entry's description + source tag");
+  assert.ok(String(r.description ?? "").toLowerCase().includes("arguments"), "the hint: keep typing arguments/prompt");
+});
+
+test("toCustomResult: long text → title truncated with a trailing ellipsis, message_text STILL full", () => {
+  const list = mergeCommands(resources);
+  const entry = list.find((c) => c.name === "tg")!;
+  const text = "/tg " + "x".repeat(300); // 305 chars > 255 title limit
+  const r = toCustomResult({ entry, text }, () => "abc123");
+  assert.equal(r.input_message_content.message_text, text, "message_text keeps the FULL sequence");
+  assert.ok(r.title.endsWith("…"), "the title ends with an ellipsis (replacing the last characters)");
+  assert.ok(r.title.length <= 255, "the title respects the 255 limit");
+  assert.equal(r.title, text.slice(0, 254) + "…");
+  assert.ok(String(r.description ?? "").toLowerCase().includes("arguments"), "still the hint (within 4096)");
+});
+
+test("toCustomResult: over 4096 → warning description + message_text truncated to 4096", () => {
+  const list = mergeCommands(resources);
+  const entry = list.find((c) => c.name === "tg")!;
+  const text = "/tg " + "x".repeat(4096);
+  const r = toCustomResult({ entry, text }, () => "abc123");
+  assert.equal(r.input_message_content.message_text.length, 4096, "the sendable maximum");
+  assert.ok(r.input_message_content.message_text.startsWith("/tg "), "the command itself survives");
+  assert.ok(r.description!.includes("4096"), "the warning names the limit");
+  assert.ok(!r.description!.toLowerCase().includes("keep typing"), "the hint is replaced by the warning");
 });
 
 // ── dispatch decision ──
