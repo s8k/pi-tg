@@ -90,7 +90,7 @@ test("textless candidates never trigger a draft update", async () => {
   assert.deepEqual(draftIds(h), [1]);
 });
 
-test("draft shows tool calls UNcollapsed (⚙ line + visible args pre); the finalized send collapses them (2026-10-08 experiment)", async () => {
+test("draft shows tool calls COLLAPSED (details) — same form as the finalized send (2026-10-08 experiment reverted 2026-10-11)", async () => {
   const h = makeMirrorDeps({ streamEditMs: 0 });
   const m = new Mirror(h.deps);
   m.onAgentStart();
@@ -109,8 +109,8 @@ test("draft shows tool calls UNcollapsed (⚙ line + visible args pre); the fina
   await tick();
   const draft = draftCalls(h).at(-1)!;
   const db = draft.blocks ?? [];
-  assert.ok(!db.some((b) => b.type === "details"), "no collapsible container in the live draft");
-  assert.ok(db.some((b) => b.type === "pre" && b.text.includes("src/app.ts")), "the args are a visible pre in the draft");
+  assert.ok(db.some((b) => b.type === "details"), "the live draft uses the collapsed details form");
+  assert.ok(db.some((b) => b.type === "details" && b.blocks.some((p) => p.type === "pre" && p.text.includes("src/app.ts"))), "the args pre lives inside the details");
   // finalize: the persistent m1 carries the COLLAPSED details form
   m.onToolEnd("c1", false, { content: [{ type: "text", text: "ok" }] });
   m.onAssistantStart(textMsg(""));

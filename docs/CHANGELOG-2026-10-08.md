@@ -38,12 +38,15 @@ field — the router used to silently drop it. Now the blocks are projected
 through `blocksToPlainText` and routed like any text (commands, dialog
 answers, auth rules all apply).
 
-## Experiment: uncollapsed tool calls in the live draft
+## Experiment: uncollapsed tool calls in the live draft (REVERTED 2026-10-11)
 
 While streaming, tool calls render as a plain `⚙ name state` line with the
 **visible args pre** below (no collapsible container). The finalized
 persistent send keeps the collapsed `details` form — the run "tidies up"
 on completion. One commit (`370048f`) — instant to revert.
+
+**Reverted (2026-10-11):** tool calls now ALWAYS use the collapsed
+details form, in both the live draft and the finalized send.
 
 ## Earlier in the branch (blocks tier)
 

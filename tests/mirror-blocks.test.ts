@@ -57,30 +57,34 @@ test("tool → details(⚙ name state) + pre(json args)", () => {
   assert.equal(pre.language, "json");
 });
 
-test("expandTools (drafts, 2026-10-08 experiment): tool stays UNcollapsed — ⚙ paragraph + visible args pre, no details", () => {
+test("draft form (heal, live stream): tool call stays COLLAPSED details — revert of the 2026-10-08 uncollapsed experiment", () => {
   const bs = mirrorBlocks(
     [{ type: "tool", id: "1", name: "bash", argsJson: '{"a":1}', state: "…" }],
-    { bottom: { kind: "done" }, expandTools: true },
+    { bottom: { kind: "done" }, heal: true },
   );
-  assert.equal(bs.length, 3); // ⚙ line + pre(args) + Completed marker
-  assert.equal(bs[0]?.type, "paragraph");
-  if (bs[0]?.type !== "paragraph") return;
-  assert.equal(blocksToPlainText([bs[0]]), "⚙ bash …");
-  assert.equal(bs[1]?.type, "pre");
-  if (bs[1]?.type !== "pre") return;
-  assert.equal(bs[1].text, '{"a":1}');
-  assert.equal(bs[1].language, "json");
-  assert.ok(!bs.some((b) => b.type === "details"), "no collapsible container in the draft form");
+  assert.equal(bs.length, 2); // details + Completed marker
+  assert.equal(bs[0]?.type, "details");
+  if (bs[0]?.type !== "details") return;
+  assert.equal(plain(bs[0]), "⚙ bash …");
+  assert.equal(bs[0].is_open, false);
+  const pre = bs[0].blocks[0];
+  assert.equal(pre?.type, "pre");
+  if (pre?.type !== "pre") return;
+  assert.equal(pre.text, '{"a":1}');
+  assert.equal(pre.language, "json");
+  assert.ok(!bs.some((b) => b.type === "pre"), "the args pre lives INSIDE the details, not in the log");
 });
 
-test("expandTools with why + error state: 💭 line, ⚙ line, args pre, error pre — all visible", () => {
+test("why + error state: 💭 paragraph, collapsed details, error pre", () => {
   const bs = mirrorBlocks(
     [{ type: "tool", id: "1", name: "bash", argsJson: "ls", state: "✖", errorText: "boom", why: "check" }],
-    { bottom: { kind: "done" }, expandTools: true },
+    { bottom: { kind: "done" } },
   );
-  assert.deepEqual(bs.map((b) => b.type), ["paragraph", "paragraph", "pre", "pre", "paragraph"]);
-  assert.equal(bs[2]?.type === "pre" ? bs[2].text : "", "ls");
-  assert.equal(bs[3]?.type === "pre" ? bs[3].text : "", "boom");
+  assert.deepEqual(bs.map((b) => b.type), ["paragraph", "details", "pre", "paragraph"]);
+  const d = bs[1];
+  if (d?.type !== "details") assert.fail("expected details");
+  assert.equal(d.blocks[0]?.type === "pre" ? d.blocks[0].text : "", "ls");
+  assert.equal(bs[2]?.type === "pre" ? bs[2].text : "", "boom");
 });
 
 test("tool with why → leading 💭 italic paragraph", () => {
