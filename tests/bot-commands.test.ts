@@ -17,7 +17,7 @@ test("BOT_COMMANDS: exact 14-command menu, in display order", () => {
     { command: "compact", description: "Compact the context (stoppable via the Stop button)" },
     { command: "reload", description: "Reload extensions & resources (idle only)" },
     { command: "kill", description: "Shut down pi" },
-    { command: "help", description: "Show help info" },
+    { command: "help", description: "Shows bot commands + a button to browse, search, and run other Pi commands" },
   ]);
 });
 

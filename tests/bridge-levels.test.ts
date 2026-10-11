@@ -69,8 +69,8 @@ test("help: command order mirrors the bot menu (BOT_COMMANDS) — status, stop u
 });
 
 test("help card is a projection of BOT_COMMANDS — menu and card can never drift (2026-10-11)", () => {
-  // the card's command lines carry the menu's exact descriptions (the /help
-  // entry is the one deliberate exception — it carries the picker-button line)
+  // the card's command lines carry the menu's exact descriptions — every
+  // entry, /help included (its menu description carries the picker-button line)
   const lines: string[] = [];
   for (const b of helpBlocks()) {
     if (b.type !== "paragraph") continue;
@@ -82,11 +82,6 @@ test("help card is a projection of BOT_COMMANDS — menu and card can never drif
     if (cmd) lines.push(`${String(cmd.text)}${desc}`);
   }
   for (const { command, description } of BOT_COMMANDS) {
-    if (command === "help") {
-      assert.ok(lines.some((l) => l.startsWith("/help")), "the /help line exists");
-      assert.ok(lines.some((l) => l.includes("browse, search, and run other Pi commands")), "the /help line mentions the picker");
-      continue;
-    }
     assert.ok(lines.includes(`/${command} — ${description}`), `missing or drifted: /${command} — ${description}`);
   }
 });

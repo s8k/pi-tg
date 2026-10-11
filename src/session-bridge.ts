@@ -178,10 +178,10 @@ const helpPara = (text: TgRichText): TgBlock => ({ type: "paragraph", text });
 
 /**
  * The /help card as rich blocks — each line a paragraph, the command names
- * bold entities. SINGLE SOURCE OF TRUTH: the command lines are a projection
- * of the bot menu (BOT_COMMANDS) — same commands, order and descriptions —
- * so the menu and the card can never drift. The /help entry itself carries
- * the picker-button line instead of the menu's description.
+ * bold entities. SINGLE SOURCE OF TRUTH: the command lines are a verbatim
+ * projection of the bot menu (BOT_COMMANDS) — same commands, order and
+ * descriptions — so the menu and the card can never drift (the /help entry
+ * included: its menu description carries the picker-button line).
  */
 export function helpBlocks(): TgBlock[] {
   const cmd = (c: string, desc: string): TgBlock => helpPara([{ type: "bold", text: c }, ` — ${desc}`]);
@@ -191,13 +191,7 @@ export function helpBlocks(): TgBlock[] {
       `${PI_TG_VERSION ? ` v${PI_TG_VERSION}` : ""} — drive this pi session from Telegram`,
     ]),
   ];
-  for (const { command, description } of BOT_COMMANDS) {
-    if (command === "help") {
-      parts.push(cmd("/help", "Shows bot commands + a button to browse, search, and run other Pi commands"));
-    } else {
-      parts.push(cmd(`/${command}`, description));
-    }
-  }
+  for (const { command, description } of BOT_COMMANDS) parts.push(cmd(`/${command}`, description));
   return parts;
 }
 
