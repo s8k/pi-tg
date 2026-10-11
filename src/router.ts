@@ -166,7 +166,14 @@ export function route(
       return { kind: "ignore" };
     }
     const runM = CMD_RUN_RE.exec(d);
-    if (runM) return { kind: "cmdRun", chatId, nonce: runM[1] };
+    if (runM) {
+      // ▶ Run in the inline-query UI: the callback carries NO message (the
+      // card is not sent to the chat) — use the learned owner chat, like the
+      // chosen_inline_result path (a -1 chatId would be rejected by
+      // parseInternal as a bad /tg internal payload).
+      const runChat = cb.message?.chat.id ?? opts?.ownerChatId;
+      return runChat === undefined ? { kind: "ignore" } : { kind: "cmdRun", chatId: runChat, nonce: runM[1] };
+    }
     return { kind: "ignore" };
   }
 

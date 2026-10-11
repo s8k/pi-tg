@@ -197,6 +197,18 @@ test("cr:<nonce> callback → cmdRun (owner), chatId from the callback's message
   assert.deepEqual(route(cbUpdate(1, 5, "cr:ab12cd"), 5), { kind: "cmdRun", chatId: 7, nonce: "ab12cd" });
 });
 
+test("cr:<nonce> from the INLINE MENU (no callback message) → cmdRun with the learned ownerChatId; none learned → ignore", () => {
+  // the ▶ Run button lives in the inline-query UI — the card is NOT sent to
+  // the chat, so the callback_query carries no message (chatId would be -1
+  // and the /tg internal payload would be rejected as bad)
+  const inlineCb = (updateId: number, id: number, data: string): TgUpdate => ({
+    update_id: updateId,
+    callback_query: { id: "cb" + updateId, from: from(id), data },
+  });
+  assert.deepEqual(route(inlineCb(1, 5, "cr:ab12cd"), 5, { ownerChatId: 7 }), { kind: "cmdRun", chatId: 7, nonce: "ab12cd" });
+  assert.deepEqual(route(inlineCb(2, 5, "cr:ab12cd"), 5), { kind: "ignore" });
+});
+
 test("cr: malformed → ignore (empty, >16 chars, uppercase, missing separator)", () => {
   assert.deepEqual(route(cbUpdate(1, 5, "cr:"), 5), { kind: "ignore" });
   assert.deepEqual(route(cbUpdate(1, 5, "cr:" + "a".repeat(17)), 5), { kind: "ignore" });
