@@ -34,22 +34,37 @@ export interface BuiltinPiCommand {
   description: string;
   /** pi-tg bridge action; absent = terminal only (no extension-API equivalent). */
   map?: MappedAction;
+  /** The direct bot command this built-in duplicates — such built-ins are
+   * NOT listed in the inline picker (the user has it one keystroke away in
+   * chat). Still dispatchable: the typed-path router and the run-as-typed
+   * window keep the FULL table. */
+  duplicateOf?: string;
 }
 
-/** The 24 built-ins of pi 1.1.0, in pi's command-menu order. */
+/** The 24 built-ins of pi 1.1.0, in pi's command-menu order.
+ *
+ * Picker exclusion (approved 2026-10-09):
+ * - List A — the 10 mapped built-ins (duplicateOf) + the tg* bridge
+ *   commands: available directly in chat → not listed (PICKER_DUPLICATES).
+ * - List B — TUI-only, make no sense via chatbot: settings, tree,
+ *   scoped-models, hotkeys, copy, trust, bug, changelog, login, logout.
+ * - List C — bridgeable later (pi's RPC supports them, no bridge action
+ *   yet): fork, clone, export, share.
+ * B and C are the 14 terminalOnly built-ins — hidden from the picker.
+ */
 export const BUILTIN_PI_COMMANDS: readonly BuiltinPiCommand[] = [
   { name: "settings", description: "Open settings menu" },
-  { name: "model", description: "Select model (opens selector UI)", map: "modelList" },
+  { name: "model", description: "Select model (opens selector UI)", map: "modelList", duplicateOf: "/models" },
   { name: "tree", description: "Navigate session tree (switch branches)" },
-  { name: "thinking", description: "Set thinking level", map: "thinkingList" },
+  { name: "thinking", description: "Set thinking level", map: "thinkingList", duplicateOf: "/thinking" },
   { name: "scoped-models", description: "Enable/disable models for Ctrl+P cycling" },
   { name: "export", description: "Export session (HTML default, or specify path: .html/.jsonl)" },
-  { name: "import", description: "Import and resume a session from a JSONL file", map: "importSet" },
+  { name: "import", description: "Import and resume a session from a JSONL file", map: "importSet", duplicateOf: "/import" },
   { name: "share", description: "Share session as a secret GitHub gist" },
   { name: "bug", description: "Report a bug to the Pi developers" },
   { name: "copy", description: "Copy last agent message to clipboard" },
-  { name: "name", description: "Set session display name", map: "nameSet" },
-  { name: "session", description: "Show session info and stats", map: "status" },
+  { name: "name", description: "Set session display name", map: "nameSet", duplicateOf: "/name" },
+  { name: "session", description: "Show session info and stats", map: "status", duplicateOf: "/status" },
   { name: "changelog", description: "Show changelog entries" },
   { name: "hotkeys", description: "Show all keyboard shortcuts" },
   { name: "fork", description: "Create a new fork from a previous user message" },
@@ -57,12 +72,34 @@ export const BUILTIN_PI_COMMANDS: readonly BuiltinPiCommand[] = [
   { name: "trust", description: "Save project trust decision for future sessions" },
   { name: "login", description: "Configure provider authentication" },
   { name: "logout", description: "Remove provider authentication" },
-  { name: "new", description: "Start a new session", map: "new" },
-  { name: "compact", description: "Manually compact the session context", map: "compact" },
-  { name: "resume", description: "Resume a different session", map: "sessions" },
-  { name: "reload", description: "Reload keybindings, extensions, skills, prompts, themes, and context files", map: "reload" },
-  { name: "quit", description: "Quit pi", map: "killAsk" },
+  { name: "new", description: "Start a new session", map: "new", duplicateOf: "/new" },
+  { name: "compact", description: "Manually compact the session context", map: "compact", duplicateOf: "/compact" },
+  { name: "resume", description: "Resume a different session", map: "sessions", duplicateOf: "/sessions" },
+  { name: "reload", description: "Reload keybindings, extensions, skills, prompts, themes, and context files", map: "reload", duplicateOf: "/reload" },
+  { name: "quit", description: "Quit pi", map: "killAsk", duplicateOf: "/kill" },
 ];
+
+/** pi-tg's own bridge commands (registered in index.ts — keep in sync with
+ * the registerCommand calls). They are directly typeable in chat (the router
+ * fallback dispatches them) and documented in /help, so the picker omits them. */
+export const TG_BRIDGE_COMMANDS: readonly string[] = ["tg", "tg:config", "tg:pair", "tg:unpair"];
+
+/** Every command the inline picker must NOT list (List A, approved): the
+ * built-ins that duplicate a direct bot command + the tg* bridge commands.
+ * The picker's run-as-typed window is NOT filtered by this — the table there
+ * stays full, so typing a duplicate with args still executes. */
+export const PICKER_DUPLICATES: ReadonlySet<string> = new Set([
+  ...TG_BRIDGE_COMMANDS,
+  ...BUILTIN_PI_COMMANDS.filter((b) => b.duplicateOf).map((b) => b.name),
+]);
+
+/** Whether a command may appear in the picker LIST (terminal-only built-ins
+ * and List-A duplicates are excluded). Exported so the caller can pre-filter
+ * its table — the rendered results stay 1:1 aligned with the pre-filtered
+ * list (the nonce→name registration depends on that alignment). */
+export function isListable(c: SessionCommand): boolean {
+  return !c.terminalOnly && !PICKER_DUPLICATES.has(c.name);
+}
 
 /** A resource command as returned by `pi.getCommands()` (structural mirror). */
 export interface ResourceCommand {
@@ -271,7 +308,9 @@ export function toInlineResults(
   query?: string,
 ): InlineArticle[] {
   const q = query ? query.replace(/^\/+/, "").trim().toLowerCase() : "";
-  return list.filter((c) => !c.terminalOnly).slice(0, MAX_RESULTS).map((c) => {
+  // terminal-only built-ins (List B/C) and direct-bot-command duplicates
+  // (List A) are dead ends in the autocomplete — never listed.
+  return list.filter(isListable).slice(0, MAX_RESULTS).map((c) => {
     const nonce = makeNonce(c.name);
     const title = `/${c.name}`.slice(0, MAX_TITLE);
     let desc: string;

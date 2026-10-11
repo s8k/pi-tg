@@ -53,6 +53,9 @@ const handlers = new Map<string, (...a: unknown[]) => unknown>();
 // The fake pi replays `/tg …` sendUserMessage calls through the captured
 // command handler — exactly what real pi does (the poller's dispatch path).
 let tgCommand: { handler: (args: string, ctx: unknown) => Promise<void> } | undefined;
+// every sendUserMessage the extension sends (the resource-command execution
+// path: chosen picker item → cmdSend → pi.sendUserMessage("/name args"))
+const sentMessages: string[] = [];
 // The ctx the fake pi hands to the /tg command handler (the handler stores it
 // as the adapter's cmdCtx). Minimal by default; a test whose action reads ctx
 // (e.g. stop → isIdle) swaps in a fuller one for its duration.
@@ -63,9 +66,16 @@ piTelegram({
   },
   on: (name: string, fn: (...a: unknown[]) => unknown) => handlers.set(name, fn),
   sendUserMessage: (text: string, _opts?: unknown) => {
-    if (typeof text === "string" && text.startsWith("/tg ") && tgCommand)
-      void tgCommand.handler(text.slice(4), cmdCtxFake);
+    if (typeof text === "string") {
+      sentMessages.push(text);
+      if (text.startsWith("/tg ") && tgCommand)
+        void tgCommand.handler(text.slice(4), cmdCtxFake);
+    }
   },
+  // the session's resource commands (mimics pi.getCommands): one extension
+  // command so the picker list has content — every BUILT-IN is either a
+  // duplicate of a direct bot command (List A) or terminal-only (List B/C).
+  getCommands: () => [{ name: "mcp", description: "Manage MCP servers", source: "extension" as const }],
 } as never);
 // The fake ctx exposes the post-compact session context so index.ts can
 // re-derive pi's "after" count exactly as pi does internally (Σ estimateTokens
@@ -878,39 +888,37 @@ test("inline picker E2E: inline_query → articles + nonces; chosen_inline_resul
     resolveLongPoll!(updates);
   };
   await resolveBatch(2, [
-    { update_id: 20, inline_query: { id: "iq1", from: { id: 123456 }, query: "qu", chat_type: "private" } },
+    { update_id: 20, inline_query: { id: "iq1", from: { id: 123456 }, query: "m", chat_type: "private" } },
   ]);
   await waitFor(() => calls.some((c) => c.method === "answerInlineQuery" && c.body.inline_query_id === "iq1"), "the inline query is answered");
   const answer = calls.find((c) => c.method === "answerInlineQuery" && c.body.inline_query_id === "iq1")!;
   const results = answer.body.results as { id: string; title: string; input_message_content: { message_text: string }; reply_markup?: unknown }[];
-  assert.ok(results.length > 0, "results for the 'qu' query");
-  const quit = results.find((r) => r.title === "/quit")!;
-  assert.ok(quit, "the /quit built-in is in the results");
-  assert.equal(quit.input_message_content.message_text, "/quit", "the tap auto-sends the bare command (no emoji, no description)");
+  const mcp = results.find((r) => r.title === "/mcp")!;
+  assert.ok(mcp, "the /mcp extension command is in the results");
+  assert.ok(!results.some((r) => r.title === "/model"), "the /model built-in is a duplicate of /models — NOT listed (List A)");
+  assert.equal(mcp.input_message_content.message_text, "/mcp", "the tap auto-sends the bare command (no emoji, no description)");
   assert.equal(answer.body.is_personal, true, "results are per-user (no cross-user cache leak)");
-  assert.ok(JSON.stringify(quit.reply_markup).includes("cr:"), "the article carries the ▶ Run fallback button");
-  assert.ok(/^c[a-z0-9]{1,32}$/.test(quit.id), "the result id is c<nonce> (the one-shot key)");
+  assert.ok(JSON.stringify(mcp.reply_markup).includes("cr:"), "the article carries the ▶ Run fallback button");
+  assert.ok(/^c[a-z0-9]{1,32}$/.test(mcp.id), "the result id is c<nonce> (the one-shot key)");
 
-  // 2) the owner taps it → chosen_inline_result → the mapped action runs
-  //    (/quit → the kill confirmation question in the owner's chat)
+  // 2) the owner taps it → chosen_inline_result → the resource command runs
+  //    (mcp → cmdSend → pi.sendUserMessage("/mcp") — the normal dispatch path)
+  //    the resource dispatch reads ctx.isIdle() through the adapter
+  cmdCtxFake = { ui: { notify: () => {} }, isIdle: () => true };
   await resolveBatch(3, [
     {
       update_id: 21,
       chosen_inline_result: {
         from: { id: 123456 },
         chat_type: "private",
-        query: "qu",
-        result_id: quit.id,
+        query: "m",
+        result_id: mcp.id,
         inline_message_id: "inl-77",
       },
     },
   ]);
-  await waitFor(
-    () => calls.some((c) => c.method === "sendRichMessage" && JSON.stringify(c.body).includes("terminates the pi process")),
-    "the kill question (the mapped /quit action) lands in the owner's chat",
-  );
-  const killQ = calls.find((c) => c.method === "sendRichMessage" && JSON.stringify(c.body).includes("terminates the pi process"))!;
-  assert.equal((killQ.body.chat_id as number), 42, "the reply goes to the LEARNED owner chat (the update has no chat_id)");
+  await waitFor(() => sentMessages.includes("/mcp"), "the chosen resource command is dispatched via sendUserMessage");
+  assert.ok(sentMessages.includes("/mcp"), "the tap executed /mcp exactly once through the message path");
 
   // 3) a NON-owner inline search gets an empty answer (nothing leaks)
   await resolveBatch(4, [
@@ -931,8 +939,11 @@ test("inline picker E2E: inline_query → articles + nonces; chosen_inline_resul
   const answer3 = calls.find((c) => c.method === "answerInlineQuery" && c.body.inline_query_id === "iq3")!;
   assert.deepEqual(answer3.body.results, [], "no match → empty results (the spinner clears)");
 
-  // 5) a REJECTED results answer must still end in an empty answer — the
-  //    spinner must ALWAYS clear, whatever the API did to the first attempt
+  // 5) a REJECTED answer must still end in an empty answer — the spinner
+  //    must ALWAYS clear, whatever the API did to the first attempt. Query
+  //    "qu" now matches NOTHING (List A removed /quit from the list), so
+  //    this also proves the empty-primary case: even an empty answer that
+  //    fails is retried empty (otherwise the spinner would never clear).
   await resolveBatch(6, [
     { update_id: 24, inline_query: { id: "iq4", from: { id: 123456 }, query: "qu", chat_type: "private" } },
   ]);
@@ -969,11 +980,11 @@ test("inline picker E2E: inline_query → articles + nonces; chosen_inline_resul
   //    client strips the trailing space, so "command+space" arrives as the
   //    bare name) — before any argument character is typed
   await resolveBatch(9, [
-    { update_id: 27, inline_query: { id: "iq7", from: { id: 123456 }, query: "quit", chat_type: "private" } },
+    { update_id: 27, inline_query: { id: "iq7", from: { id: 123456 }, query: "mcp", chat_type: "private" } },
   ]);
   await waitFor(() => calls.some((c) => c.method === "answerInlineQuery" && c.body.inline_query_id === "iq7"), "the exact-name query is answered");
   const answer7 = calls.find((c) => c.method === "answerInlineQuery" && c.body.inline_query_id === "iq7")!;
   const r7 = answer7.body.results as { id: string; title: string; description?: string }[];
-  const quitItem = r7.find((r) => r.title === "/quit")!;
-  assert.ok(quitItem.description!.toLowerCase().includes("tap to send"), "the keep-typing hint on the exact match");
+  const mcpItem = r7.find((r) => r.title === "/mcp")!;
+  assert.ok(mcpItem.description!.toLowerCase().includes("tap to send"), "the keep-typing hint on the exact match");
 });

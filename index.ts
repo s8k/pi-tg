@@ -16,7 +16,7 @@ import { renderQr, qrWidgetFactory, tokenLooksValid, notAuthorizedBlocks } from 
 import { makeOut, makeTelegramPi, ctxIsAlive, wrapWaitForIdle, installUiProxy } from "./src/wiring.ts";
 import { PendingDialogs } from "./src/ui-dialogs.ts";
 import { runTgCompaction } from "./src/compact.ts";
-import { mergeCommands, filterCommands, customCommandMatch, toInlineResults, toCustomResult, dispatchFor, actionForDecision } from "./src/pi-commands.ts";
+import { mergeCommands, filterCommands, customCommandMatch, toInlineResults, toCustomResult, isListable, dispatchFor, actionForDecision } from "./src/pi-commands.ts";
 import type { TgInlineQuery } from "./src/telegram-client.ts";
 
 // pi's agent dir honors PI_CODING_AGENT_DIR (tests point it at a temp dir).
@@ -316,12 +316,14 @@ export default function piTelegram(pi: ExtensionAPI): void {
         await c.answerInlineQuery(q.id, results, { isPersonal: true });
       } catch (err) {
         ui(`pi-tg: answerInlineQuery failed: ${String(err)}`, "error");
-        if (results.length > 0) {
-          try {
-            await c.answerInlineQuery(q.id, [], { isPersonal: true });
-          } catch (err2) {
-            ui(`pi-tg: empty fallback answerInlineQuery also failed: ${String(err2)}`, "error");
-          }
+        // ALWAYS retry an empty answer — even when the primary was already
+        // empty: a rejected call means Telegram never received ANY answer,
+        // so the client's spinner is still spinning and only another
+        // (empty) answer can clear it. One cheap extra call in a rare path.
+        try {
+          await c.answerInlineQuery(q.id, [], { isPersonal: true });
+        } catch (err2) {
+          ui(`pi-tg: empty fallback answerInlineQuery also failed: ${String(err2)}`, "error");
         }
       }
     };
@@ -340,13 +342,17 @@ export default function piTelegram(pi: ExtensionAPI): void {
       await answer([toCustomResult(custom, () => base + "a")]);
       return;
     }
-    const filtered = filterCommands(table, q.query);
+    // Pre-filter to what is LISTABLE so results[i] and listable[i] stay
+    // 1:1 aligned — the nonce→name registration below depends on it
+    // (toInlineResults would drop terminal-only/duplicate rows internally
+    // and desynchronize the two arrays).
+    const listable = filterCommands(table, q.query).filter(isListable);
     // base36 timestamp + per-answer counter: unique ≤10-char nonces
     // (result_id `c<nonce>` and callback `cr:<nonce>` both fit 64 bytes).
     let n = 0;
     const base = Date.now().toString(36);
-    const results = toInlineResults(filtered, () => `${base}${(n++).toString(36)}`, q.query);
-    for (let i = 0; i < results.length; i++) bridge?.registerRun(results[i]!.id.slice(1), filtered[i]!.name);
+    const results = toInlineResults(listable, () => `${base}${(n++).toString(36)}`, q.query);
+    for (let i = 0; i < results.length; i++) bridge?.registerRun(results[i]!.id.slice(1), listable[i]!.name);
     await answer(results);
   }
 

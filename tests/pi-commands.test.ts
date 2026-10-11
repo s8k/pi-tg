@@ -184,22 +184,40 @@ test("toCustomResult: id t<nonce>, NO Run button, hint description, message_text
   assert.ok(!String(r.description ?? "").toLowerCase().includes("enter"), "tap is the only reliable send — never promise Enter");
 });
 
+// ── List A: duplicates of direct bot commands are NOT listed ──
+
+test("toInlineResults: built-ins with a direct bot-command equivalent + the tg* bridge commands are excluded", () => {
+  const list = mergeCommands(resources);
+  const titles = toInlineResults(list, () => "n").map((r) => r.title);
+  const dups = ["/new", "/compact", "/model", "/thinking", "/session", "/name", "/import", "/reload", "/quit", "/resume", "/tg", "/tg:pair"];
+  for (const d of dups) assert.ok(!titles.includes(d), `${d} is available directly in chat — not listed`);
+  // non-duplicate resources remain
+  assert.ok(titles.includes("/my-template"), "prompt templates stay");
+  assert.ok(titles.includes("/skill:brainstorming"), "skills stay");
+});
+
+test("run-as-typed keeps the FULL table: typing a duplicate in the inline window still matches", () => {
+  const list = mergeCommands(resources);
+  assert.ok(customCommandMatch(list, "/compact be brief"), "/compact + args still runs from the typing window");
+  assert.ok(customCommandMatch(list, "/tg serve x"), "/tg + args still runs from the typing window");
+});
+
 // ── list mode: the hint appears the moment the query EXACTLY matches a name ──
 // (clients strip the trailing space, so "command+space" arrives as the bare
 //  name — that exact match is the observable "the full command is typed")
 
 test("toInlineResults: query EXACTLY matching a name → that item carries the keep-typing hint (case-insensitive)", () => {
   const list = mergeCommands(resources);
-  const res = toInlineResults(filterCommands(list, "model"), () => "n1", "model");
-  const model = res.find((r) => r.title === "/model")!;
-  assert.ok(model.description!.toLowerCase().includes("tap to send"), "the hint replaces the description");
-  const upper = toInlineResults(filterCommands(list, "MODEL"), () => "n2", "MODEL");
+  const res = toInlineResults(filterCommands(list, "my-template"), () => "n1", "my-template");
+  const tpl = res.find((r) => r.title === "/my-template")!;
+  assert.ok(tpl.description!.toLowerCase().includes("tap to send"), "the hint replaces the description");
+  const upper = toInlineResults(filterCommands(list, "MY-TEMPLATE"), () => "n2", "MY-TEMPLATE");
   assert.ok(upper[0]!.description!.toLowerCase().includes("tap to send"));
 });
 
 test("toInlineResults: prefix query / no query at all → plain descriptions, no hint anywhere", () => {
   const list = mergeCommands(resources);
-  for (const r of toInlineResults(filterCommands(list, "mod"), () => "n1", "mod"))
+  for (const r of toInlineResults(filterCommands(list, "skill:brain"), () => "n1", "skill:brain"))
     assert.ok(!String(r.description ?? "").includes("tap to send"), "prefix is not an exact match");
   for (const r of toInlineResults(filterCommands(list, ""), () => "n1"))
     assert.ok(!String(r.description ?? "").includes("tap to send"), "no query arg → legacy behavior");
@@ -278,29 +296,29 @@ test("toInlineResults: capped at 50 results (cap applies AFTER the terminal-only
 test("toInlineResults: terminal-only built-ins are NOT listed (dead ends in the autocomplete)", () => {
   const res = toInlineResults(
     [
-      { name: "model", description: "Select model", source: "builtin", terminalOnly: false },
+      { name: "mcp", description: "Manage MCP servers", source: "extension", terminalOnly: false },
       { name: "tree", description: "Navigate session tree", source: "builtin", terminalOnly: true },
       { name: "login", description: "Configure provider auth", source: "builtin", terminalOnly: true },
     ],
     () => "ab12cd",
   );
-  assert.deepEqual(res.map((r) => r.title), ["/model"]);
+  assert.deepEqual(res.map((r) => r.title), ["/mcp"]);
 });
 
 test("toInlineResults: article shape — id c<nonce> ≤64 bytes, title /name, required input_message_content", () => {
   const seen: string[] = [];
   const res = toInlineResults(
-    [{ name: "compact", description: "Compact the context", source: "builtin", terminalOnly: false }],
+    [{ name: "mcp", description: "Manage MCP servers", source: "extension", terminalOnly: false }],
     (n) => { seen.push(n); return "ab12cd"; },
   );
-  assert.deepEqual(seen, ["compact"]);
+  assert.deepEqual(seen, ["mcp"]);
   assert.equal(res.length, 1);
   const r = res[0];
   assert.equal(r.type, "article");
   assert.equal(r.id, "cab12cd");
   assert.ok(Buffer.byteLength(r.id) <= 64);
-  assert.equal(r.title, "/compact");
-  assert.equal(r.input_message_content.message_text, "/compact");
+  assert.equal(r.title, "/mcp");
+  assert.equal(r.input_message_content.message_text, "/mcp");
   assert.ok(r.description && r.description.length <= 70);
 });
 
@@ -321,7 +339,7 @@ test("toInlineResults: every listed result carries the ▶ Run button (cr:<nonce
 test("toInlineResults: resource description gets a source tag (no 🖥 note — those are not listed)", () => {
   const res = toInlineResults(
     [
-      { name: "tg", description: "Show session card", source: "extension", terminalOnly: false },
+      { name: "mcp", description: "Manage MCP servers", source: "extension", terminalOnly: false },
       { name: "my-tpl", description: "Review code", source: "prompt", terminalOnly: false },
     ],
     () => "q1w2e3",
