@@ -12,6 +12,25 @@ import { COMPACT_CANCELLED_MSG } from "./compact.ts";
 import { AUTO_COMPACT_STATUS, AUTO_COMPACT_DONE_TEXT, fmtTokens } from "./mirror.ts";
 import { mergeCommands, dispatchFor, actionForDecision, cardText, PICKER_BUTTON } from "./pi-commands.ts";
 import { BOT_COMMANDS } from "./bot-commands.ts";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
+/**
+ * The running pi-tg version (package.json next to this module), for the
+ * /help header stamp: after `npm update` + `/reload` the stamp shows the
+ * NEW version only if the reload actually re-imported the extension code —
+ * it is the user-visible proof of which generation is live.
+ */
+export const PI_TG_VERSION: string | undefined = (() => {
+  try {
+    const pkg = JSON.parse(
+      readFileSync(fileURLToPath(new URL("../package.json", import.meta.url)), "utf8"),
+    ) as { version?: string };
+    return typeof pkg.version === "string" ? pkg.version : undefined;
+  } catch {
+    return undefined; // versionless install — the header simply omits the stamp
+  }
+})();
 
 export interface PiModelInfo {
   model: PiModel;
@@ -167,8 +186,10 @@ const helpPara = (text: TgRichText): TgBlock => ({ type: "paragraph", text });
 export function helpBlocks(): TgBlock[] {
   const cmd = (c: string, desc: string): TgBlock => helpPara([{ type: "bold", text: c }, ` — ${desc}`]);
   const parts: TgBlock[] = [
-    helpPara([{ type: "bold", text: "pi-tg" }, " — drive this pi session from Telegram"]),
-    helpPara("Plain text → prompt (busy → ⚡ queued steer)"),
+    helpPara([
+      { type: "bold", text: "pi-tg" },
+      `${PI_TG_VERSION ? ` v${PI_TG_VERSION}` : ""} — drive this pi session from Telegram`,
+    ]),
   ];
   for (const { command, description } of BOT_COMMANDS) {
     if (command === "help") {

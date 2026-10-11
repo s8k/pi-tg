@@ -1,7 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { SessionBridge, helpBlocks } from "../src/session-bridge.ts";
+import { SessionBridge, helpBlocks, PI_TG_VERSION } from "../src/session-bridge.ts";
 import { BOT_COMMANDS } from "../src/bot-commands.ts";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 /** The bold command names of helpBlocks, in order. */
 const helpCmds = (): string[] => {
@@ -87,6 +89,22 @@ test("help card is a projection of BOT_COMMANDS — menu and card can never drif
     }
     assert.ok(lines.includes(`/${command} — ${description}`), `missing or drifted: /${command} — ${description}`);
   }
+});
+
+test("help header carries the version stamp from package.json (npm-update visibility, 2026-10-11)", () => {
+  const pkg = JSON.parse(
+    readFileSync(fileURLToPath(new URL("../package.json", import.meta.url)), "utf8"),
+  ) as { version: string };
+  const header = helpBlocks()[0];
+  assert.equal(header?.type, "paragraph");
+  const parts = (Array.isArray(header?.text) ? header.text : [header?.text]) as (string | { type: string; text: unknown })[];
+  const bold = parts.find(
+    (p): p is { type: "bold"; text: unknown } => typeof p === "object" && !Array.isArray(p) && p.type === "bold",
+  );
+  assert.equal(String(bold?.text), "pi-tg", "the header starts with the bold pi-tg entity");
+  const desc = parts.filter((p): p is string => typeof p === "string").join("");
+  assert.ok(desc.includes(` v${pkg.version}`), `expected ' v${pkg.version}' in: ${desc}`);
+  assert.equal(PI_TG_VERSION, pkg.version, "PI_TG_VERSION reads the same package.json");
 });
 
 test("help lists the three level commands, not /mute or /unmute", () => {
