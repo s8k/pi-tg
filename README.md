@@ -82,7 +82,7 @@ on every poller start (self-healing; single source of truth in
 
 ## Inline command picker
 
-The `/help` and `/status` cards carry a **⌨️ Pi commands** button: pressing
+The `/help` card carries a **⌨️ Other Pi commands** button: pressing
 it opens Telegram's inline search (prefilled with `@bot /`) over the
 session's command table — pi built-ins, extension commands, prompt
 templates and skills (tagged `[ext]` / `[tpl]` / `[skill]`). Tapping a

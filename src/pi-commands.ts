@@ -246,12 +246,13 @@ export function dispatchFor(
 }
 
 /**
- * The picker entry button for the /help and /status cards. Pressing it
- * inserts `@bot /` into the input field and opens the inline search.
- * (Not supported in channel chats — the client simply hides the button.)
+ * The picker entry button for the /help card (removed from /status
+ * 2026-10-11 — the help card is its only home). Pressing it inserts `@bot /`
+ * into the input field and opens the inline search. (Not supported in
+ * channel chats — the client simply hides the button.)
  */
 export const PICKER_BUTTON: { inline_keyboard: { text: string; switch_inline_query_current_chat: string }[][] } =
-  { inline_keyboard: [[{ text: "⌨️ Pi commands", switch_inline_query_current_chat: "/" }]] };
+  { inline_keyboard: [[{ text: "⌨️ Other Pi commands", switch_inline_query_current_chat: "/" }]] };
 
 // Bot API limits for inline query results.
 const MAX_RESULTS = 50;

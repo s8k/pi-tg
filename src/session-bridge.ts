@@ -11,6 +11,7 @@ import { formatGpuLines, type GpuStats } from "./gpu.ts";
 import { COMPACT_CANCELLED_MSG } from "./compact.ts";
 import { AUTO_COMPACT_STATUS, AUTO_COMPACT_DONE_TEXT, fmtTokens } from "./mirror.ts";
 import { mergeCommands, dispatchFor, actionForDecision, cardText, PICKER_BUTTON } from "./pi-commands.ts";
+import { BOT_COMMANDS } from "./bot-commands.ts";
 
 export interface PiModelInfo {
   model: PiModel;
@@ -156,28 +157,27 @@ const LEVEL_BADGES: Record<OutputLevel, string> = {
 
 const helpPara = (text: TgRichText): TgBlock => ({ type: "paragraph", text });
 
-/** The /help card as rich blocks — each line a paragraph, the command names bold entities. */
+/**
+ * The /help card as rich blocks — each line a paragraph, the command names
+ * bold entities. SINGLE SOURCE OF TRUTH: the command lines are a projection
+ * of the bot menu (BOT_COMMANDS) — same commands, order and descriptions —
+ * so the menu and the card can never drift. The /help entry itself carries
+ * the picker-button line instead of the menu's description.
+ */
 export function helpBlocks(): TgBlock[] {
   const cmd = (c: string, desc: string): TgBlock => helpPara([{ type: "bold", text: c }, ` — ${desc}`]);
-  return [
+  const parts: TgBlock[] = [
     helpPara([{ type: "bold", text: "pi-tg" }, " — drive this pi session from Telegram"]),
     helpPara("Plain text → prompt (busy → ⚡ queued steer)"),
-    cmd("/status", "session info"),
-    cmd("/stop", "Esc (stop the current turn)"),
-    cmd("/compact", "compact the context (stoppable via the Stop button)"),
-    cmd("/new", "start a new session"),
-    cmd("/sessions", "list & switch sessions"),
-    cmd("/name <text>", "rename this session"),
-    cmd("/models", "pick a model"),
-    cmd("/thinking", "pick the thinking level"),
-    cmd("/level_mute", "no agent output (commands still work)"),
-    cmd("/level_minimal", "visible text only (no tools, no thinking)"),
-    cmd("/level_full", "tool log + final answer (default)"),
-    cmd("/reload", "hot-reload extensions & resources (idle only)"),
-    cmd("/kill", "shut down pi"),
-    cmd("/help", "this text"),
-    helpPara([{ type: "bold", text: "⌨️ Pi commands" }, " — the button below: browse & run ANY pi session command (built-ins, extensions, templates, skills)"]),
   ];
+  for (const { command, description } of BOT_COMMANDS) {
+    if (command === "help") {
+      parts.push(cmd("/help", "Shows bot commands + a button to browse, search, and run other Pi commands"));
+    } else {
+      parts.push(cmd(`/${command}`, description));
+    }
+  }
+  return parts;
 }
 
 // ── compact draft (Telegram Bot API 10.2 rich message drafts) ──
@@ -487,7 +487,9 @@ export class SessionBridge {
   }
 
   private async sendCardAndHelp(chatId: number): Promise<void> {
-    await this.deps.out.sendRich(chatId, await this.statusBlocks(), { replyMarkup: PICKER_BUTTON });
+    // the picker button lives on the help card only (removed from the status
+    // card 2026-10-11)
+    await this.deps.out.sendRich(chatId, await this.statusBlocks());
     await this.deps.out.sendRich(chatId, helpBlocks(), { replyMarkup: PICKER_BUTTON });
   }
 
@@ -550,7 +552,7 @@ export class SessionBridge {
         return;
       }
       case "status":
-        await out.sendRich(action.chatId, await this.statusBlocks(), { replyMarkup: PICKER_BUTTON });
+        await out.sendRich(action.chatId, await this.statusBlocks()); // no picker button — it lives on the /help card only
         return;
       case "stop": {
         const compacting = this.compactState;

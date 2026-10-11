@@ -240,7 +240,7 @@ test("help: rich blocks, each line a paragraph with a bold command entity", asyn
     }
   }
   assert.deepEqual(cmds, [
-    "/status", "/stop", "/compact", "/new", "/sessions", "/name <text>", "/models", "/thinking",
-    "/level_mute", "/level_minimal", "/level_full", "/reload", "/kill", "/help",
+    "/status", "/stop", "/new", "/sessions", "/name", "/models", "/thinking",
+    "/level_mute", "/level_minimal", "/level_full", "/compact", "/reload", "/kill", "/help",
   ]);
 });

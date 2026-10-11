@@ -153,21 +153,21 @@ test("cmdTerminal: the 🖥 explanation reply", async () => {
   assert.ok(lastSend(out).includes("/login"));
 });
 
-// ── picker button on the help & status cards ──
+// ── picker button on the help card (removed from /status 2026-10-11) ──
 
-test("help card carries the ⌨️ Pi commands button (switch_inline_query_current_chat '/')", async () => {
+test("help card carries the ⌨️ Other Pi commands button (switch_inline_query_current_chat '/')", async () => {
   const { out, bridge } = setup();
   await bridge.dispatch({ kind: "help", chatId: owner });
   const help = out.calls.filter((c) => c.kind === "sendRich").pop()!;
   assert.deepEqual(help.opts?.replyMarkup, PICKER_BUTTON);
-  assert.ok(lastRichText(out).includes("Pi commands"));
+  assert.ok(lastRichText(out).includes("other Pi commands"), "the /help line mentions the picker for the other Pi commands");
 });
 
-test("status card carries the ⌨️ Pi commands button", async () => {
+test("status card has NO picker button (2026-10-11: the button lives on the /help card only)", async () => {
   const { out, bridge } = setup();
   await bridge.dispatch({ kind: "status", chatId: owner });
   const status = out.calls.filter((c) => c.kind === "sendRich").pop()!;
-  assert.deepEqual(status.opts?.replyMarkup, PICKER_BUTTON);
+  assert.equal(status.opts?.replyMarkup, undefined);
 });
 
 test("start (pairing card + help) — the help card carries the button", async () => {
