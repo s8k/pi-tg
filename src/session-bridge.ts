@@ -163,7 +163,7 @@ export function helpBlocks(): TgBlock[] {
     helpPara([{ type: "bold", text: "pi-tg" }, " — drive this pi session from Telegram"]),
     helpPara("Plain text → prompt (busy → ⚡ queued steer)"),
     cmd("/status", "session info"),
-    cmd("/stop", "Esc (abort the current turn)"),
+    cmd("/stop", "Esc (stop the current turn)"),
     cmd("/compact", "compact the context (stoppable via the Stop button)"),
     cmd("/new", "start a new session"),
     cmd("/sessions", "list & switch sessions"),

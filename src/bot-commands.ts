@@ -13,7 +13,7 @@ export const BOT_COMMANDS: BotCommand[] = [
   { command: "name", description: "[session_name] Rename this session" },
   { command: "models", description: "Pick a model" },
   { command: "thinking", description: "Pick the thinking level" },
-  { command: "stop", description: "Abort the current request" },
+  { command: "stop", description: "Stop the current request" },
   { command: "level_mute", description: "Output level: mute — no agent output (commands still work)" },
   { command: "level_minimal", description: "Output level: minimal — visible text only (no tools, no thinking)" },
   { command: "level_full", description: "Output level: full — tool log + final answer (default)" },

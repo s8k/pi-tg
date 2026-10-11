@@ -19,7 +19,7 @@ default; one call, idempotent).
 | 4 | `name` | [session_name] Rename this session |
 | 5 | `models` | Pick a model |
 | 6 | `thinking` | Pick the thinking level |
-| 7 | `stop` | Abort the current request |
+| 7 | `stop` | Stop the current request |
 | 8 | `mute` | Stop posting agent output (commands still work) |
 | 9 | `unmute` | Resume posting agent output |
 | 10 | `compact` | Compact the history |

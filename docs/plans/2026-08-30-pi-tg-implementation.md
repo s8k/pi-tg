@@ -2532,7 +2532,7 @@ export function helpText(): string {
     "<b>/models</b> — pick a model",
     "<b>/thinking</b> — pick the thinking level",
     "<b>/status</b> — session info",
-    "<b>/stop</b> — Esc (abort the current turn)",
+    "<b>/stop</b> — Esc (stop the current turn)",
     "<b>/compact</b> — compact the history",
     "<b>/name &lt;text&gt;</b> — rename this session",
     "<b>/kill</b> — shut down pi",
@@ -4615,7 +4615,7 @@ phone (Telegram) ⇄ Bot API long polling ⇄ pi-tg (in-process) ⇄ pi TUI sess
 | `/models` | model list (current marked) with buttons |
 | `/thinking` | available thinking levels with buttons |
 | `/status` | model, thinking, context usage, message count, busy state |
-| `/stop` | abort the current turn |
+| `/stop` | stop the current turn |
 | `/compact` | compact context (result reported when done) |
 | `/name <text>` | rename the session |
 | `/kill` | confirm → graceful TUI shutdown |

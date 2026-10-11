@@ -66,7 +66,7 @@ The poller also injects `/tg internal …` (machine-only, not listed).
 | `/models` | model list (current marked) with buttons |
 | `/thinking` | available thinking levels with buttons |
 | `/status` | session, dir, model, thinking, context usage, message count, busy state, GPU temp/util/memory (NVIDIA, if available) |
-| `/stop` | abort the current turn |
+| `/stop` | stop the current turn |
 | `/level_mute` | output level: mute — no agent output (commands still work) |
 | `/level_minimal` | output level: minimal — visible text only (no tools, no thinking) |
 | `/level_full` | output level: full — tool log + final answer (default) |
