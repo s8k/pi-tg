@@ -54,7 +54,7 @@ test("cmdRun: a mapped built-in dispatches its existing TG flow (quit → kill c
   const { bridge, out } = setup();
   bridge.registerRun("ab12cd", "quit");
   await bridge.dispatch({ kind: "cmdRun", chatId: owner, nonce: "ab12cd" });
-  assert.ok(lastRichText(out).includes("terminates the pi process"));
+  assert.ok(lastRichText(out).includes("terminates the Pi process"));
 });
 
 test("cmdRun: a mapped built-in with args carries them (name → rename)", async () => {

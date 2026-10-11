@@ -188,7 +188,7 @@ export function helpBlocks(): TgBlock[] {
   const parts: TgBlock[] = [
     helpPara([
       { type: "bold", text: "pi-tg" },
-      `${PI_TG_VERSION ? ` v${PI_TG_VERSION}` : ""} — drive this pi session from Telegram`,
+      `${PI_TG_VERSION ? ` v${PI_TG_VERSION}` : ""} — drive this Pi session from Telegram`,
     ]),
   ];
   for (const { command, description } of BOT_COMMANDS) parts.push(cmd(`/${command}`, description));
@@ -669,7 +669,7 @@ export class SessionBridge {
         await this.runSessionCommand(action.chatId, action.name, action.args);
         return;
       case "cmdTerminal":
-        await out.send(action.chatId, `🖥 /${action.name} is a terminal-only command — run it in the pi TUI.`, { parseMode: null });
+        await out.send(action.chatId, `🖥 /${action.name} is a terminal-only command — run it in the Pi TUI.`, { parseMode: null });
         return;
       case "importSet": {
         // /import <path>: import (switch to) an existing session file — the
@@ -755,7 +755,7 @@ export class SessionBridge {
         return;
       case "killAsk": {
         const nonce = `k${++this.oneShotSeq}`;
-        const blocks: TgBlock[] = [{ type: "paragraph", text: "⚠️ This terminates the pi process — the bot goes silent until pi restarts. Sure?" }];
+        const blocks: TgBlock[] = [{ type: "paragraph", text: "⚠️ This terminates the Pi process — the bot goes silent until Pi restarts. Sure?" }];
         const id = await out.sendRich(action.chatId, blocks, {
           replyMarkup: {
             inline_keyboard: [[{ text: "☠ Yes, kill", callback_data: CB.kill(true, nonce) }, { text: "No", callback_data: CB.kill(false, nonce) }]],
@@ -768,8 +768,8 @@ export class SessionBridge {
         const p = this.consumeOneShot(action.nonce);
         if (action.nonce && !p) return; // stale tap — the question is already stamped
         if (!action.yes) {
-          if (p) await this.stampOneShot(p, "✅ Kept running — pi is still alive.");
-          else await out.send(action.chatId, "OK — pi keeps running."); // legacy (no nonce) — plain message
+          if (p) await this.stampOneShot(p, "✅ Kept running — Pi is still alive.");
+          else await out.send(action.chatId, "OK — Pi keeps running."); // legacy (no nonce) — plain message
           return;
         }
         if (p) await this.stampOneShot(p, "☠ Shutting down…");
@@ -818,7 +818,7 @@ export class SessionBridge {
       return;
     }
     if (d.type === "terminal") {
-      await out.send(chatId, `🖥 /${d.name} is a terminal-only command — run it in the pi TUI.`, { parseMode: null });
+      await out.send(chatId, `🖥 /${d.name} is a terminal-only command — run it in the Pi TUI.`, { parseMode: null });
       return;
     }
     if (d.type === "action") {

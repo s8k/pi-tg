@@ -216,11 +216,11 @@ test("compact: pi.compact throwing synchronously → failure stamp, state finali
   const out = new FakeOut();
   const bridge = new SessionBridge(makeDeps(adapter, out));
   adapter.compact = () => {
-    throw new Error("no active pi context");
+    throw new Error("no active Pi context");
   };
   await bridge.dispatch({ kind: "compact", chatId: 7 });
   assert.equal(bridge.manualCompact(), undefined, "the state must be cleared");
-  assert.equal(out.calls[out.calls.length - 1]?.text, "⚠️ Compaction Failed: no active pi context");
+  assert.equal(out.calls[out.calls.length - 1]?.text, "⚠️ Compaction Failed: no active Pi context");
   // and a fresh /compact works again
   adapter.compact = (onDone) => {
     pi.compactCalls++;

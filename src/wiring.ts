@@ -142,7 +142,7 @@ export function makeTelegramPi(deps: TelegramPiDeps): TelegramPi {
     if (ctxIsAlive(sess)) return sess;
     return undefined;
   };
-  const requireCtx = (): CtxLike => ctx() ?? (() => { throw new Error("no active pi context"); })();
+  const requireCtx = (): CtxLike => ctx() ?? (() => { throw new Error("no active Pi context"); })();
   return {
     get cwd() {
       return ctx()?.cwd ?? "";
@@ -177,17 +177,17 @@ export function makeTelegramPi(deps: TelegramPiDeps): TelegramPi {
     },
     newSession() {
       const c = requireCtx();
-      if (!c.newSession) throw new Error("no active pi context");
+      if (!c.newSession) throw new Error("no active Pi context");
       void c.newSession().catch(() => {});
     },
     switchSession(path) {
       const c = requireCtx();
-      if (!c.switchSession) throw new Error("no active pi context");
+      if (!c.switchSession) throw new Error("no active Pi context");
       void c.switchSession(path).catch(() => {});
     },
     waitForIdle: async () => {
       const c = requireCtx();
-      if (!c.waitForIdle) throw new Error("no active pi context");
+      if (!c.waitForIdle) throw new Error("no active Pi context");
       await c.waitForIdle();
     },
     compact(onDone, instructions) {
@@ -205,7 +205,7 @@ export function makeTelegramPi(deps: TelegramPiDeps): TelegramPi {
     },
     reload(onDone) {
       const c = requireCtx();
-      if (!c.reload) throw new Error("no active pi context");
+      if (!c.reload) throw new Error("no active Pi context");
       // Terminal: after pi replaces the runtime, this closure still runs in the
       // pre-reload version — report the outcome, never persist from here.
       void c.reload().then(

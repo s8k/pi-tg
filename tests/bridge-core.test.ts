@@ -55,7 +55,7 @@ test("stop: busy → '⏹️ Stopping…' gets stamped '✔️' once the agent i
 test("stop: waitForIdle rejects (context gone) → no stamp, no crash", async () => {
   const pi = new FakePi({ busy: true });
   const adapter = pi.build();
-  adapter.waitForIdle = async () => { throw new Error("no active pi context"); };
+  adapter.waitForIdle = async () => { throw new Error("no active Pi context"); };
   const out = new FakeOut();
   const bridge = new SessionBridge(makeDeps(adapter, out));
   await bridge.dispatch({ kind: "stop", chatId: 7 });

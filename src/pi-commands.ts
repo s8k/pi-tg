@@ -76,7 +76,7 @@ export const BUILTIN_PI_COMMANDS: readonly BuiltinPiCommand[] = [
   { name: "compact", description: "Manually compact the session context", map: "compact", duplicateOf: "/compact" },
   { name: "resume", description: "Resume a different session", map: "sessions", duplicateOf: "/sessions" },
   { name: "reload", description: "Reload keybindings, extensions, skills, prompts, themes, and context files", map: "reload", duplicateOf: "/reload" },
-  { name: "quit", description: "Quit pi", map: "killAsk", duplicateOf: "/kill" },
+  { name: "quit", description: "Quit Pi", map: "killAsk", duplicateOf: "/kill" },
 ];
 
 /** pi-tg's own bridge commands (registered in index.ts — keep in sync with
