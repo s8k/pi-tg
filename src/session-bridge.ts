@@ -188,7 +188,7 @@ const helpPara = (text: TgRichText): TgBlock => ({ type: "paragraph", text });
  */
 export const INLINE_MODE_OFF_FOOTER: TgBlock = {
   type: "paragraph",
-  text: "⚠️ Inline mode is disabled — the session commands search and picker are unavailable. Enable it: @BotFather → /mybots → Bot Settings → API Services → Inline mode.",
+  text: "⚠️ Inline mode is disabled — the session commands picker (in /help) is unavailable. Enable it: @BotFather → /mybots → Bot Settings → API Services → Inline mode.",
 };
 
 /**
