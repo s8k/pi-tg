@@ -178,7 +178,7 @@ export default function piTelegram(pi: ExtensionAPI): void {
       username = me.username;
       if (me.supports_inline_queries === false) {
         ui(
-          "pi-tg: INLINE MODE IS DISABLED for this bot — the ⌨️ picker button and the inline command list will not work. Enable it: @BotFather → /mybots → Bot Settings → API Services → Inline mode (also enable 'Inline feedback' so a tap executes the command). Restart Pi or /tg:reload afterwards.",
+          "pi-tg: INLINE MODE IS DISABLED for this bot — the ⌨️ picker button and the inline command list will not work. Enable it: @BotFather → /mybots → Bot Settings → API Services → Inline mode. Restart Pi or /tg:reload afterwards.",
           "warning",
         );
       }
@@ -238,8 +238,7 @@ export default function piTelegram(pi: ExtensionAPI): void {
     if (!bridge || !out || !state) return;
     // Inline picker: the owner's inline search — answer with the (filtered)
     // session-command table. No action here: execution arrives LATER as
-    // chosen_inline_result (the tapped card) — that update requires
-    // BotFather's "Inline feedback" to be enabled.
+    // chosen_inline_result (the tapped card).
     if (update.inline_query) {
       await handleInlineQuery(update.inline_query);
       return;

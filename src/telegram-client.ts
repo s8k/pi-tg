@@ -82,10 +82,9 @@ export interface TgInlineQuery {
 }
 
 /**
- * The user chose one of OUR inline results (Bot API). Requires "Inline
- * feedback" enabled in @BotFather — without it this update never arrives and
- * a tap only auto-sends the card. `inline_message_id` is present only when
- * the result carried a reply_markup (ours never do, so it is always absent).
+ * The user chose one of OUR inline results (Bot API). `inline_message_id`
+ * is present only when the result carried a reply_markup (ours never do,
+ * so it is always absent).
  */
 export interface TgChosenInlineResult {
   result_id: string;
