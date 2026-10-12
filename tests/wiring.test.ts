@@ -12,7 +12,6 @@ test("makeOut: send → addSent + persist, default parseMode HTML", async () => 
     sendRichMessage: async () => { throw new Error("unexpected"); },
     editRichMessage: async () => { throw new Error("unexpected"); },
     sendRichMessageDraft: async () => true,
-    editInlineMessageText: async () => true,
   };
   const state = new TelegramState();
   let persists = 0;
@@ -33,7 +32,6 @@ test("makeOut: explicit parseMode null survives; edit/delete passthrough", async
     sendRichMessage: async () => { throw new Error("unexpected"); },
     editRichMessage: async () => { throw new Error("unexpected"); },
     sendRichMessageDraft: async () => true,
-    editInlineMessageText: async () => true,
   };
   const out = makeOut(client, new TelegramState(), async () => {});
   await out.send(7, "plain", { parseMode: null });
@@ -261,7 +259,6 @@ test("makeOut: sendRich → client.sendRichMessage + addSent + persist", async (
     sendRichMessage: async (chatId, rich) => { calls.push(["rich", chatId, rich]); return { message_id: 888 }; },
     editRichMessage: async () => { throw new Error("unexpected"); },
     sendRichMessageDraft: async () => true,
-    editInlineMessageText: async () => true,
   };
   const state = new TelegramState();
   const out = makeOut(client, state, async () => {});
@@ -280,7 +277,6 @@ test("makeOut: sendRich disableNotification → client.sendRichMessage opts (und
     sendRichMessage: async (chatId, rich, opts) => { calls.push(["rich", chatId, rich, opts]); return { message_id: 889 }; },
     editRichMessage: async () => { throw new Error("unexpected"); },
     sendRichMessageDraft: async () => true,
-    editInlineMessageText: async () => true,
   };
   const state = new TelegramState();
   const out = makeOut(client, state, async () => {});
@@ -299,7 +295,6 @@ test("makeOut: sendDraft → passthrough (draftId + canStop + keepOnStop), no ad
     sendRichMessage: async () => { throw new Error("unexpected"); },
     editRichMessage: async () => { throw new Error("unexpected"); },
     sendRichMessageDraft: async (chatId, draftId, rich, canStop, keepOnStop) => { calls.push(["draft", chatId, draftId, rich, canStop, keepOnStop]); return true; },
-    editInlineMessageText: async () => true,
   };
   const state = new TelegramState();
   const out = makeOut(client, state, async () => {});

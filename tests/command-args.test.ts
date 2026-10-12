@@ -98,9 +98,6 @@ test("dialog actions round-trip", () => {
 test("cmdRun: exact format + round-trip (nonce is a plain base36 token)", () => {
   assert.equal(encodeInternal({ kind: "cmdRun", chatId: 7, nonce: "ab12cd" }), "internal cmdRun 7 ab12cd");
   assert.deepEqual(parseInternal("internal cmdRun 7 ab12cd"), { kind: "cmdRun", chatId: 7, nonce: "ab12cd" });
-  // optional 2nd token: the inline_message_id of the auto-sent card
-  assert.equal(encodeInternal({ kind: "cmdRun", chatId: 7, nonce: "ab12cd", inlineMessageId: "inl-9" }), "internal cmdRun 7 ab12cd inl-9");
-  assert.deepEqual(parseInternal("internal cmdRun 7 ab12cd inl-9"), { kind: "cmdRun", chatId: 7, nonce: "ab12cd", inlineMessageId: "inl-9" });
   // malformed: missing nonce, empty, or a third token
   assert.equal(parseInternal("internal cmdRun 7"), null);
   assert.equal(parseInternal("internal cmdRun 7 "), null);

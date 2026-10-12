@@ -181,7 +181,7 @@ test("R9: empty projection is ignored; text wins when both present; auth still e
   assert.equal(route(richUpdate(2, 9, [{ type: "paragraph", text: "hi" }]), owner).kind, "notAuthorized");
 });
 
-// ── inline command picker: cr:<nonce> + session-command fallback ──
+// ── inline command picker: session-command fallback ──
 
 const sessionCommand = (name: string, rest: string, chatId: number): TgAction | undefined => {
   if (name === "model") return { kind: "modelList", chatId };
@@ -192,29 +192,6 @@ const sessionCommand = (name: string, rest: string, chatId: number): TgAction | 
   if (name === "scoped-models") return { kind: "cmdTerminal", chatId, name };
   return undefined; // unknown → the router must keep its "unknown" behavior
 };
-
-test("cr:<nonce> callback → cmdRun (owner), chatId from the callback's message", () => {
-  assert.deepEqual(route(cbUpdate(1, 5, "cr:ab12cd"), 5), { kind: "cmdRun", chatId: 7, nonce: "ab12cd" });
-});
-
-test("cr:<nonce> from the INLINE MENU (no callback message) → cmdRun with the learned ownerChatId; none learned → ignore", () => {
-  // the ▶ Run button lives in the inline-query UI — the card is NOT sent to
-  // the chat, so the callback_query carries no message (chatId would be -1
-  // and the /tg internal payload would be rejected as bad)
-  const inlineCb = (updateId: number, id: number, data: string): TgUpdate => ({
-    update_id: updateId,
-    callback_query: { id: "cb" + updateId, from: from(id), data },
-  });
-  assert.deepEqual(route(inlineCb(1, 5, "cr:ab12cd"), 5, { ownerChatId: 7 }), { kind: "cmdRun", chatId: 7, nonce: "ab12cd" });
-  assert.deepEqual(route(inlineCb(2, 5, "cr:ab12cd"), 5), { kind: "ignore" });
-});
-
-test("cr: malformed → ignore (empty, >16 chars, uppercase, missing separator)", () => {
-  assert.deepEqual(route(cbUpdate(1, 5, "cr:"), 5), { kind: "ignore" });
-  assert.deepEqual(route(cbUpdate(1, 5, "cr:" + "a".repeat(17)), 5), { kind: "ignore" });
-  assert.deepEqual(route(cbUpdate(1, 5, "cr:AB12CD"), 5), { kind: "ignore" });
-  assert.deepEqual(route(cbUpdate(1, 5, "crx:ab12cd"), 5), { kind: "ignore" });
-});
 
 test("sessionCommand fallback: typed built-in/resource/terminal names route via the injected table", () => {
   assert.deepEqual(route(msgUpdate(1, 5, "/model"), 5, { sessionCommand }), { kind: "modelList", chatId: 7 });
@@ -277,20 +254,19 @@ test("hyphenated names route intact (skill names and built-ins like scoped-model
 
 // ── inline picker: chosen_inline_result (Flow A) ──
 
-const chosenUpdate = (updateId: number, id: number, resultId: string, inlineMessageId?: string): TgUpdate => ({
+const chosenUpdate = (updateId: number, id: number, resultId: string): TgUpdate => ({
   update_id: updateId,
   chosen_inline_result: {
     from: from(id),
     chat_type: "private",
     query: "mod",
     result_id: resultId,
-    ...(inlineMessageId ? { inline_message_id: inlineMessageId } : {}),
   },
 });
 
-test("chosen_inline_result: owner + known chat → cmdRun with nonce + inlineMessageId", () => {
-  const u = chosenUpdate(1, 5, "c" + "ab12cd34", "inl-42");
-  assert.deepEqual(route(u, 5, { ownerChatId: 7 }), { kind: "cmdRun", chatId: 7, nonce: "ab12cd34", inlineMessageId: "inl-42" });
+test("chosen_inline_result: owner + known chat → cmdRun with the nonce", () => {
+  const u = chosenUpdate(1, 5, "c" + "ab12cd34");
+  assert.deepEqual(route(u, 5, { ownerChatId: 7 }), { kind: "cmdRun", chatId: 7, nonce: "ab12cd34" });
 });
 
 test("chosen_inline_result: non-owner / unpaired → ignore (no leak, no execution)", () => {
@@ -313,11 +289,6 @@ test("chosen_inline_result: malformed result_id → ignore", () => {
   assert.deepEqual(route(chosenUpdate(2, owner, "tabc123"), owner, { ownerChatId: 7 }), { kind: "ignore" });
   assert.deepEqual(route(chosenUpdate(2, owner, "c" + "A".repeat(20)), owner, { ownerChatId: 7 }), { kind: "ignore" });
   assert.deepEqual(route(chosenUpdate(3, owner, "c"), owner, { ownerChatId: 7 }), { kind: "ignore" });
-});
-
-test("chosen_inline_result: no inline_message_id (channel) → cmdRun without stamp target", () => {
-  const u = chosenUpdate(1, 5, "cab12cd34");
-  assert.deepEqual(route(u, 5, { ownerChatId: 7 }), { kind: "cmdRun", chatId: 7, nonce: "ab12cd34" });
 });
 
 test("typed /compact <instructions> carries them (inline-picker parity)", () => {

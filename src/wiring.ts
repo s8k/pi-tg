@@ -57,8 +57,6 @@ export interface ClientLike {
   sendRichMessage(chatId: number, rich: { blocks: TgBlock[] }, opts?: { replyToId?: number; disableNotification?: boolean; replyMarkup?: unknown }): Promise<{ message_id: number }>;
   editRichMessage(chatId: number, messageId: number, rich: { blocks: TgBlock[] }, opts?: { replyMarkup?: unknown }): Promise<boolean>;
   sendRichMessageDraft(chatId: number, draftId: number, rich: { blocks: TgBlock[] }, canStop?: boolean, keepOnStop?: boolean): Promise<boolean>;
-  /** Edits an auto-sent inline result card by its inline_message_id (picker stamping). replyMarkup: "" removes the card's keyboard. */
-  editInlineMessageText(inlineMessageId: string, text: string, opts?: { replyMarkup?: unknown }): Promise<boolean>;
 }
 
 // ── Out adapter: client + state tracking + persist ──
@@ -86,7 +84,6 @@ export function makeOut(client: ClientLike, state: TelegramState, persist: () =>
       return client.editMessageText(chatId, messageId, text, { parseMode, replyMarkup: opts?.replyMarkup });
     },
     delete: (chatId, messageId) => client.deleteMessage(chatId, messageId),
-    editInline: (inlineMessageId, text, opts) => client.editInlineMessageText(inlineMessageId, text, opts),
   };
 }
 

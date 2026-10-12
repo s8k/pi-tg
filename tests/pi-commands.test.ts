@@ -178,7 +178,6 @@ test("toCustomResult: id t<nonce>, NO Run button, hint description, message_text
   const r = toCustomResult(m, () => "abc123");
   assert.equal(r.id, "tabc123"); // t-prefix: chosen_inline_result ignores it — the auto-send message executes
   assert.equal(r.input_message_content.message_text, "/tg serve http://x");
-  assert.equal(r.reply_markup, undefined);
   assert.equal(r.title, "/tg serve http://x");
   assert.ok(String(r.description ?? "").toLowerCase().includes("arguments"), "the hint: keep typing arguments/prompt");
   assert.ok(!String(r.description ?? "").toLowerCase().includes("enter"), "tap is the only reliable send — never promise Enter");
@@ -322,7 +321,7 @@ test("toInlineResults: article shape — id c<nonce> ≤64 bytes, title /name, r
   assert.ok(r.description && r.description.length <= 70);
 });
 
-test("toInlineResults: every listed result carries the ▶ Run button (cr:<nonce>)", () => {
+test("toInlineResults: NO Run button / reply_markup (2026-10-11 — the button was a zombie after the 1-tap; execution is chosen_inline_result only)", () => {
   const res = toInlineResults(
     [
       { name: "model", description: "Select model", source: "builtin", terminalOnly: false },
@@ -331,8 +330,7 @@ test("toInlineResults: every listed result carries the ▶ Run button (cr:<nonce
     () => "zz99yy",
   );
   for (const r of res) {
-    assert.equal(r.reply_markup?.inline_keyboard[0][0].callback_data, "cr:zz99yy");
-    assert.ok(r.reply_markup?.inline_keyboard[0][0].text.includes("Run"));
+    assert.ok(!("reply_markup" in r), "no reply_markup — the auto-sent card has no leftover button");
   }
 });
 

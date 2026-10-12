@@ -271,7 +271,6 @@ export interface InlineArticle {
   title: string;
   description?: string;
   input_message_content: { message_text: string }; // required: tap auto-sends this
-  reply_markup?: { inline_keyboard: { text: string; callback_data: string }[][] };
 }
 
 /**
@@ -290,11 +289,9 @@ export function cardText(name: string): string {
  * Render (up to 50) session commands as inline-query articles.
  * TERMINAL-ONLY BUILT-INS ARE NOT LISTED — they are dead ends in the
  * autocomplete (no extension-API equivalent; a tap could only produce the
- * 🖥 explanation). The 50-cap applies AFTER that filter. Every listed
- * result carries the ▶ Run fallback button (the 2-tap path — works
- * without BotFather's inline feedback).
+ * 🖥 explanation). The 50-cap applies AFTER that filter.
  * `makeNonce(name)` must return a UNIQUE nonce per result, ≤61 chars
- * (id = `c<nonce>` ≤ 64 bytes; callback_data = `cr:<nonce>` ≤ 64 bytes).
+ * (id = `c<nonce>` ≤ 64 bytes).
  * The auto-sent card (`input_message_content`) is the visible echo of a tap.
  *
  * `query` (the raw inline query): when it EXACTLY matches a result's name
@@ -327,7 +324,6 @@ export function toInlineResults(
       id: `c${nonce}`,
       title,
       input_message_content: { message_text: cardText(c.name) },
-      reply_markup: { inline_keyboard: [[{ text: "▶ Run", callback_data: `cr:${nonce}` }]] },
     };
     if (desc) r.description = desc;
     return r;

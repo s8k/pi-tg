@@ -14,8 +14,6 @@ export const CB = {
   /** Mirrored TUI dialogs: da:<dialogId>:<optionIndex> / dc:<dialogId> — always ≤ 64 bytes. */
   dialogAnswer: (d: number, i: number) => `da:${d}:${i}`,
   dialogCancel: (d: number) => `dc:${d}`,
-  /** Inline picker ▶ Run fallback: cr:<nonce> (nonce ≤16 base36 chars, always ≤ 64 bytes). */
-  cmdRun: (nonce: string) => `cr:${nonce}`,
 } as const;
 
 export type TgAction =
@@ -47,12 +45,8 @@ export type TgAction =
   | { kind: "dialogCancel"; chatId: number; dialogId: number }
   | { kind: "dialogText"; chatId: number; replyToMessageId: number; text: string }
   | { kind: "dialogPlain"; chatId: number; dialogId: number; text: string }
-  /**
-   * Inline picker: a session command was chosen (chosen_inline_result or the
-   * ▶ Run fallback). `inlineMessageId` (chosen_inline_result only) lets the
-   * bridge stamp the auto-sent card with ✅.
-   */
-  | { kind: "cmdRun"; chatId: number; nonce: string; inlineMessageId?: string }
+  /** Inline picker: a session command was chosen (chosen_inline_result). */
+  | { kind: "cmdRun"; chatId: number; nonce: string }
   /** Inline picker: a session command was typed directly (`@bot /name args`). */
   | { kind: "cmdSend"; chatId: number; name: string; args: string }
   /** `/import <path>` built-in → switch to the JSONL session at path. */
@@ -70,9 +64,6 @@ export type TgAction =
  * `-foo`/`:bar` can never be a command name.
  */
 const CMD_RE = /^\/([a-zA-Z0-9_][a-zA-Z0-9_:.-]*)(?:@[a-zA-Z0-9_]+)?\s*(.*)$/;
-/** cr:<nonce> — the inline picker's ▶ Run fallback button. */
-const CMD_RUN_RE = /^cr:([a-z0-9]{1,16})$/;
-
 /**
  * `@<botusername> /cmd args` → `/cmd args`. The ⌨️ entry button (switch_
  * inline_query_current_chat) inserts the bot's username into the input field,
@@ -134,7 +125,7 @@ export function route(
     if (chatId === undefined) return { kind: "ignore" };
     const m = /^c([a-z0-9]{1,32})$/.exec(chosen.result_id);
     if (!m) return { kind: "ignore" };
-    return { kind: "cmdRun", chatId, nonce: m[1], ...(chosen.inline_message_id ? { inlineMessageId: chosen.inline_message_id } : {}) };
+    return { kind: "cmdRun", chatId, nonce: m[1] };
   }
 
   const cb = update.callback_query;
@@ -164,15 +155,6 @@ export function route(
       const dialogId = Number(d.slice(3));
       if (Number.isInteger(dialogId) && dialogId > 0) return { kind: "dialogCancel", chatId, dialogId };
       return { kind: "ignore" };
-    }
-    const runM = CMD_RUN_RE.exec(d);
-    if (runM) {
-      // ▶ Run in the inline-query UI: the callback carries NO message (the
-      // card is not sent to the chat) — use the learned owner chat, like the
-      // chosen_inline_result path (a -1 chatId would be rejected by
-      // parseInternal as a bad /tg internal payload).
-      const runChat = cb.message?.chat.id ?? opts?.ownerChatId;
-      return runChat === undefined ? { kind: "ignore" } : { kind: "cmdRun", chatId: runChat, nonce: runM[1] };
     }
     return { kind: "ignore" };
   }

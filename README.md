@@ -93,10 +93,13 @@ Terminal-only built-ins (`/tree`, `/login`, … — no extension-API
 equivalent) are NOT listed; typing them still gets a 🖥 explanation. You
 can also just type `@bot /<name> [args]` — the only way to pass arguments.
 
-**One-time setup:** @BotFather → `/mybots` → *Bot Features* → enable
-**Inline feedback**. That delivers the `chosen_inline_result` update the
-1-tap execution needs. Without it, a tap still auto-sends the command —
-press its **▶ Run** button (2 taps, no BotFather change needed).
+**One-time setup:** @BotFather → `/mybots` → *Bot Settings* → *API
+Services* → enable **Inline mode** and **Inline feedback**. Inline mode
+makes the ⌨️ button and the command list work at all; Inline feedback
+delivers the `chosen_inline_result` update that executes the tapped
+command. Without Inline feedback a tap only auto-sends the command text —
+nothing runs. If Inline mode is off, pi-tg warns about it in the TUI on
+startup/reload (`getMe().supports_inline_queries`).
 
 ## Configuration
 

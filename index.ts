@@ -174,7 +174,14 @@ export default function piTelegram(pi: ExtensionAPI): void {
     }
     let username: string | undefined;
     try {
-      username = (await client.getMe()).username;
+      const me = await client.getMe();
+      username = me.username;
+      if (me.supports_inline_queries === false) {
+        ui(
+          "pi-tg: INLINE MODE IS DISABLED for this bot — the ⌨️ picker button and the inline command list will not work. Enable it: @BotFather → /mybots → Bot Settings → API Services → Inline mode (also enable 'Inline feedback' so a tap executes the command). Restart Pi or /tg:reload afterwards.",
+          "warning",
+        );
+      }
     } catch (err) {
       ui(`pi-tg: getMe failed: ${String(err)}`, "error");
       return gen;
@@ -231,7 +238,8 @@ export default function piTelegram(pi: ExtensionAPI): void {
     if (!bridge || !out || !state) return;
     // Inline picker: the owner's inline search — answer with the (filtered)
     // session-command table. No action here: execution arrives LATER as
-    // chosen_inline_result (tapped card) or a cr:<nonce> callback (▶ Run).
+    // chosen_inline_result (the tapped card) — that update requires
+    // BotFather's "Inline feedback" to be enabled.
     if (update.inline_query) {
       await handleInlineQuery(update.inline_query);
       return;
@@ -295,10 +303,10 @@ export default function piTelegram(pi: ExtensionAPI): void {
    * The inline command picker (Bot API inline_query): the owner searches the
    * session-command table (built-ins + extension commands + prompt templates
    * + skills). Each result's id is `c<nonce>` — the nonce is registered in
-   * the bridge's pending-runs map (persistent — a re-tap of the same ▶ Run
-   * executes again; the 32-entry cap is what kills stale cards), so a later
-   * chosen_inline_result (or ▶ Run callback) executes this result. Non-owner:
-   * an empty answer (nothing leaks — the table is the session's command menu).
+   * the bridge's pending-runs map (32 entries, oldest evicts; an evicted tap
+   * is a silent no-op), so a later chosen_inline_result executes this
+   * result. Non-owner: an empty answer (nothing leaks — the table is the
+   * session's command menu).
    */
   async function handleInlineQuery(q: TgInlineQuery): Promise<void> {
     if (!client) return;
@@ -349,7 +357,7 @@ export default function piTelegram(pi: ExtensionAPI): void {
     // and desynchronize the two arrays).
     const listable = filterCommands(table, q.query).filter(isListable);
     // base36 timestamp + per-answer counter: unique ≤10-char nonces
-    // (result_id `c<nonce>` and callback `cr:<nonce>` both fit 64 bytes).
+    // (result_id `c<nonce>` fits 64 bytes).
     let n = 0;
     const base = Date.now().toString(36);
     const results = toInlineResults(listable, () => `${base}${(n++).toString(36)}`, q.query);

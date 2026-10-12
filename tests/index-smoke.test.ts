@@ -892,13 +892,13 @@ test("inline picker E2E: inline_query → articles + nonces; chosen_inline_resul
   ]);
   await waitFor(() => calls.some((c) => c.method === "answerInlineQuery" && c.body.inline_query_id === "iq1"), "the inline query is answered");
   const answer = calls.find((c) => c.method === "answerInlineQuery" && c.body.inline_query_id === "iq1")!;
-  const results = answer.body.results as { id: string; title: string; input_message_content: { message_text: string }; reply_markup?: unknown }[];
+  const results = answer.body.results as { id: string; title: string; input_message_content: { message_text: string } }[];
   const mcp = results.find((r) => r.title === "/mcp")!;
   assert.ok(mcp, "the /mcp extension command is in the results");
   assert.ok(!results.some((r) => r.title === "/model"), "the /model built-in is a duplicate of /models — NOT listed (List A)");
   assert.equal(mcp.input_message_content.message_text, "/mcp", "the tap auto-sends the bare command (no emoji, no description)");
   assert.equal(answer.body.is_personal, true, "results are per-user (no cross-user cache leak)");
-  assert.ok(JSON.stringify(mcp.reply_markup).includes("cr:"), "the article carries the ▶ Run fallback button");
+  assert.ok(!("reply_markup" in mcp), "the article carries NO Run button (2026-10-11 — no zombie button on the auto-sent card)");
   assert.ok(/^c[a-z0-9]{1,32}$/.test(mcp.id), "the result id is c<nonce> (the pending-runs key)");
 
   // 2) the owner taps it → chosen_inline_result → the resource command runs
@@ -913,7 +913,6 @@ test("inline picker E2E: inline_query → articles + nonces; chosen_inline_resul
         chat_type: "private",
         query: "m",
         result_id: mcp.id,
-        inline_message_id: "inl-77",
       },
     },
   ]);

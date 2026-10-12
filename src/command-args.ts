@@ -36,7 +36,7 @@ export function encodeInternal(action: TgAction): string | null {
     case "dialogPlain":
       return `internal dialogPlain ${action.chatId} ${JSON.stringify({ d: action.dialogId, t: action.text })}`;
     case "cmdRun":
-      return `internal cmdRun ${action.chatId} ${action.nonce}${action.inlineMessageId ? ` ${action.inlineMessageId}` : ""}`;
+      return `internal cmdRun ${action.chatId} ${action.nonce}`;
     case "cmdSend":
       return `internal cmdSend ${action.chatId} ${JSON.stringify({ name: action.name, args: action.args })}`;
     case "importSet":
@@ -155,10 +155,9 @@ export function parseInternal(args: string): TgAction | null {
       }
     }
     case "cmdRun": {
-      // nonce [+ optional inline_message_id of the auto-sent card]
       const partsRest = rest.split(/\s+/);
-      if (partsRest.length < 1 || partsRest.length > 2 || !partsRest[0]) return null;
-      return { kind: "cmdRun", chatId, nonce: partsRest[0], ...(partsRest[1] ? { inlineMessageId: partsRest[1] } : {}) };
+      if (partsRest.length !== 1 || !partsRest[0]) return null;
+      return { kind: "cmdRun", chatId, nonce: partsRest[0] };
     }
     case "cmdSend": {
       try {

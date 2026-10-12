@@ -98,8 +98,7 @@ export class FakePi {
 }
 
 export interface FakeOutCall {
-  kind: "send" | "edit" | "delete" | "sendRich" | "sendDraft" | "editRich" | "editInline";
-  inlineMessageId?: string;
+  kind: "send" | "edit" | "delete" | "sendRich" | "sendDraft" | "editRich";
   chatId: number;
   messageId?: number;
   text?: string;
@@ -148,10 +147,6 @@ export class FakeOut {
   };
   sendDraft = async (chatId: number, draftId: number, blocks: TgBlock[], canStop?: boolean, keepOnStop?: boolean): Promise<boolean> => {
     this.calls.push({ kind: "sendDraft", chatId, blocks, text: blocksToPlainText(blocks), draftId, canStop, keepOnStop });
-    return true;
-  };
-  editInline = async (inlineMessageId: string, text: string, opts?: { replyMarkup?: unknown }): Promise<boolean> => {
-    this.calls.push({ kind: "editInline", chatId: 0, inlineMessageId, text, opts });
     return true;
   };
 }

@@ -83,9 +83,9 @@ export interface TgInlineQuery {
 
 /**
  * The user chose one of OUR inline results (Bot API). Requires "Inline
- * feedback" enabled in @BotFather. `inline_message_id` is present only when
- * the result carried a reply_markup (the auto-sent card) — usable with
- * editInlineMessageText for stamping.
+ * feedback" enabled in @BotFather — without it this update never arrives and
+ * a tap only auto-sends the card. `inline_message_id` is present only when
+ * the result carried a reply_markup (ours never do, so it is always absent).
  */
 export interface TgChosenInlineResult {
   result_id: string;
@@ -127,6 +127,8 @@ export interface TgBotMe {
   is_bot: true;
   first_name: string;
   username?: string;
+  /** True if the bot supports inline queries — only getMe returns it. */
+  supports_inline_queries?: boolean;
 }
 
 export interface TgSentMessage {
@@ -336,28 +338,6 @@ export class TelegramClient {
     if (opts?.cacheTime !== undefined) p.cache_time = opts.cacheTime;
     if (opts?.isPersonal) p.is_personal = true;
     return this.call("answerInlineQuery", p) as Promise<boolean>;
-  }
-
-  /**
-   * Edits an auto-sent inline result card by its `inline_message_id`
-   * (editMessageText's inline variant). "Message is not modified" is not an
-   * error (returns false, like editMessageText) — stamping is best-effort.
-   */
-  /**
-   * `replyMarkup` is forwarded verbatim — pass `""` to REMOVE the card's
-   * inline keyboard (Bot API: empty reply_markup on an edit deletes it);
-   * omit it to keep the current keyboard.
-   */
-  async editInlineMessageText(inlineMessageId: string, text: string, opts?: { replyMarkup?: unknown }): Promise<boolean> {
-    try {
-      const p: Record<string, unknown> = { inline_message_id: inlineMessageId, text };
-      if (opts?.replyMarkup !== undefined) p.reply_markup = opts.replyMarkup;
-      await this.call("editMessageText", p);
-      return true;
-    } catch (err) {
-      if (err instanceof TgError && err.code === 400 && /not modified/i.test(err.description)) return false;
-      throw err;
-    }
   }
 
   sendRichMessage(

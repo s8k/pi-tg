@@ -20,7 +20,7 @@ test("pendingRuns: register → lookup stays valid (re-taps resolve); unknown no
   const { bridge } = setup();
   bridge.registerRun("ab12cd", "tg");
   assert.equal(bridge.lookupRun("ab12cd"), "tg");
-  assert.equal(bridge.lookupRun("ab12cd"), "tg"); // persistent — the sent card's ▶ Run still works
+  assert.equal(bridge.lookupRun("ab12cd"), "tg");
   assert.equal(bridge.lookupRun("zzzzzz"), undefined);
 });
 
@@ -31,7 +31,7 @@ test("pendingRuns: capped — the oldest entry evicts past 32 (eviction is what 
   assert.equal(bridge.lookupRun("n00032"), "tg");
 });
 
-// ── cmdRun (tap / ▶ Run fallback) ──
+// ── cmdRun (chosen_inline_result tap) ──
 
 test("cmdRun: a registered resource command runs via pi.runCommand (no ack message)", async () => {
   const { pi, out, bridge } = setup({ commands: [{ name: "skill:brainstorming", description: "d", source: "skill" }] });
@@ -41,16 +41,12 @@ test("cmdRun: a registered resource command runs via pi.runCommand (no ack messa
   assert.equal(out.calls.filter((c) => c.kind === "send").length, 0);
 });
 
-test("cmdRun: a re-tap of the same ▶ Run EXECUTES again (persistent lookup, 2026-10-11); unknown nonce is a no-op", async () => {
+test("cmdRun: the same nonce resolves again (lookup, not consume); unknown nonce is a no-op", async () => {
   const { pi, out, bridge } = setup({ commands: [{ name: "myext", description: "d", source: "extension" }] });
   bridge.registerRun("ab12cd", "myext");
   await bridge.dispatch({ kind: "cmdRun", chatId: owner, nonce: "ab12cd" });
-  await bridge.dispatch({ kind: "cmdRun", chatId: owner, nonce: "ab12cd" }); // the sent card's button — the 2-tap fallback
   await bridge.dispatch({ kind: "cmdRun", chatId: owner, nonce: "nope12" }); // unknown → silent no-op
-  assert.deepEqual(pi.runCommands, [
-    { name: "myext", args: "" },
-    { name: "myext", args: "" },
-  ]);
+  assert.deepEqual(pi.runCommands, [{ name: "myext", args: "" }]);
 });
 
 test("cmdRun: a mapped built-in dispatches its existing TG flow (quit → kill confirm)", async () => {
@@ -77,18 +73,11 @@ test("cmdRun: terminal-only built-in → the 🖥 explanation, nothing runs", as
   assert.ok(lastSend(out).includes("terminal-only"));
 });
 
-test("cmdRun: with inlineMessageId the auto-sent card gets the ✅ stamp AND loses its ▶ Run button", async () => {
+test("cmdRun: the auto-sent card is NOT stamped (2026-10-11 — no stamp, no button; the bare command text IS the echo)", async () => {
   const { out, bridge } = setup({ commands: [{ name: "myext", description: "d", source: "extension" }] });
   bridge.registerRun("ab12cd", "myext");
-  await bridge.dispatch({ kind: "cmdRun", chatId: owner, nonce: "ab12cd", inlineMessageId: "inl-1" });
-  const stamp = out.calls.find((c) => c.kind === "editInline");
-  assert.ok(stamp, "the card is stamped");
-  assert.equal(stamp?.inlineMessageId, "inl-1");
-  assert.ok(String(stamp?.text).includes("✅"));
-  assert.equal(String(stamp?.text), "/myext\n✅"); // the card is the bare command
-  // the 1-tap executed — the leftover ▶ Run would be a zombie; the same edit
-  // removes the keyboard (empty-string reply_markup per the Bot API)
-  assert.equal(stamp?.opts?.replyMarkup, "", "the stamp edit clears the card's keyboard");
+  await bridge.dispatch({ kind: "cmdRun", chatId: owner, nonce: "ab12cd" });
+  assert.equal(out.calls.filter((c) => c.kind === "edit" || c.kind === "editRich").length, 0, "no stamp edit — the card stays exactly as Telegram auto-sent it");
 });
 
 // ── cmdSend (typed @bot /name args) ──
