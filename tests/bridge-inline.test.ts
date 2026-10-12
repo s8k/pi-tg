@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { SessionBridge, helpBlocks } from "../src/session-bridge.ts";
+import { SessionBridge, helpBlocks, INLINE_MODE_OFF_WARNING } from "../src/session-bridge.ts";
 import { FakePi, FakeOut } from "./fake-pi.ts";
 import { makeDeps, lastSend, lastRichText } from "./helpers.ts";
 import { PICKER_BUTTON } from "../src/pi-commands.ts";
@@ -146,6 +146,22 @@ test("cmdTerminal: the 🖥 explanation reply", async () => {
   await bridge.dispatch({ kind: "cmdTerminal", chatId: owner, name: "login" });
   assert.ok(lastSend(out).includes("terminal-only"));
   assert.ok(lastSend(out).includes("/login"));
+});
+
+// ── inline-mode-off warning: event-driven (pairing / /tg:config only) ──
+
+test("pair: inline mode disabled → the TUI gets the INLINE MODE warning (2026-10-11: event-driven)", async () => {
+  const { pi, bridge } = setup();
+  bridge.setInlineModeEnabled(false);
+  await bridge.dispatch({ kind: "pair", chatId: 42, fromId: 99 });
+  const warnings = pi.uiNotices.filter((n) => n.text === INLINE_MODE_OFF_WARNING && n.level === "warning");
+  assert.equal(warnings.length, 1, "exactly one warning, at pairing completion");
+});
+
+test("pair: inline mode enabled (default) → no TUI warning (no nag when everything is fine)", async () => {
+  const { pi, bridge } = setup();
+  await bridge.dispatch({ kind: "pair", chatId: 42, fromId: 99 });
+  assert.ok(!pi.uiNotices.some((n) => n.text === INLINE_MODE_OFF_WARNING));
 });
 
 // ── picker button on the help card (removed from /status 2026-10-11) ──

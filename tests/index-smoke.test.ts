@@ -53,6 +53,7 @@ const handlers = new Map<string, (...a: unknown[]) => unknown>();
 // The fake pi replays `/tg …` sendUserMessage calls through the captured
 // command handler — exactly what real pi does (the poller's dispatch path).
 let tgCommand: { handler: (args: string, ctx: unknown) => Promise<void> } | undefined;
+let tgConfigCommand: { handler: (args: string, ctx: unknown) => Promise<void> } | undefined;
 // every sendUserMessage the extension sends (the resource-command execution
 // path: chosen picker item → cmdSend → pi.sendUserMessage("/name args"))
 const sentMessages: string[] = [];
@@ -63,6 +64,7 @@ let cmdCtxFake: unknown = { ui: { notify: () => {} } };
 piTelegram({
   registerCommand: (name: string, def: unknown) => {
     if (name === "tg") tgCommand = def as typeof tgCommand;
+    if (name === "tg:config") tgConfigCommand = def as typeof tgConfigCommand;
   },
   on: (name: string, fn: (...a: unknown[]) => unknown) => handlers.set(name, fn),
   sendUserMessage: (text: string, _opts?: unknown) => {
@@ -84,13 +86,18 @@ piTelegram({
 // `ui` mimics pi's shared ctx.ui object (mode tui + dialog methods) so
 // installUiProxy has something to patch, exactly like the real runner's.
 let selectPress: ((v?: string) => void) | undefined;
+// every TUI notice the extension emits (the ui() helper resolves to
+// sessionCtx — this is it — so capturing here sees startup/poller warnings)
+const uiNotices: { text: string; level?: string }[] = [];
 const fakeCtx = {
   cwd: "/tmp",
   mode: "tui",
   hasUI: true,
   isIdle: () => true, // the bridge's prompt gate calls ctx.isIdle()
   ui: {
-    notify: () => {},
+    notify: (text: string, level?: string) => {
+      uiNotices.push({ text, level });
+    },
     // mimics pi's showExtensionSelector: resolves on keypress OR opts.signal abort
     select: (_title: string, _options?: string[], opts?: { signal?: AbortSignal }) =>
       new Promise<string | undefined>((resolve) => {
@@ -986,4 +993,56 @@ test("inline picker E2E: inline_query → articles + nonces; chosen_inline_resul
   const r7 = answer7.body.results as { id: string; title: string; description?: string }[];
   const mcpItem = r7.find((r) => r.title === "/mcp")!;
   assert.ok(mcpItem.description!.toLowerCase().includes("tap to send"), "the keep-typing hint on the exact match");
+});
+
+// ── inline-mode-off warning: EVENT-DRIVEN (pairing / /tg:config only) ──
+
+const inlineModeOffWire = (calls: WireCall[]): void => {
+  globalThis.fetch = (async (url: string, init?: RequestInit): Promise<Response> => {
+    const method = String(url).split("/").pop() ?? "";
+    const body = (init?.body ? JSON.parse(String(init.body)) : {}) as Record<string, unknown>;
+    calls.push({ method, body, markdown: "" });
+    if (method === "getMe")
+      return new Response(
+        JSON.stringify({ ok: true, result: { id: 1, is_bot: true, first_name: "Tg", username: "tgb", supports_inline_queries: false } }),
+        { status: 200 },
+      );
+    if (method === "getUpdates")
+      return new Promise<Response>((_resolve, reject) => {
+        const sig = init?.signal;
+        const onAbort = () => reject(new DOMException("Aborted", "AbortError"));
+        if (sig) {
+          if (sig.aborted) onAbort();
+          else sig.addEventListener("abort", onAbort, { once: true });
+        }
+      });
+    return new Response(JSON.stringify({ ok: true, result: true }), { status: 200 });
+  }) as typeof fetch;
+};
+
+test("startup: inline mode off → NO TUI warning (2026-10-11: event-driven only — the /help footer is the standing signal)", async (t) => {
+  const calls: WireCall[] = [];
+  const realFetch = globalThis.fetch;
+  t.after(() => (globalThis.fetch = realFetch));
+  inlineModeOffWire(calls);
+  uiNotices.length = 0;
+  handlers.get("session_start")!({}, fakeCtx);
+  await waitFor(() => calls.some((c) => c.method === "getMe"), "getMe ran on startup");
+  await sleep(50); // give any (buggy) startup warning time to land
+  assert.ok(!uiNotices.some((n) => String(n.text).includes("INLINE MODE IS DISABLED")), "no per-restart nag");
+});
+
+test("/tg:config: inline mode off → the TUI warning fires (event-driven, 2026-10-11)", async (t) => {
+  const calls: WireCall[] = [];
+  const realFetch = globalThis.fetch;
+  t.after(() => (globalThis.fetch = realFetch));
+  inlineModeOffWire(calls);
+  const notices: { text: string; level?: string }[] = [];
+  const cfgCtx = { ui: { notify: (text: string, level?: string) => notices.push({ text, level }) } };
+  handlers.get("session_start")!({}, fakeCtx);
+  await waitFor(() => calls.some((c) => c.method === "getMe"), "startup getMe");
+  assert.ok(tgConfigCommand, "the /tg:config command is registered");
+  await tgConfigCommand.handler("123456:AAFAKEAAFAKEAAFAKEAAFAKE", cfgCtx); // <digits>:<20+ alnum>
+  assert.ok(notices.some((n) => String(n.text).includes("INLINE MODE IS DISABLED") && n.level === "warning"), "the config-time warning fired");
+  assert.ok(notices.some((n) => String(n.text).includes("token saved")), "the normal config notice still fires");
 });

@@ -7,7 +7,7 @@ import type { TgUpdate } from "./src/telegram-client.ts";
 import { route } from "./src/router.ts";
 import { encodeInternal, parseInternal } from "./src/command-args.ts";
 import { TelegramState } from "./src/state.ts";
-import { SessionBridge } from "./src/session-bridge.ts";
+import { SessionBridge, INLINE_MODE_OFF_WARNING } from "./src/session-bridge.ts";
 import { probeGpu } from "./src/gpu.ts";
 import type { Out, TelegramPi } from "./src/session-bridge.ts";
 import { Mirror, compactTokenDetail } from "./src/mirror.ts";
@@ -176,13 +176,10 @@ export default function piTelegram(pi: ExtensionAPI): void {
     try {
       const me = await client.getMe();
       username = me.username;
-      if (me.supports_inline_queries === false) {
-        bridge.setInlineModeEnabled(false); // the /help card drops the ⌨️ button + shows the footer
-        ui(
-          "pi-tg: INLINE MODE IS DISABLED for this bot — the session commands picker (in /help) will be unavailable. Enable it: @BotFather → /mybots → Bot Settings → API Services → Inline mode. Restart Pi or /reload afterwards.",
-          "warning",
-        );
-      }
+      // The flag drives the /help card (button + footer) — re-learned on
+      // every poller start. NO TUI warning here (2026-10-11): the warning is
+      // event-driven — pairing completion and /tg:config only.
+      bridge.setInlineModeEnabled(me.supports_inline_queries !== false);
     } catch (err) {
       ui(`pi-tg: getMe failed: ${String(err)}`, "error");
       return gen;
@@ -425,6 +422,16 @@ export default function piTelegram(pi: ExtensionAPI): void {
     if (!ctxIsAlive(ctx)) return;
     pollPromise = startPolling().catch((err) => ui(`pi-tg: ${String(err)}`, "error"));
     void pollPromise;
+    // Event-driven (2026-10-11): key configuration is one of the two moments
+    // the inline-mode-off warning may fire. One-shot probe with the new
+    // token (the poller restart is fire-and-forget — waiting on its flag
+    // would be racy).
+    try {
+      const me = await new TelegramClient(token, {}).getMe();
+      if (me.supports_inline_queries === false) ctx.ui.notify(INLINE_MODE_OFF_WARNING, "warning");
+    } catch {
+      // getMe failed — the poller surfaces API failures itself; no warning.
+    }
     ctx.ui.notify("pi-tg: token saved, poller restarted. Run /tg:pair to show the QR.", "info");
   }
 

@@ -192,6 +192,15 @@ export const INLINE_MODE_OFF_FOOTER: TgBlock = {
 };
 
 /**
+ * The TUI-side twin of the footer — deliberately EVENT-DRIVEN (2026-10-11):
+ * fired only at pairing completion and by /tg:config, never on startup or
+ * /reload (the /help footer is the standing signal). One constant so the
+ * two events can't drift.
+ */
+export const INLINE_MODE_OFF_WARNING =
+  "pi-tg: INLINE MODE IS DISABLED for this bot — the session commands picker (in /help) will be unavailable. Enable it: @BotFather → /mybots → Bot Settings → API Services → Inline mode. Restart Pi or /reload afterwards.";
+
+/**
  * `inlineModeEnabled: false` appends INLINE_MODE_OFF_FOOTER (the caller also
  * omits the ⌨️ picker button — the button and the footer move together).
  */
@@ -545,13 +554,18 @@ export class SessionBridge {
       case "notAuthorized":
         await out.sendRich(action.chatId, notAuthorizedBlocks(cfg.ownerId !== undefined));
         return;
-      case "pair":
+      case "pair": {
         cfg.ownerId = action.fromId;
         cfg.ownerChatId = action.chatId; // the /start chat is the owner's chat — persist it
         await this.deps.persist();
         await out.sendRich(action.chatId, pairWelcomeBlocks(this.deps.botUsername, action.fromId));
         await this.sendCardAndHelp(action.chatId);
+        // Event-driven (2026-10-11): pairing completion is when "one thing
+        // left in BotFather" makes sense — the Telegram side already shows
+        // the /help footer; the TUI side gets the one-time nudge here.
+        if (!this.inlineModeEnabled) this.deps.pi.notifyUi(INLINE_MODE_OFF_WARNING, "warning");
         return;
+      }
       case "start":
         await this.sendCardAndHelp(action.chatId);
         return;
