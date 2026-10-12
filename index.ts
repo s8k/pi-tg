@@ -179,7 +179,7 @@ export default function piTelegram(pi: ExtensionAPI): void {
       if (me.supports_inline_queries === false) {
         bridge.setInlineModeEnabled(false); // the /help card drops the ⌨️ button + shows the footer
         ui(
-          "pi-tg: INLINE MODE IS DISABLED for this bot — the session commands picker (in /help) will be unavailable. Enable it: @BotFather → /mybots → Bot Settings → API Services → Inline mode. Restart Pi or /tg:reload afterwards.",
+          "pi-tg: INLINE MODE IS DISABLED for this bot — the session commands picker (in /help) will be unavailable. Enable it: @BotFather → /mybots → Bot Settings → API Services → Inline mode. Restart Pi or /reload afterwards.",
           "warning",
         );
       }
