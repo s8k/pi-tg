@@ -899,7 +899,7 @@ test("inline picker E2E: inline_query → articles + nonces; chosen_inline_resul
   assert.equal(mcp.input_message_content.message_text, "/mcp", "the tap auto-sends the bare command (no emoji, no description)");
   assert.equal(answer.body.is_personal, true, "results are per-user (no cross-user cache leak)");
   assert.ok(JSON.stringify(mcp.reply_markup).includes("cr:"), "the article carries the ▶ Run fallback button");
-  assert.ok(/^c[a-z0-9]{1,32}$/.test(mcp.id), "the result id is c<nonce> (the one-shot key)");
+  assert.ok(/^c[a-z0-9]{1,32}$/.test(mcp.id), "the result id is c<nonce> (the pending-runs key)");
 
   // 2) the owner taps it → chosen_inline_result → the resource command runs
   //    (mcp → cmdSend → pi.sendUserMessage("/mcp") — the normal dispatch path)

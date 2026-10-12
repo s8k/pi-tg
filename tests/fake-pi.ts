@@ -150,8 +150,8 @@ export class FakeOut {
     this.calls.push({ kind: "sendDraft", chatId, blocks, text: blocksToPlainText(blocks), draftId, canStop, keepOnStop });
     return true;
   };
-  editInline = async (inlineMessageId: string, text: string): Promise<boolean> => {
-    this.calls.push({ kind: "editInline", chatId: 0, inlineMessageId, text });
+  editInline = async (inlineMessageId: string, text: string, opts?: { replyMarkup?: unknown }): Promise<boolean> => {
+    this.calls.push({ kind: "editInline", chatId: 0, inlineMessageId, text, opts });
     return true;
   };
 }

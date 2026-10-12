@@ -295,8 +295,9 @@ export default function piTelegram(pi: ExtensionAPI): void {
    * The inline command picker (Bot API inline_query): the owner searches the
    * session-command table (built-ins + extension commands + prompt templates
    * + skills). Each result's id is `c<nonce>` — the nonce is registered in
-   * the bridge's one-shot pending-runs map, so a later chosen_inline_result
-   * (or ▶ Run callback) executes EXACTLY this result, once. Non-owner:
+   * the bridge's pending-runs map (persistent — a re-tap of the same ▶ Run
+   * executes again; the 32-entry cap is what kills stale cards), so a later
+   * chosen_inline_result (or ▶ Run callback) executes this result. Non-owner:
    * an empty answer (nothing leaks — the table is the session's command menu).
    */
   async function handleInlineQuery(q: TgInlineQuery): Promise<void> {

@@ -130,8 +130,8 @@ export interface Out {
   editRich(chatId: number, messageId: number, blocks: TgBlock[], opts?: { replyMarkup?: unknown }): Promise<boolean>;
   /** Ephemeral draft (blocks-tier; `thinking` blocks are allowed here — never in persistent sends). The same draftId refreshes in place. keepOnStop keeps the draft when Stop is pressed. */
   sendDraft(chatId: number, draftId: number, blocks: TgBlock[], canStop?: boolean, keepOnStop?: boolean): Promise<boolean>;
-  /** Stamps the auto-sent inline picker card (its inline_message_id). false = failed (not fatal). */
-  editInline(inlineMessageId: string, text: string): Promise<boolean>;
+  /** Stamps the auto-sent inline picker card (its inline_message_id). replyMarkup: "" REMOVES the card's ▶ Run button (the 1-tap already spent the moment — the leftover button is a zombie). false = failed (not fatal). */
+  editInline(inlineMessageId: string, text: string, opts?: { replyMarkup?: unknown }): Promise<boolean>;
 }
 
 export interface BridgeDeps {
@@ -228,13 +228,17 @@ export class SessionBridge {
   private oneShotSeq = 0;
   private oneShot = new Map<string, { chatId: number; messageId: number; blocks: TgBlock[] }>();
   /**
-   * Inline-picker one-shots: nonce → the chosen command's NAME. The nonce is
-   * minted by index.ts in the answerInlineQuery results (result_id "c<nonce>")
-   * and consumed exactly once on cmdRun (chosen_inline_result tap or the ▶ Run
-   * button) — double taps and stale results execute nothing. Only the name is
+   * Inline-picker nonce table: nonce → the chosen command's NAME. The nonce
+   * is minted by index.ts in the answerInlineQuery results (result_id
+   * "c<nonce>", the ▶ Run button's callback "cr:<nonce>") and looked up on
+   * EVERY cmdRun (2026-10-11: the one-shot consume was replaced by a
+   * persistent lookup — the ▶ Run button on the auto-sent card is the
+   * designed 2-tap fallback for when BotFather's "Inline feedback" is off,
+   * so a stale tap must still execute, not silently die). Only the name is
    * stored: the LIVE session table decides behavior at dispatch time (a
    * command removed before the tap gets the unknown-command reply). Bounded
-   * (Map insertion order: the oldest evicts).
+   * (Map insertion order: the oldest evicts — that is what eventually kills
+   * stale cards' buttons).
    */
   private pendingRuns = new Map<string, string>();
   private static readonly PENDING_RUNS_CAP = 32;
@@ -249,12 +253,9 @@ export class SessionBridge {
     }
   }
 
-  /** One-shot consumption — a second call (or an unknown nonce) yields undefined. */
-  consumeRun(nonce: string): string | undefined {
-    const n = this.pendingRuns.get(nonce);
-    if (n === undefined) return undefined;
-    this.pendingRuns.delete(nonce);
-    return n;
+  /** Persistent lookup — the entry stays (re-taps execute; unknown/evicted nonces → undefined). */
+  lookupRun(nonce: string): string | undefined {
+    return this.pendingRuns.get(nonce);
   }
   private compactState: CompactState | undefined;
   private compactDraftSeq = 0;
@@ -657,9 +658,10 @@ export class SessionBridge {
         return;
       }
       case "cmdRun": {
-        // One-shot: the nonce was minted in answerInlineQuery; consume it or
-        // do nothing (double tap / stale result / foreign tap).
-        const name = this.consumeRun(action.nonce);
+        // Persistent lookup: the nonce was minted in answerInlineQuery and
+        // stays valid until evicted — every ▶ Run tap executes (the sent
+        // card's button is the 2-tap fallback; unknown/evicted → no-op).
+        const name = this.lookupRun(action.nonce);
         if (name === undefined) return;
         await this.runSessionCommand(action.chatId, name, "", action.inlineMessageId);
         return;
@@ -844,9 +846,11 @@ export class SessionBridge {
       return;
     }
     // Stamp the auto-sent card (chosen_inline_result taps only) — the tap's
-    // visible confirmation. Best effort: the command already ran.
+    // visible confirmation — and REMOVE its ▶ Run button in the same edit
+    // (the 1-tap executed; the leftover button would be a zombie). Best
+    // effort: the command already ran.
     if (inlineMessageId) {
-      void out.editInline(inlineMessageId, `${cardText(name)}\n✅`).catch(() => {});
+      void out.editInline(inlineMessageId, `${cardText(name)}\n✅`, { replyMarkup: "" }).catch(() => {});
     }
   }
 

@@ -146,6 +146,19 @@ test("editInlineMessageText: edits via inline_message_id; 'not modified' → fal
   assert.equal(await new TelegramClient("T", { fetchImpl: ff2.fetchImpl }).editInlineMessageText("inl-1", "same"), false);
 });
 
+test("editInlineMessageText: replyMarkup option is forwarded (empty string REMOVES the keyboard)", async () => {
+  const ff = makeFakeFetch(() => ({ status: 200, body: { ok: true, result: true } }));
+  const c = new TelegramClient("T", { fetchImpl: ff.fetchImpl });
+  await c.editInlineMessageText("inl-1", "✅ done", { replyMarkup: "" });
+  const sent = JSON.parse(String(ff.calls[0].init?.body)) as Record<string, unknown>;
+  assert.equal(sent.reply_markup, "", "the empty-string reply_markup is on the wire (keyboard removal)");
+  // omitted → NOT on the wire (keeps the current keyboard)
+  const ff2 = makeFakeFetch(() => ({ status: 200, body: { ok: true, result: true } }));
+  await new TelegramClient("T", { fetchImpl: ff2.fetchImpl }).editInlineMessageText("inl-1", "x");
+  const sent2 = JSON.parse(String(ff2.calls[0].init?.body)) as Record<string, unknown>;
+  assert.ok(!("reply_markup" in sent2), "omitted option stays off the wire");
+});
+
 test("editInlineMessageText: real error → throws TgError", async () => {
   const ff = makeFakeFetch(() => ({ status: 400, body: { ok: false, error_code: 400, description: "message is too old" } }));
   await assert.rejects(new TelegramClient("T", { fetchImpl: ff.fetchImpl }).editInlineMessageText("inl-1", "x"), TgError);

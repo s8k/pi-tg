@@ -343,9 +343,16 @@ export class TelegramClient {
    * (editMessageText's inline variant). "Message is not modified" is not an
    * error (returns false, like editMessageText) — stamping is best-effort.
    */
-  async editInlineMessageText(inlineMessageId: string, text: string): Promise<boolean> {
+  /**
+   * `replyMarkup` is forwarded verbatim — pass `""` to REMOVE the card's
+   * inline keyboard (Bot API: empty reply_markup on an edit deletes it);
+   * omit it to keep the current keyboard.
+   */
+  async editInlineMessageText(inlineMessageId: string, text: string, opts?: { replyMarkup?: unknown }): Promise<boolean> {
     try {
-      await this.call("editMessageText", { inline_message_id: inlineMessageId, text });
+      const p: Record<string, unknown> = { inline_message_id: inlineMessageId, text };
+      if (opts?.replyMarkup !== undefined) p.reply_markup = opts.replyMarkup;
+      await this.call("editMessageText", p);
       return true;
     } catch (err) {
       if (err instanceof TgError && err.code === 400 && /not modified/i.test(err.description)) return false;
