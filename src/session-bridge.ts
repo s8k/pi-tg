@@ -10,6 +10,27 @@ import { mdToBlocks, type TgBlock, type TgRichText } from "./rich-blocks.ts";
 import { formatGpuLines, type GpuStats } from "./gpu.ts";
 import { COMPACT_CANCELLED_MSG } from "./compact.ts";
 import { AUTO_COMPACT_STATUS, AUTO_COMPACT_DONE_TEXT, fmtTokens } from "./mirror.ts";
+import { mergeCommands, dispatchFor, actionForDecision, PICKER_BUTTON } from "./pi-commands.ts";
+import { BOT_COMMANDS } from "./bot-commands.ts";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
+/**
+ * The running pi-tg version (package.json next to this module), for the
+ * /help header stamp: after `npm update` + `/reload` the stamp shows the
+ * NEW version only if the reload actually re-imported the extension code —
+ * it is the user-visible proof of which generation is live.
+ */
+export const PI_TG_VERSION: string | undefined = (() => {
+  try {
+    const pkg = JSON.parse(
+      readFileSync(fileURLToPath(new URL("../package.json", import.meta.url)), "utf8"),
+    ) as { version?: string };
+    return typeof pkg.version === "string" ? pkg.version : undefined;
+  } catch {
+    return undefined; // versionless install — the header simply omits the stamp
+  }
+})();
 
 export interface PiModelInfo {
   model: PiModel;
@@ -42,7 +63,7 @@ export interface TelegramPi {
   newSession(): void; // triggers instance replacement
   switchSession(path: string): void; // triggers instance replacement
   waitForIdle(): Promise<void>;
-  compact(onDone: (ok: boolean, detail?: string) => void): void;
+  compact(onDone: (ok: boolean, detail?: string) => void, instructions?: string): void; // instructions → pi's customInstructions (inline picker /compact <text>)
   /**
    * Hot-reload pi's extensions/skills/prompts/themes/context files (pi's
    * ctx.reload()). Fire-and-forget: pi replaces the extension runtime, so this
@@ -68,6 +89,10 @@ export interface TelegramPi {
   currentSessionPath(): string;
   notifyUi(text: string, level?: "info" | "warning" | "error"): void;
   shutdown(): void;
+  /** Live resource commands (pi.getCommands) — inline command picker. */
+  getCommands(): { name: string; description: string; source: "extension" | "prompt" | "skill" }[];
+  /** Run a session command by name (idle only — the bridge checks first). */
+  runCommand(name: string, args: string): void;
 }
 
 /**
@@ -149,27 +174,50 @@ const LEVEL_BADGES: Record<OutputLevel, string> = {
 
 const helpPara = (text: TgRichText): TgBlock => ({ type: "paragraph", text });
 
-/** The /help card as rich blocks — each line a paragraph, the command names bold entities. */
-export function helpBlocks(): TgBlock[] {
+/**
+ * The /help card as rich blocks — each line a paragraph, the command names
+ * bold entities. SINGLE SOURCE OF TRUTH: the command lines are a verbatim
+ * projection of the bot menu (BOT_COMMANDS) — same commands, order and
+ * descriptions — so the menu and the card can never drift (the /help entry
+ * included: its menu description carries the picker-button line).
+ */
+/**
+ * Footer of the /help card when the bot has NO inline mode (getMe says so):
+ * the ⌨️ picker button is omitted and this line explains the lost feature
+ * and where to turn it back on.
+ */
+export const INLINE_MODE_OFF_FOOTER: TgBlock = {
+  type: "paragraph",
+  text: "⚠️ Inline mode is disabled — the session commands picker (in /help) is unavailable. Enable it: @BotFather → /mybots → Bot Settings → API Services → Inline mode.",
+};
+
+/**
+ * The TUI-side twin of the footer — deliberately EVENT-DRIVEN (2026-10-11):
+ * fired only at pairing completion and by /tg:config, never on startup or
+ * /reload (the /help footer is the standing signal). One constant so the
+ * two events can't drift.
+ */
+export const INLINE_MODE_OFF_WARNING =
+  "pi-tg: INLINE MODE IS DISABLED for this bot — the session commands picker (in /help) will be unavailable. Enable it: @BotFather → /mybots → Bot Settings → API Services → Inline mode. Restart Pi or /reload afterwards.";
+
+/**
+ * `inlineModeEnabled: false` appends INLINE_MODE_OFF_FOOTER (the caller also
+ * omits the ⌨️ picker button — the button and the footer move together).
+ */
+export function helpBlocks(opts?: { inlineModeEnabled?: boolean }): TgBlock[] {
   const cmd = (c: string, desc: string): TgBlock => helpPara([{ type: "bold", text: c }, ` — ${desc}`]);
-  return [
-    helpPara([{ type: "bold", text: "pi-tg" }, " — drive this pi session from Telegram"]),
-    helpPara("Plain text → prompt (busy → ⚡ queued steer)"),
-    cmd("/status", "session info"),
-    cmd("/stop", "Esc (abort the current turn)"),
-    cmd("/compact", "compact the context (stoppable via the Stop button)"),
-    cmd("/new", "start a new session"),
-    cmd("/sessions", "list & switch sessions"),
-    cmd("/name <text>", "rename this session"),
-    cmd("/models", "pick a model"),
-    cmd("/thinking", "pick the thinking level"),
-    cmd("/level_mute", "no agent output (commands still work)"),
-    cmd("/level_minimal", "visible text only (no tools, no thinking)"),
-    cmd("/level_full", "tool log + final answer (default)"),
-    cmd("/reload", "hot-reload extensions & resources (idle only)"),
-    cmd("/kill", "shut down pi"),
-    cmd("/help", "this text"),
+  const parts: TgBlock[] = [
+    helpPara([
+      { type: "bold", text: "pi-tg" },
+      `${PI_TG_VERSION ? ` v${PI_TG_VERSION}` : ""} — drive this Pi session from Telegram`,
+    ]),
   ];
+  for (const { command, description } of BOT_COMMANDS) parts.push(cmd(`/${command}`, description));
+  if (opts?.inlineModeEnabled === false) {
+    parts.push({ type: "divider" }); // separate the command list from the warning
+    parts.push(INLINE_MODE_OFF_FOOTER);
+  }
+  return parts;
 }
 
 // ── compact draft (Telegram Bot API 10.2 rich message drafts) ──
@@ -204,6 +252,32 @@ export class SessionBridge {
    */
   private oneShotSeq = 0;
   private oneShot = new Map<string, { chatId: number; messageId: number; blocks: TgBlock[] }>();
+  /**
+   * Inline-picker nonce table: nonce → the chosen command's NAME. The nonce
+   * is minted by index.ts in the answerInlineQuery results (result_id
+   * "c<nonce>") and looked up on cmdRun (chosen_inline_result tap). Only the
+   * name is stored: the LIVE session table decides behavior at dispatch
+   * time (a command removed before the tap gets the unknown-command reply).
+   * Bounded (Map insertion order: the oldest evicts — evicted nonces are a
+   * silent no-op).
+   */
+  private pendingRuns = new Map<string, string>();
+  private static readonly PENDING_RUNS_CAP = 32;
+
+  /** index.ts (answerInlineQuery): remember a result that may be chosen. */
+  registerRun(nonce: string, name: string): void {
+    this.pendingRuns.set(nonce, name);
+    while (this.pendingRuns.size > SessionBridge.PENDING_RUNS_CAP) {
+      const oldest = this.pendingRuns.keys().next().value;
+      if (oldest === undefined) return;
+      this.pendingRuns.delete(oldest);
+    }
+  }
+
+  /** Persistent lookup — the entry stays (re-taps execute; unknown/evicted nonces → undefined). */
+  lookupRun(nonce: string): string | undefined {
+    return this.pendingRuns.get(nonce);
+  }
   private compactState: CompactState | undefined;
   private compactDraftSeq = 0;
   private compactHbTimer: ReturnType<typeof setTimeout> | undefined;
@@ -449,9 +523,29 @@ export class SessionBridge {
     return blocks;
   }
 
+  /**
+   * Inline mode availability (getMe().supports_inline_queries, learned on
+   * every poller start — /reload re-learns it). false → the /help card omits
+   * the ⌨️ button and carries the footer explaining why.
+   */
+  private inlineModeEnabled = true;
+  setInlineModeEnabled(enabled: boolean): void {
+    this.inlineModeEnabled = enabled;
+  }
+
+  /** The /help card: picker button iff inline mode is enabled; footer otherwise. */
+  private async sendHelp(chatId: number): Promise<void> {
+    const { out } = this.deps;
+    await out.sendRich(chatId, helpBlocks({ inlineModeEnabled: this.inlineModeEnabled }), {
+      replyMarkup: this.inlineModeEnabled ? PICKER_BUTTON : undefined,
+    });
+  }
+
   private async sendCardAndHelp(chatId: number): Promise<void> {
+    // the picker button lives on the help card only (removed from the status
+    // card 2026-10-11)
     await this.deps.out.sendRich(chatId, await this.statusBlocks());
-    await this.deps.out.sendRich(chatId, helpBlocks());
+    await this.sendHelp(chatId);
   }
 
   private async handle(action: TgAction): Promise<void> {
@@ -460,18 +554,23 @@ export class SessionBridge {
       case "notAuthorized":
         await out.sendRich(action.chatId, notAuthorizedBlocks(cfg.ownerId !== undefined));
         return;
-      case "pair":
+      case "pair": {
         cfg.ownerId = action.fromId;
         cfg.ownerChatId = action.chatId; // the /start chat is the owner's chat — persist it
         await this.deps.persist();
         await out.sendRich(action.chatId, pairWelcomeBlocks(this.deps.botUsername, action.fromId));
         await this.sendCardAndHelp(action.chatId);
+        // Event-driven (2026-10-11): pairing completion is when "one thing
+        // left in BotFather" makes sense — the Telegram side already shows
+        // the /help footer; the TUI side gets the one-time nudge here.
+        if (!this.inlineModeEnabled) this.deps.pi.notifyUi(INLINE_MODE_OFF_WARNING, "warning");
         return;
+      }
       case "start":
         await this.sendCardAndHelp(action.chatId);
         return;
       case "help":
-        await out.sendRich(action.chatId, helpBlocks());
+        await this.sendHelp(action.chatId);
         return;
       case "unknown":
         await out.send(action.chatId, `Unknown command ${escapeHtml(action.text)} — see /help`);
@@ -513,7 +612,7 @@ export class SessionBridge {
         return;
       }
       case "status":
-        await out.sendRich(action.chatId, await this.statusBlocks());
+        await out.sendRich(action.chatId, await this.statusBlocks()); // no picker button — it lives on the /help card only
         return;
       case "stop": {
         const compacting = this.compactState;
@@ -570,7 +669,7 @@ export class SessionBridge {
         if (busy) {
           // FIRST: abort the in-flight run so its persistent error lands before our draft.
           try {
-            pi.compact(onDone);
+            pi.compact(onDone, action.instructions);
             await pi.waitForIdle(); // wrapped in index.ts: also waits for the mirror to finish flushing the aborted run
           } catch (err) {
             fail(err); // e.g. no live pi context — the state must be finalized either way
@@ -595,11 +694,43 @@ export class SessionBridge {
         }
         if (!busy) {
           try {
-            pi.compact(onDone);
+            pi.compact(onDone, action.instructions);
           } catch (err) {
             fail(err);
           }
         }
+        return;
+      }
+      case "cmdRun": {
+        // The nonce was minted in answerInlineQuery; unknown/evicted → no-op.
+        const name = this.lookupRun(action.nonce);
+        if (name === undefined) return;
+        await this.runSessionCommand(action.chatId, name, "");
+        return;
+      }
+      case "cmdSend":
+        // Typed @bot /name args — the user's own message is the echo; no ack.
+        await this.runSessionCommand(action.chatId, action.name, action.args);
+        return;
+      case "cmdTerminal":
+        await out.send(action.chatId, `🖥 /${action.name} is a terminal-only command — run it in the Pi TUI.`, { parseMode: null });
+        return;
+      case "importSet": {
+        // /import <path>: import (switch to) an existing session file — the
+        // same rules as the session list (idle only; instance replacement).
+        if (!action.path) {
+          await out.send(action.chatId, "Usage: /import <path-to-session.jsonl>");
+          return;
+        }
+        if (action.path === pi.currentSessionPath()) {
+          await out.send(action.chatId, "Already active.");
+          return;
+        }
+        if (!pi.isIdle()) {
+          await out.send(action.chatId, "Agent is busy — send /stop first.");
+          return;
+        }
+        await this.doSwitch(action.chatId, action.path);
         return;
       }
       case "new": {
@@ -668,7 +799,7 @@ export class SessionBridge {
         return;
       case "killAsk": {
         const nonce = `k${++this.oneShotSeq}`;
-        const blocks: TgBlock[] = [{ type: "paragraph", text: "⚠️ This terminates the pi process — the bot goes silent until pi restarts. Sure?" }];
+        const blocks: TgBlock[] = [{ type: "paragraph", text: "⚠️ This terminates the Pi process — the bot goes silent until Pi restarts. Sure?" }];
         const id = await out.sendRich(action.chatId, blocks, {
           replyMarkup: {
             inline_keyboard: [[{ text: "☠ Yes, kill", callback_data: CB.kill(true, nonce) }, { text: "No", callback_data: CB.kill(false, nonce) }]],
@@ -681,8 +812,8 @@ export class SessionBridge {
         const p = this.consumeOneShot(action.nonce);
         if (action.nonce && !p) return; // stale tap — the question is already stamped
         if (!action.yes) {
-          if (p) await this.stampOneShot(p, "✅ Kept running — pi is still alive.");
-          else await out.send(action.chatId, "OK — pi keeps running."); // legacy (no nonce) — plain message
+          if (p) await this.stampOneShot(p, "✅ Kept running — Pi is still alive.");
+          else await out.send(action.chatId, "OK — Pi keeps running."); // legacy (no nonce) — plain message
           return;
         }
         if (p) await this.stampOneShot(p, "☠ Shutting down…");
@@ -711,6 +842,49 @@ export class SessionBridge {
         // text against a pending text-answer dialog — deliver as its answer.
         this.deps.dialogs?.tgAnswer(action.dialogId, { kind: "text", text: action.text });
         return;
+    }
+  }
+
+  /**
+   * Executes a session command by name (inline picker taps + typed
+   * `@bot /name args`), dispatching on the LIVE session command table:
+   * mapped built-ins reuse the existing TG flows, resource commands go
+   * through pi's prompt() (extension commands execute; templates/skills
+   * expand), terminal-only built-ins get the 🖥 explanation. Unknown names
+   * are NEVER dispatched (safety: only the live table's names are legal).
+   */
+  private async runSessionCommand(chatId: number, name: string, rest: string): Promise<void> {
+    const { out, pi } = this.deps;
+    const table = mergeCommands(pi.getCommands());
+    const d = dispatchFor(name, rest, table);
+    if (!d) {
+      await out.send(chatId, `⚠️ Unknown command /${name} — it may have been removed.`, { parseMode: null });
+      return;
+    }
+    if (d.type === "terminal") {
+      await out.send(chatId, `🖥 /${d.name} is a terminal-only command — run it in the Pi TUI.`, { parseMode: null });
+      return;
+    }
+    if (d.type === "action") {
+      // Reuse the existing flow (status card, model picker, kill question…).
+      await this.handle(actionForDecision(d, chatId)!);
+      return;
+    }
+    // Resource command — same guards as a text prompt (B6): a manual
+    // compaction in flight swallows prompts, and a busy agent is refused
+    // (the tap has nowhere to queue — plain steer-queueing is for text).
+    if (this.compactState) {
+      await out.send(chatId, "🗜 Compaction already in progress — try again after it finishes");
+      return;
+    }
+    if (!pi.isIdle()) {
+      await out.send(chatId, "⚡️ Agent is busy — send /stop first, then retry.");
+      return;
+    }
+    try {
+      pi.runCommand(d.name, d.args);
+    } catch (err) {
+      await out.send(chatId, `⚠️ /${name}: ${err instanceof Error ? err.message : String(err)}`, { parseMode: null });
     }
   }
 

@@ -7,7 +7,7 @@ import type { TgUpdate } from "./src/telegram-client.ts";
 import { route } from "./src/router.ts";
 import { encodeInternal, parseInternal } from "./src/command-args.ts";
 import { TelegramState } from "./src/state.ts";
-import { SessionBridge } from "./src/session-bridge.ts";
+import { SessionBridge, INLINE_MODE_OFF_WARNING } from "./src/session-bridge.ts";
 import { probeGpu } from "./src/gpu.ts";
 import type { Out, TelegramPi } from "./src/session-bridge.ts";
 import { Mirror, compactTokenDetail } from "./src/mirror.ts";
@@ -16,6 +16,8 @@ import { renderQr, qrWidgetFactory, tokenLooksValid, notAuthorizedBlocks } from 
 import { makeOut, makeTelegramPi, ctxIsAlive, wrapWaitForIdle, installUiProxy } from "./src/wiring.ts";
 import { PendingDialogs } from "./src/ui-dialogs.ts";
 import { runTgCompaction } from "./src/compact.ts";
+import { mergeCommands, filterCommands, customCommandMatch, toInlineResults, toCustomResult, isListable, dispatchFor, actionForDecision } from "./src/pi-commands.ts";
+import type { TgInlineQuery } from "./src/telegram-client.ts";
 
 // pi's agent dir honors PI_CODING_AGENT_DIR (tests point it at a temp dir).
 // configPath also runs the one-time migration from the legacy `pi-telega.json`
@@ -72,6 +74,7 @@ export default function piTelegram(pi: ExtensionAPI): void {
   let out: Out | undefined;
   let piAdapter: TelegramPi | undefined;
   let ownerChatId: number | undefined;
+  let botUsername: string | undefined;
   let cmdCtx: ExtensionCommandContext | undefined;
   let sessionCtx: ExtensionContext | undefined;
   let stopping = false;
@@ -171,12 +174,18 @@ export default function piTelegram(pi: ExtensionAPI): void {
     }
     let username: string | undefined;
     try {
-      username = (await client.getMe()).username;
+      const me = await client.getMe();
+      username = me.username;
+      // The flag drives the /help card (button + footer) — re-learned on
+      // every poller start. NO TUI warning here (2026-10-11): the warning is
+      // event-driven — pairing completion and /tg:config only.
+      bridge.setInlineModeEnabled(me.supports_inline_queries !== false);
     } catch (err) {
       ui(`pi-tg: getMe failed: ${String(err)}`, "error");
       return gen;
     }
     deps.botUsername = username;
+    botUsername = username; // outer-scope mirror (route() opts)
     // Set the bot menu (self-healing: runs on every poller start). Best-effort:
     // a failure logs a TUI warning and must never block or stop polling.
     void client.setMyCommands().catch((err) => ui(`pi-tg: setMyCommands failed: ${String(err)}`, "warning"));
@@ -225,6 +234,13 @@ export default function piTelegram(pi: ExtensionAPI): void {
 
   async function handleUpdate(update: TgUpdate): Promise<void> {
     if (!bridge || !out || !state) return;
+    // Inline picker: the owner's inline search — answer with the (filtered)
+    // session-command table. No action here: execution arrives LATER as
+    // chosen_inline_result (the tapped card).
+    if (update.inline_query) {
+      await handleInlineQuery(update.inline_query);
+      return;
+    }
     // Answer EVERY callback query (silent, no toast): Telegram keeps a loading
     // animation on a tapped button until the callback is answered. Best-effort
     // — a failure must never block the action itself (the button just animates
@@ -237,6 +253,18 @@ export default function piTelegram(pi: ExtensionAPI): void {
       {
         isDialogMessage: (id) => dialogs?.isDialogMessage(id) ?? false,
         plainAnswer: (t) => dialogs?.plainAnswerFor(t),
+        ownerChatId,
+        // Typed `@bot /<name> args` for a name the TG switch doesn't know:
+        // consult the LIVE session-command table (only its names are legal —
+        // an unknown name keeps the old unknown/prompt behavior).
+        sessionCommand: (name, rest, chatId) => {
+          const d = dispatchFor(name, rest, mergeCommands(piAdapter?.getCommands() ?? []));
+          return d ? actionForDecision(d, chatId) : undefined;
+        },
+        // The ⌨️ entry button inserts "@<bot> /…" into the input field — text
+        // sent from inline mode carries the mention; the router strips it so
+        // `@pi-tg /mcp serve …` routes like `/mcp serve …`.
+        botUsername,
       },
     );
     if (action.kind === "ignore") return;
@@ -266,6 +294,72 @@ export default function piTelegram(pi: ExtensionAPI): void {
     const encoded = encodeInternal(action);
     if (encoded === null) return;
     pi.sendUserMessage(`/tg ${encoded}`, { expandPromptTemplates: true });
+  }
+
+  /**
+   * The inline command picker (Bot API inline_query): the owner searches the
+   * session-command table (built-ins + extension commands + prompt templates
+   * + skills). Each result's id is `c<nonce>` — the nonce is registered in
+   * the bridge's pending-runs map (32 entries, oldest evicts; an evicted tap
+   * is a silent no-op), so a later chosen_inline_result executes this
+   * result. Non-owner: an empty answer (nothing leaks — the table is the
+   * session's command menu).
+   */
+  async function handleInlineQuery(q: TgInlineQuery): Promise<void> {
+    if (!client) return;
+    const isOwner = cfg.ownerId !== undefined && q.from.id === cfg.ownerId;
+    const c = client; // stable binding for the answer closure (narrowing)
+    // The client spins a loader until the query is answered — and blocks the
+    // input field while it does. So if the primary answer fails, an EMPTY
+    // fallback answer MUST still be attempted: it is the API's "no results"
+    // signal, it clears the spinner, and it lets the user press Enter and
+    // send the raw text (e.g. "/mcp serve …") as an ordinary message.
+    const answer = async (results: unknown[]): Promise<void> => {
+      try {
+        // is_personal: the table is THIS session's command menu — a shared
+        // server-side cache (the default) could serve it to a non-owner who
+        // types the same query in any chat, without us ever seeing their query.
+        await c.answerInlineQuery(q.id, results, { isPersonal: true });
+      } catch (err) {
+        ui(`pi-tg: answerInlineQuery failed: ${String(err)}`, "error");
+        // ALWAYS retry an empty answer — even when the primary was already
+        // empty: a rejected call means Telegram never received ANY answer,
+        // so the client's spinner is still spinning and only another
+        // (empty) answer can clear it. One cheap extra call in a rare path.
+        try {
+          await c.answerInlineQuery(q.id, [], { isPersonal: true });
+        } catch (err2) {
+          ui(`pi-tg: empty fallback answerInlineQuery also failed: ${String(err2)}`, "error");
+        }
+      }
+    };
+    if (!isOwner) {
+      await answer([]); // nothing leaks — the table is the session's command menu
+      return;
+    }
+    const table = mergeCommands(piAdapter?.getCommands() ?? []);
+    // "<command> <args>" while typing arguments → a SINGLE run-as-typed
+    // result: the tap/Enter auto-sends the full text, the router executes it.
+    // t-id: NOT registered in pendingRuns (the chosen update is ignored —
+    // the auto-sent message is the execution, exactly once).
+    const custom = customCommandMatch(table, q.query);
+    if (custom) {
+      const base = Date.now().toString(36);
+      await answer([toCustomResult(custom, () => base + "a")]);
+      return;
+    }
+    // Pre-filter to what is LISTABLE so results[i] and listable[i] stay
+    // 1:1 aligned — the nonce→name registration below depends on it
+    // (toInlineResults would drop terminal-only/duplicate rows internally
+    // and desynchronize the two arrays).
+    const listable = filterCommands(table, q.query).filter(isListable);
+    // base36 timestamp + per-answer counter: unique ≤10-char nonces
+    // (result_id `c<nonce>` fits 64 bytes).
+    let n = 0;
+    const base = Date.now().toString(36);
+    const results = toInlineResults(listable, () => `${base}${(n++).toString(36)}`, q.query);
+    for (let i = 0; i < results.length; i++) bridge?.registerRun(results[i]!.id.slice(1), listable[i]!.name);
+    await answer(results);
   }
 
   function cardLines(): string[] {
@@ -328,6 +422,16 @@ export default function piTelegram(pi: ExtensionAPI): void {
     if (!ctxIsAlive(ctx)) return;
     pollPromise = startPolling().catch((err) => ui(`pi-tg: ${String(err)}`, "error"));
     void pollPromise;
+    // Event-driven (2026-10-11): key configuration is one of the two moments
+    // the inline-mode-off warning may fire. One-shot probe with the new
+    // token (the poller restart is fire-and-forget — waiting on its flag
+    // would be racy).
+    try {
+      const me = await new TelegramClient(token, {}).getMe();
+      if (me.supports_inline_queries === false) ctx.ui.notify(INLINE_MODE_OFF_WARNING, "warning");
+    } catch {
+      // getMe failed — the poller surfaces API failures itself; no warning.
+    }
     ctx.ui.notify("pi-tg: token saved, poller restarted. Run /tg:pair to show the QR.", "info");
   }
 

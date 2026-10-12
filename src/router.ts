@@ -34,7 +34,7 @@ export type TgAction =
   | { kind: "level_mute"; chatId: number }
   | { kind: "level_minimal"; chatId: number }
   | { kind: "level_full"; chatId: number }
-  | { kind: "compact"; chatId: number }
+  | { kind: "compact"; chatId: number; instructions?: string }
   | { kind: "reload"; chatId: number }
   | { kind: "nameSet"; chatId: number; name: string }
   | { kind: "killAsk"; chatId: number }
@@ -45,9 +45,36 @@ export type TgAction =
   | { kind: "dialogCancel"; chatId: number; dialogId: number }
   | { kind: "dialogText"; chatId: number; replyToMessageId: number; text: string }
   | { kind: "dialogPlain"; chatId: number; dialogId: number; text: string }
+  /** Inline picker: a session command was chosen (chosen_inline_result). */
+  | { kind: "cmdRun"; chatId: number; nonce: string }
+  /** Inline picker: a session command was typed directly (`@bot /name args`). */
+  | { kind: "cmdSend"; chatId: number; name: string; args: string }
+  /** `/import <path>` built-in → switch to the JSONL session at path. */
+  | { kind: "importSet"; chatId: number; path: string }
+  /** A terminal-only built-in was chosen/typed — reply with the explanation. */
+  | { kind: "cmdTerminal"; chatId: number; name: string }
   | { kind: "unknown"; chatId: number; text: string };
 
-const CMD_RE = /^\/([a-zA-Z0-9_]+)(?:@[a-zA-Z0-9_]+)?\s*(.*)$/;
+/**
+ * Command text. The name starts with a letter/digit/underscore and may
+ * continue with letters, digits, underscores, HYPHENS and colons — skill
+ * names are directory names (requesting-code-review), built-ins use
+ * hyphens (scoped-models), and colon names cover skills (skill:name) and
+ * extension sub-commands (tg:pair). The first character is restricted so
+ * `-foo`/`:bar` can never be a command name.
+ */
+const CMD_RE = /^\/([a-zA-Z0-9_][a-zA-Z0-9_:.-]*)(?:@[a-zA-Z0-9_]+)?\s*(.*)$/;
+/**
+ * `@<botusername> /cmd args` → `/cmd args`. The ⌨️ entry button (switch_
+ * inline_query_current_chat) inserts the bot's username into the input field,
+ * so text the user sends from inline mode arrives with the prefix — the
+ * `^/`-anchored command regex must not see it as plain text.
+ */
+function stripBotMention(text: string, botUsername: string | undefined): string {
+  if (!botUsername) return text;
+  const escaped = botUsername.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return text.replace(new RegExp(`^@${escaped}\\s+`, "i"), "");
+}
 
 /**
  * Pure: one Telegram update + pairing state → one typed action.
@@ -62,12 +89,44 @@ export function route(
     isDialogMessage?: (messageId: number) => boolean;
     /** Plain-message fallback: returns a dialog id when `text` is a valid plain answer for a pending text-answer dialog (numbered select / input / editor). */
     plainAnswer?: (text: string) => number | undefined;
+    /**
+     * Session-command fallback (inline picker): consulted for command names
+     * the TG switch doesn't know, before falling to `unknown`. Returns the
+     * mapped action (modelList/cmdSend/cmdTerminal/importSet/nameSet/…)
+     * or undefined (→ unknown). Existing TG commands never reach it.
+     */
+    sessionCommand?: (name: string, rest: string, chatId: number) => TgAction | undefined;
+    /**
+     * The bot's own username (getMe). Text starting with `@<username>` +
+     * whitespace — exactly what the ⌨️ inline entry button inserts into the
+     * input field — has the prefix stripped so it routes as a command.
+     */
+    botUsername?: string;
+    /**
+     * The owner's learned chat id — chosen_inline_result carries NO chat_id
+     * (Bot API fact), so the cmdRun it produces can only be answered there.
+     * Undefined → chosen_inline_result is ignored (the command does not run).
+     */
+    ownerChatId?: number;
   },
 ): TgAction {
   // The rich draft's native Stop button (Bot API 10.2). Reuses the existing
   // `stop` action: the bridge aborts the turn and mirrors a ⏹️ message.
   const stopped = update.stopped_message_generation;
   if (stopped) return { kind: "stop", chatId: stopped.chat.id };
+
+  // Inline picker Flow A: the user tapped an inline-query result — Telegram
+  // auto-sent the card and now asks the bot to execute the command. Owner
+  // only; chat comes from the learned ownerChatId (the update has none).
+  const chosen = update.chosen_inline_result;
+  if (chosen) {
+    if (ownerId === undefined || chosen.from.id !== ownerId) return { kind: "ignore" };
+    const chatId = opts?.ownerChatId;
+    if (chatId === undefined) return { kind: "ignore" };
+    const m = /^c([a-z0-9]{1,32})$/.exec(chosen.result_id);
+    if (!m) return { kind: "ignore" };
+    return { kind: "cmdRun", chatId, nonce: m[1] };
+  }
 
   const cb = update.callback_query;
   if (cb) {
@@ -118,7 +177,7 @@ export function route(
   }
   if (fromId !== ownerId) return { kind: "notAuthorized", chatId, fromId };
 
-  const text = rawText.trim();
+  const text = stripBotMention(rawText.trim(), opts?.botUsername);
   // A reply to a pending dialog message is the dialog's text answer — even when
   // it looks like a command (the owner is answering, not commanding).
   const replyTo = msg.reply_to_message?.message_id;
@@ -145,11 +204,15 @@ export function route(
       case "level_mute": return { kind: "level_mute", chatId };
       case "level_minimal": return { kind: "level_minimal", chatId };
       case "level_full": return { kind: "level_full", chatId };
-      case "compact": return { kind: "compact", chatId };
+      case "compact": return { kind: "compact", chatId, ...(rest ? { instructions: rest } : {}) };
       case "reload": return { kind: "reload", chatId };
       case "name": return { kind: "nameSet", chatId, name: rest };
       case "kill": return { kind: "killAsk", chatId };
-      default: return { kind: "unknown", chatId, text };
+      default:
+        // Inline picker: a name from the live session-command table (built-in
+        // mapped onto a TG action, resource → cmdSend, terminal-only →
+        // cmdTerminal). Not in the table → the old unknown behavior.
+        return opts?.sessionCommand?.(cmd[1], rest, chatId) ?? { kind: "unknown", chatId, text };
     }
   }
   return { kind: "prompt", chatId, text };

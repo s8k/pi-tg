@@ -16,6 +16,8 @@ export interface FakePiOptions {
   sessionUsage?: { input: number; output: number };
   sessions?: PiSessionInfo[];
   modelSetResult?: boolean;
+  /** Live resource commands for the inline picker (pi.getCommands). */
+  commands?: { name: string; description: string; source: "extension" | "prompt" | "skill" }[];
 }
 
 export class FakePi {
@@ -33,6 +35,9 @@ export class FakePi {
   compactDone: ((ok: boolean, detail?: string) => void) | undefined;
   reloadCalls = 0;
   reloadDone: ((ok: boolean, detail?: string) => void) | undefined;
+  runCommands: { name: string; args: string }[] = [];
+  /** Last customInstructions passed to compact (inline picker /compact <text>). */
+  compactInstructions: string | undefined;
   uiNotices: { text: string; level?: "info" | "warning" | "error" }[] = [];
 
   constructor(opts: FakePiOptions = {}) {
@@ -55,14 +60,17 @@ export class FakePi {
       waitForIdle: async () => {
         self.waitForIdleCalls++;
       },
-      compact: (onDone) => {
+      compact: (onDone, instructions) => {
         self.compactCalls++;
         self.compactDone = onDone;
+        self.compactInstructions = instructions;
       },
       reload: (onDone) => {
         self.reloadCalls++;
         self.reloadDone = onDone;
       },
+      runCommand: (name, args) => { self.runCommands.push({ name, args }); },
+      getCommands: () => self.opts.commands ?? [],
       getSessionName: () => self.opts.sessionName,
       setSessionName: (name) => self.setNames.push(name),
       currentModel: () => self.opts.model,

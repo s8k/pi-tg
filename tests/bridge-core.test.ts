@@ -55,7 +55,7 @@ test("stop: busy → '⏹️ Stopping…' gets stamped '✔️' once the agent i
 test("stop: waitForIdle rejects (context gone) → no stamp, no crash", async () => {
   const pi = new FakePi({ busy: true });
   const adapter = pi.build();
-  adapter.waitForIdle = async () => { throw new Error("no active pi context"); };
+  adapter.waitForIdle = async () => { throw new Error("no active Pi context"); };
   const out = new FakeOut();
   const bridge = new SessionBridge(makeDeps(adapter, out));
   await bridge.dispatch({ kind: "stop", chatId: 7 });
@@ -240,7 +240,7 @@ test("help: rich blocks, each line a paragraph with a bold command entity", asyn
     }
   }
   assert.deepEqual(cmds, [
-    "/status", "/stop", "/compact", "/new", "/sessions", "/name <text>", "/models", "/thinking",
-    "/level_mute", "/level_minimal", "/level_full", "/reload", "/kill", "/help",
+    "/status", "/stop", "/new", "/sessions", "/name", "/models", "/thinking",
+    "/level_mute", "/level_minimal", "/level_full", "/compact", "/reload", "/kill", "/help",
   ]);
 });

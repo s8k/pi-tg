@@ -1,6 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { SessionBridge, helpBlocks } from "../src/session-bridge.ts";
+import { SessionBridge, helpBlocks, PI_TG_VERSION } from "../src/session-bridge.ts";
+import { BOT_COMMANDS } from "../src/bot-commands.ts";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 /** The bold command names of helpBlocks, in order. */
 const helpCmds = (): string[] => {
@@ -57,12 +60,46 @@ test("old /mute /unmute are gone: they land on the unknown-command path", async 
   assert.equal(lastSend(out), "Unknown command /mute — see /help");
 });
 
-test("help: command order — status, stop, compact up top; name right after sessions", () => {
+test("help: command order mirrors the bot menu (BOT_COMMANDS) — status, stop up top; name after sessions", () => {
   const cmds = helpCmds();
   assert.deepEqual(cmds, [
-    "/status", "/stop", "/compact", "/new", "/sessions", "/name <text>", "/models", "/thinking",
-    "/level_mute", "/level_minimal", "/level_full", "/reload", "/kill", "/help",
+    "/status", "/stop", "/new", "/sessions", "/name", "/models", "/thinking",
+    "/level_mute", "/level_minimal", "/level_full", "/compact", "/reload", "/kill", "/help",
   ]);
+});
+
+test("help card is a projection of BOT_COMMANDS — menu and card can never drift (2026-10-11)", () => {
+  // the card's command lines carry the menu's exact descriptions — every
+  // entry, /help included (its menu description carries the picker-button line)
+  const lines: string[] = [];
+  for (const b of helpBlocks()) {
+    if (b.type !== "paragraph") continue;
+    const parts = (Array.isArray(b.text) ? b.text : [b.text]) as (string | { type: string; text: unknown })[];
+    const cmd = parts.find((p) => typeof p === "object" && !Array.isArray(p) && p.type === "bold") as
+      | { type: "bold"; text: unknown }
+      | undefined;
+    const desc = parts.filter((p): p is string => typeof p === "string").join("");
+    if (cmd) lines.push(`${String(cmd.text)}${desc}`);
+  }
+  for (const { command, description } of BOT_COMMANDS) {
+    assert.ok(lines.includes(`/${command} — ${description}`), `missing or drifted: /${command} — ${description}`);
+  }
+});
+
+test("help header carries the version stamp from package.json (npm-update visibility, 2026-10-11)", () => {
+  const pkg = JSON.parse(
+    readFileSync(fileURLToPath(new URL("../package.json", import.meta.url)), "utf8"),
+  ) as { version: string };
+  const header = helpBlocks()[0];
+  assert.equal(header?.type, "paragraph");
+  const parts = (Array.isArray(header?.text) ? header.text : [header?.text]) as (string | { type: string; text: unknown })[];
+  const bold = parts.find(
+    (p): p is { type: "bold"; text: unknown } => typeof p === "object" && !Array.isArray(p) && p.type === "bold",
+  );
+  assert.equal(String(bold?.text), "pi-tg", "the header starts with the bold pi-tg entity");
+  const desc = parts.filter((p): p is string => typeof p === "string").join("");
+  assert.ok(desc.includes(` v${pkg.version}`), `expected ' v${pkg.version}' in: ${desc}`);
+  assert.equal(PI_TG_VERSION, pkg.version, "PI_TG_VERSION reads the same package.json");
 });
 
 test("help lists the three level commands, not /mute or /unmute", () => {

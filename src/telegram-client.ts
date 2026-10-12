@@ -68,6 +68,32 @@ export interface TgCallbackQuery {
   data?: string;
 }
 
+/**
+ * Incoming inline query (Bot API). NOTE: the current API has NO `chat_id`
+ * here (only `chat_type`) — the originating chat cannot be learned from the
+ * query itself; chosen_inline_result likewise carries no chat id.
+ */
+export interface TgInlineQuery {
+  id: string;
+  from: TgFrom;
+  query: string; // includes the prefilled leading "/"
+  offset: string;
+  chat_type?: string; // "sender" | "private" | "group" | "supergroup" | "channel"
+}
+
+/**
+ * The user chose one of OUR inline results (Bot API). `inline_message_id`
+ * is present only when the result carried a reply_markup (ours never do,
+ * so it is always absent).
+ */
+export interface TgChosenInlineResult {
+  result_id: string;
+  from: TgFrom;
+  query: string;
+  chat_type: string; // "sender" | "private" | "group" | "supergroup" | "channel"
+  inline_message_id?: string;
+}
+
 export interface TgUpdate {
   update_id: number;
   message?: TgMessage;
@@ -75,6 +101,8 @@ export interface TgUpdate {
   callback_query?: TgCallbackQuery;
   /** Bot API 10.3: the user pressed the Stop button on a draft we created. */
   stopped_message_generation?: MessageGenerationStopped;
+  inline_query?: TgInlineQuery;
+  chosen_inline_result?: TgChosenInlineResult;
 }
 
 /** Blocks-tier rich message (Bot API 10.2+, InputRichMessage). The markdown/html tiers retire with this migration. */
@@ -98,6 +126,8 @@ export interface TgBotMe {
   is_bot: true;
   first_name: string;
   username?: string;
+  /** True if the bot supports inline queries — only getMe returns it. */
+  supports_inline_queries?: boolean;
 }
 
 export interface TgSentMessage {
@@ -301,6 +331,14 @@ export class TelegramClient {
     return this.call("answerCallbackQuery", p);
   }
 
+  /** Answer an inline query (≤50 results). The results are InlineQueryResultArticle payloads. */
+  answerInlineQuery(inlineQueryId: string, results: unknown[], opts?: { cacheTime?: number; isPersonal?: boolean }): Promise<boolean> {
+    const p: Record<string, unknown> = { inline_query_id: inlineQueryId, results };
+    if (opts?.cacheTime !== undefined) p.cache_time = opts.cacheTime;
+    if (opts?.isPersonal) p.is_personal = true;
+    return this.call("answerInlineQuery", p) as Promise<boolean>;
+  }
+
   sendRichMessage(
     chatId: number,
     richMessage: InputRichMessage,
@@ -358,6 +396,6 @@ export class TelegramClient {
   }
 
   getUpdates(offset: number, timeoutSec = 50, signal?: AbortSignal): Promise<TgUpdate[]> {
-    return this.call("getUpdates", { offset, timeout: timeoutSec, allowed_updates: ["message", "callback_query", "edited_message", "stopped_message_generation"] }, { signal }) as Promise<TgUpdate[]>;
+    return this.call("getUpdates", { offset, timeout: timeoutSec, allowed_updates: ["message", "callback_query", "edited_message", "stopped_message_generation", "inline_query", "chosen_inline_result"] }, { signal }) as Promise<TgUpdate[]>;
   }
 }

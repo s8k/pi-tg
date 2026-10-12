@@ -6,12 +6,21 @@ import type { TgBlock } from "./rich-blocks.ts";
 
 // ── Local structural mirrors of pi 0.84.4 (keeps wiring.ts pi-free & testable) ──
 
+/** Structural mirror of pi's SlashCommandInfo (name is the invocationName). */
+export interface PiSlashCommandInfo {
+  name: string;
+  description?: string;
+  source: "extension" | "prompt" | "skill";
+}
+
 export interface PiLike {
   sendUserMessage(text: string, opts?: { deliverAs?: "steer" | "followUp"; expandPromptTemplates?: boolean }): void;
   setSessionName(name: string): void;
   getSessionName(): string | undefined;
   setModel(model: PiModel): Promise<boolean>;
   setThinkingLevel(level: PiThinkingLevel): void;
+  /** Live resource commands of the current session (pi.getCommands). */
+  getCommands(): PiSlashCommandInfo[];
 }
 
 export interface CtxLike {
@@ -21,7 +30,7 @@ export interface CtxLike {
   isIdle(): boolean;
   abort(): void;
   shutdown(): void;
-  compact(options?: { onComplete?: (result: unknown) => void; onError?: (error: Error) => void }): void;
+  compact(options?: { customInstructions?: string; onComplete?: (result: unknown) => void; onError?: (error: Error) => void }): void;
   getContextUsage(): { tokens: number | null; contextWindow: number; percent: number | null } | undefined;
   model: PiModel | undefined;
   thinkingLevel?: string;
@@ -130,7 +139,7 @@ export function makeTelegramPi(deps: TelegramPiDeps): TelegramPi {
     if (ctxIsAlive(sess)) return sess;
     return undefined;
   };
-  const requireCtx = (): CtxLike => ctx() ?? (() => { throw new Error("no active pi context"); })();
+  const requireCtx = (): CtxLike => ctx() ?? (() => { throw new Error("no active Pi context"); })();
   return {
     get cwd() {
       return ctx()?.cwd ?? "";
@@ -145,23 +154,42 @@ export function makeTelegramPi(deps: TelegramPiDeps): TelegramPi {
           : { expandPromptTemplates: true }
       );
     },
+    /**
+     * Run a session command by name (inline picker). pi's prompt() executes
+     * extension commands and expands templates/skills from text — callers
+     * must only pass names from the live table (pi-commands) and only while
+     * idle (see bridge cmdRun/cmdSend). Errors surface synchronously or via
+     * pi's own error handling; the bridge reports the outcome.
+     */
+    runCommand(name, args) {
+      deps.pi.sendUserMessage(args ? `/${name} ${args}` : `/${name}`, { expandPromptTemplates: true });
+    },
+    /** Live resource commands; a stale-runtime throw degrades to []. */
+    getCommands() {
+      try {
+        return deps.pi.getCommands().map((c) => ({ name: c.name, description: c.description ?? "", source: c.source }));
+      } catch {
+        return [];
+      }
+    },
     newSession() {
       const c = requireCtx();
-      if (!c.newSession) throw new Error("no active pi context");
+      if (!c.newSession) throw new Error("no active Pi context");
       void c.newSession().catch(() => {});
     },
     switchSession(path) {
       const c = requireCtx();
-      if (!c.switchSession) throw new Error("no active pi context");
+      if (!c.switchSession) throw new Error("no active Pi context");
       void c.switchSession(path).catch(() => {});
     },
     waitForIdle: async () => {
       const c = requireCtx();
-      if (!c.waitForIdle) throw new Error("no active pi context");
+      if (!c.waitForIdle) throw new Error("no active Pi context");
       await c.waitForIdle();
     },
-    compact(onDone) {
+    compact(onDone, instructions) {
       requireCtx().compact({
+        ...(instructions !== undefined ? { customInstructions: instructions } : {}),
         onComplete: (r) => {
           // Short "before → after tokens" note — NEVER the full summary (it
           // exceeds Telegram's 4096-char limit and the completion message
@@ -174,7 +202,7 @@ export function makeTelegramPi(deps: TelegramPiDeps): TelegramPi {
     },
     reload(onDone) {
       const c = requireCtx();
-      if (!c.reload) throw new Error("no active pi context");
+      if (!c.reload) throw new Error("no active Pi context");
       // Terminal: after pi replaces the runtime, this closure still runs in the
       // pre-reload version — report the outcome, never persist from here.
       void c.reload().then(

@@ -1,0 +1,219 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { SessionBridge, helpBlocks, INLINE_MODE_OFF_WARNING } from "../src/session-bridge.ts";
+import { FakePi, FakeOut } from "./fake-pi.ts";
+import { makeDeps, lastSend, lastRichText } from "./helpers.ts";
+import { PICKER_BUTTON } from "../src/pi-commands.ts";
+
+const owner = 7;
+
+function setup(opts: ConstructorParameters<typeof FakePi>[0] = {}) {
+  const pi = new FakePi(opts);
+  const out = new FakeOut();
+  const bridge = new SessionBridge(makeDeps(pi.build(), out));
+  return { pi, out, bridge };
+}
+
+// ── pending runs: persistent nonce table (2026-10-11: consume → lookup) ──
+
+test("pendingRuns: register → lookup stays valid (re-taps resolve); unknown nonces → undefined", () => {
+  const { bridge } = setup();
+  bridge.registerRun("ab12cd", "tg");
+  assert.equal(bridge.lookupRun("ab12cd"), "tg");
+  assert.equal(bridge.lookupRun("ab12cd"), "tg");
+  assert.equal(bridge.lookupRun("zzzzzz"), undefined);
+});
+
+test("pendingRuns: capped — the oldest entry evicts past 32 (eviction is what kills stale buttons)", () => {
+  const { bridge } = setup();
+  for (let i = 0; i < 33; i++) bridge.registerRun(`n${String(i).padStart(5, "0")}`, "tg");
+  assert.equal(bridge.lookupRun("n00000"), undefined); // evicted
+  assert.equal(bridge.lookupRun("n00032"), "tg");
+});
+
+// ── cmdRun (chosen_inline_result tap) ──
+
+test("cmdRun: a registered resource command runs via pi.runCommand (no ack message)", async () => {
+  const { pi, out, bridge } = setup({ commands: [{ name: "skill:brainstorming", description: "d", source: "skill" }] });
+  bridge.registerRun("ab12cd", "skill:brainstorming");
+  await bridge.dispatch({ kind: "cmdRun", chatId: owner, nonce: "ab12cd" });
+  assert.deepEqual(pi.runCommands, [{ name: "skill:brainstorming", args: "" }]);
+  assert.equal(out.calls.filter((c) => c.kind === "send").length, 0);
+});
+
+test("cmdRun: the same nonce resolves again (lookup, not consume); unknown nonce is a no-op", async () => {
+  const { pi, out, bridge } = setup({ commands: [{ name: "myext", description: "d", source: "extension" }] });
+  bridge.registerRun("ab12cd", "myext");
+  await bridge.dispatch({ kind: "cmdRun", chatId: owner, nonce: "ab12cd" });
+  await bridge.dispatch({ kind: "cmdRun", chatId: owner, nonce: "nope12" }); // unknown → silent no-op
+  assert.deepEqual(pi.runCommands, [{ name: "myext", args: "" }]);
+});
+
+test("cmdRun: a mapped built-in dispatches its existing TG flow (quit → kill confirm)", async () => {
+  const { bridge, out } = setup();
+  bridge.registerRun("ab12cd", "quit");
+  await bridge.dispatch({ kind: "cmdRun", chatId: owner, nonce: "ab12cd" });
+  assert.ok(lastRichText(out).includes("terminates the Pi process"));
+});
+
+test("cmdRun: a mapped built-in with args carries them (name → rename)", async () => {
+  const { pi, bridge } = setup();
+  bridge.registerRun("ab12cd", "name");
+  // the table says /name takes a name argument — the tap has none, so the
+  // existing nameSet usage reply fires (empty name)
+  await bridge.dispatch({ kind: "cmdRun", chatId: owner, nonce: "ab12cd" });
+  assert.equal(pi.setNames.length, 0);
+});
+
+test("cmdRun: terminal-only built-in → the 🖥 explanation, nothing runs", async () => {
+  const { pi, out, bridge } = setup();
+  bridge.registerRun("ab12cd", "tree");
+  await bridge.dispatch({ kind: "cmdRun", chatId: owner, nonce: "ab12cd" });
+  assert.equal(pi.runCommands.length, 0);
+  assert.ok(lastSend(out).includes("terminal-only"));
+});
+
+test("cmdRun: the auto-sent card is NOT stamped (2026-10-11 — no stamp, no button; the bare command text IS the echo)", async () => {
+  const { out, bridge } = setup({ commands: [{ name: "myext", description: "d", source: "extension" }] });
+  bridge.registerRun("ab12cd", "myext");
+  await bridge.dispatch({ kind: "cmdRun", chatId: owner, nonce: "ab12cd" });
+  assert.equal(out.calls.filter((c) => c.kind === "edit" || c.kind === "editRich").length, 0, "no stamp edit — the card stays exactly as Telegram auto-sent it");
+});
+
+// ── cmdSend (typed @bot /name args) ──
+
+test("cmdSend: resource command runs with its args", async () => {
+  const { pi, bridge } = setup({ commands: [{ name: "my-tpl", description: "d", source: "prompt" }] });
+  await bridge.dispatch({ kind: "cmdSend", chatId: owner, name: "my-tpl", args: "arg1 arg2" });
+  assert.deepEqual(pi.runCommands, [{ name: "my-tpl", args: "arg1 arg2" }]);
+});
+
+test("cmdSend: busy agent → refusal, nothing runs", async () => {
+  const { pi, out, bridge } = setup({ busy: true, commands: [{ name: "myext", description: "d", source: "extension" }] });
+  await bridge.dispatch({ kind: "cmdSend", chatId: owner, name: "myext", args: "" });
+  assert.equal(pi.runCommands.length, 0);
+  assert.ok(lastSend(out).includes("busy"));
+});
+
+test("cmdSend: manual compaction in flight → refusal, nothing runs", async () => {
+  const { pi, out, bridge } = setup({ commands: [{ name: "myext", description: "d", source: "extension" }] });
+  await bridge.dispatch({ kind: "compact", chatId: owner }); // raises the compact state
+  assert.ok(pi.compactDone, "compact started");
+  await bridge.dispatch({ kind: "cmdSend", chatId: owner, name: "myext", args: "" });
+  assert.equal(pi.runCommands.length, 0);
+  assert.ok(lastSend(out).includes("ompaction"));
+  pi.compactDone!(true); // clean up the compact state
+});
+
+test("cmdSend: a name not in the session table → unknown-command reply (never dispatched)", async () => {
+  const { pi, out, bridge } = setup();
+  await bridge.dispatch({ kind: "cmdSend", chatId: owner, name: "ghost", args: "" });
+  assert.equal(pi.runCommands.length, 0);
+  assert.ok(lastSend(out).includes("Unknown command"));
+});
+
+test("cmdSend: mapped built-in with args (compact instructions) reaches the compact flow", async () => {
+  const { pi, bridge } = setup();
+  await bridge.dispatch({ kind: "cmdSend", chatId: owner, name: "compact", args: "keep the tests" });
+  assert.equal(pi.compactInstructions, "keep the tests");
+  pi.compactDone?.(true);
+});
+
+// ── importSet (/import <path> → switch session) ──
+
+test("importSet: idle → the switch-session flow", async () => {
+  const { pi, out, bridge } = setup();
+  await bridge.dispatch({ kind: "importSet", chatId: owner, path: "/tmp/s.jsonl" });
+  assert.deepEqual(pi.switchSessions, ["/tmp/s.jsonl"]);
+  assert.ok(lastSend(out).includes("Switching session"));
+});
+
+test("importSet: busy → refusal; the current path → 'Already active'", async () => {
+  const { pi, out, bridge } = setup({ busy: true, sessionPath: "/tmp/s.jsonl" });
+  await bridge.dispatch({ kind: "importSet", chatId: owner, path: "/tmp/other.jsonl" });
+  assert.equal(pi.switchSessions.length, 0);
+  assert.ok(lastSend(out).includes("busy"));
+  const { pi: pi2, out: out2, bridge: bridge2 } = setup({ sessionPath: "/tmp/s.jsonl" });
+  await bridge2.dispatch({ kind: "importSet", chatId: owner, path: "/tmp/s.jsonl" });
+  assert.equal(pi2.switchSessions.length, 0);
+  assert.ok(lastSend(out2).includes("Already active"));
+});
+
+// ── cmdTerminal (typed terminal-only built-in) ──
+
+test("cmdTerminal: the 🖥 explanation reply", async () => {
+  const { out, bridge } = setup();
+  await bridge.dispatch({ kind: "cmdTerminal", chatId: owner, name: "login" });
+  assert.ok(lastSend(out).includes("terminal-only"));
+  assert.ok(lastSend(out).includes("/login"));
+});
+
+// ── inline-mode-off warning: event-driven (pairing / /tg:config only) ──
+
+test("pair: inline mode disabled → the TUI gets the INLINE MODE warning (2026-10-11: event-driven)", async () => {
+  const { pi, bridge } = setup();
+  bridge.setInlineModeEnabled(false);
+  await bridge.dispatch({ kind: "pair", chatId: 42, fromId: 99 });
+  const warnings = pi.uiNotices.filter((n) => n.text === INLINE_MODE_OFF_WARNING && n.level === "warning");
+  assert.equal(warnings.length, 1, "exactly one warning, at pairing completion");
+});
+
+test("pair: inline mode enabled (default) → no TUI warning (no nag when everything is fine)", async () => {
+  const { pi, bridge } = setup();
+  await bridge.dispatch({ kind: "pair", chatId: 42, fromId: 99 });
+  assert.ok(!pi.uiNotices.some((n) => n.text === INLINE_MODE_OFF_WARNING));
+});
+
+// ── picker button on the help card (removed from /status 2026-10-11) ──
+
+test("help card carries the ⌨️ Other Pi commands button (switch_inline_query_current_chat '/')", async () => {
+  const { out, bridge } = setup();
+  await bridge.dispatch({ kind: "help", chatId: owner });
+  const help = out.calls.filter((c) => c.kind === "sendRich").pop()!;
+  assert.deepEqual(help.opts?.replyMarkup, PICKER_BUTTON);
+  assert.ok(lastRichText(out).includes("other Pi commands"), "the /help line mentions the picker for the other Pi commands");
+});
+
+test("help card: inline mode disabled → NO picker button + footer explains why (2026-10-11)", async () => {
+  const { out, bridge } = setup();
+  bridge.setInlineModeEnabled(false);
+  await bridge.dispatch({ kind: "help", chatId: owner });
+  const help = out.calls.filter((c) => c.kind === "sendRich").pop()!;
+  assert.equal(help.opts?.replyMarkup, undefined, "the ⌨️ button is gone — it would be inert without inline mode");
+  const text = lastRichText(out);
+  assert.ok(text.includes("Inline mode is disabled"), "the footer names the missing feature's cause");
+  assert.ok(text.includes("@BotFather"), "the footer points to where to enable it");
+  assert.ok(text.includes("/status"), "the rest of the help card is intact");
+});
+
+test("start: inline mode disabled → the help card also loses the button + gets the footer", async () => {
+  const { out, bridge } = setup();
+  bridge.setInlineModeEnabled(false);
+  await bridge.dispatch({ kind: "start", chatId: owner });
+  const help = out.calls.filter((c) => c.kind === "sendRich").pop()!;
+  assert.equal(help.opts?.replyMarkup, undefined);
+  assert.ok(lastRichText(out).includes("Inline mode is disabled"));
+});
+
+test("helpBlocks: default keeps the button line, inlineModeEnabled:false appends divider + footer", () => {
+  const def = helpBlocks();
+  assert.ok(!JSON.stringify(def).includes("Inline mode is disabled"), "default: no footer");
+  const off = helpBlocks({ inlineModeEnabled: false });
+  assert.equal(off.length, def.length + 2, "two extra blocks: divider + footer");
+  assert.deepEqual(off[off.length - 2], { type: "divider" }, "a divider separates the command list from the warning");
+  assert.ok(JSON.stringify(off[off.length - 1]).includes("Inline mode is disabled"));
+});
+
+test("status card has NO picker button (2026-10-11: the button lives on the /help card only)", async () => {
+  const { out, bridge } = setup();
+  await bridge.dispatch({ kind: "status", chatId: owner });
+  const status = out.calls.filter((c) => c.kind === "sendRich").pop()!;
+  assert.equal(status.opts?.replyMarkup, undefined);
+});
+
+test("start (pairing card + help) — the help card carries the button", async () => {
+  const { out, bridge } = setup();
+  await bridge.dispatch({ kind: "start", chatId: owner });
+  const rich = out.calls.filter((c) => c.kind === "sendRich");
+  assert.ok(rich.some((c) => c.opts?.replyMarkup === PICKER_BUTTON));
+});

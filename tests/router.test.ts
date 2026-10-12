@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { route, CB } from "../src/router.ts";
+import type { TgAction } from "../src/router.ts";
 import type { TgUpdate } from "../src/telegram-client.ts";
 
 const chat = { id: 7, type: "private" };
@@ -178,4 +179,120 @@ test("R9: empty projection is ignored; text wins when both present; auth still e
   );
   // non-owner rich message is rejected like any non-owner text
   assert.equal(route(richUpdate(2, 9, [{ type: "paragraph", text: "hi" }]), owner).kind, "notAuthorized");
+});
+
+// ── inline command picker: session-command fallback ──
+
+const sessionCommand = (name: string, rest: string, chatId: number): TgAction | undefined => {
+  if (name === "model") return { kind: "modelList", chatId };
+  if (name === "skill:brainstorming") return { kind: "cmdSend", chatId, name, args: rest };
+  if (name === "tg:pair") return { kind: "cmdSend", chatId, name, args: rest };
+  if (name === "tree") return { kind: "cmdTerminal", chatId: 7, name };
+  if (name === "skill:requesting-code-review") return { kind: "cmdSend", chatId, name, args: rest };
+  if (name === "scoped-models") return { kind: "cmdTerminal", chatId, name };
+  return undefined; // unknown → the router must keep its "unknown" behavior
+};
+
+test("sessionCommand fallback: typed built-in/resource/terminal names route via the injected table", () => {
+  assert.deepEqual(route(msgUpdate(1, 5, "/model"), 5, { sessionCommand }), { kind: "modelList", chatId: 7 });
+  assert.deepEqual(route(msgUpdate(2, 5, "/skill:brainstorming go"), 5, { sessionCommand }), { kind: "cmdSend", chatId: 7, name: "skill:brainstorming", args: "go" });
+  assert.deepEqual(route(msgUpdate(3, 5, "/tree"), 5, { sessionCommand }), { kind: "cmdTerminal", chatId: 7, name: "tree" });
+});
+
+test("sessionCommand fallback: unknown name stays unknown; non-command text never reaches it", () => {
+  assert.deepEqual(route(msgUpdate(1, 5, "/definitely-not-a-command"), 5, { sessionCommand }), { kind: "unknown", chatId: 7, text: "/definitely-not-a-command" });
+  assert.deepEqual(route(msgUpdate(2, 5, "plain prompt"), 5, { sessionCommand }), { kind: "prompt", chatId: 7, text: "plain prompt" });
+});
+
+test("existing TG commands win over the fallback (no fallback call for them)", () => {
+  const spy = (name: string, rest: string) => {
+    throw new Error(`fallback must not be consulted for /${name}`);
+  };
+  assert.deepEqual(route(msgUpdate(1, 5, "/new"), 5, { sessionCommand: spy }), { kind: "new", chatId: 7 });
+  assert.deepEqual(route(msgUpdate(2, 5, "/name x"), 5, { sessionCommand: spy }), { kind: "nameSet", chatId: 7, name: "x" });
+});
+
+test("@<botusername> prefix (inserted by the ⌨️ entry button) is stripped before routing", () => {
+  // switch_inline_query_current_chat inserts "@botusername /…" into the input
+  // field — pressing Enter with arguments typed sends exactly this shape; it
+  // must route like the bare command, not become a confused prompt.
+  assert.deepEqual(
+    route(msgUpdate(1, 5, "@pi-tg /model"), 5, { sessionCommand, botUsername: "pi-tg" }),
+    { kind: "modelList", chatId: 7 },
+  );
+  assert.deepEqual(
+    route(msgUpdate(2, 5, "@Pi-TG /skill:brainstorming go"), 5, { sessionCommand, botUsername: "pi-tg" }),
+    { kind: "cmdSend", chatId: 7, name: "skill:brainstorming", args: "go" },
+  );
+  // a DIFFERENT bot's mention is not ours — plain text
+  assert.deepEqual(
+    route(msgUpdate(3, 5, "@otherbot /model"), 5, { sessionCommand, botUsername: "pi-tg" }),
+    { kind: "prompt", chatId: 7, text: "@otherbot /model" },
+  );
+  // no botUsername configured → no stripping (unchanged behavior)
+  assert.deepEqual(
+    route(msgUpdate(4, 5, "@pi-tg /model"), 5, { sessionCommand }),
+    { kind: "prompt", chatId: 7, text: "@pi-tg /model" },
+  );
+});
+
+test("colon names match the command regex: /tg:pair and /skill:x@BotName", () => {
+  assert.deepEqual(route(msgUpdate(1, 5, "/tg:pair"), 5, { sessionCommand }), { kind: "cmdSend", chatId: 7, name: "tg:pair", args: "" });
+  assert.deepEqual(route(msgUpdate(2, 5, "/skill:brainstorming@MyBot"), 5, { sessionCommand }), { kind: "cmdSend", chatId: 7, name: "skill:brainstorming", args: "" });
+});
+
+test("hyphenated names route intact (skill names and built-ins like scoped-models contain -)", () => {
+  assert.deepEqual(
+    route(msgUpdate(1, 5, "/skill:requesting-code-review check the only index.ts"), 5, { sessionCommand }),
+    { kind: "cmdSend", chatId: 7, name: "skill:requesting-code-review", args: "check the only index.ts" },
+  );
+  assert.deepEqual(
+    route(msgUpdate(2, 5, "/scoped-models"), 5, { sessionCommand }),
+    { kind: "cmdTerminal", chatId: 7, name: "scoped-models" },
+  );
+});
+
+// ── inline picker: chosen_inline_result (Flow A) ──
+
+const chosenUpdate = (updateId: number, id: number, resultId: string): TgUpdate => ({
+  update_id: updateId,
+  chosen_inline_result: {
+    from: from(id),
+    chat_type: "private",
+    query: "mod",
+    result_id: resultId,
+  },
+});
+
+test("chosen_inline_result: owner + known chat → cmdRun with the nonce", () => {
+  const u = chosenUpdate(1, 5, "c" + "ab12cd34");
+  assert.deepEqual(route(u, 5, { ownerChatId: 7 }), { kind: "cmdRun", chatId: 7, nonce: "ab12cd34" });
+});
+
+test("chosen_inline_result: non-owner / unpaired → ignore (no leak, no execution)", () => {
+  const u1 = chosenUpdate(1, 9, "cab12cd34");
+  assert.deepEqual(route(u1, 5, { ownerChatId: 7 }), { kind: "ignore" });
+  const u2 = chosenUpdate(2, 5, "cab12cd34");
+  assert.deepEqual(route(u2, undefined, { ownerChatId: 7 }), { kind: "ignore" });
+});
+
+test("chosen_inline_result: no learned ownerChatId → ignore (nowhere to reply)", () => {
+  const u = chosenUpdate(1, 5, "cab12cd34");
+  assert.deepEqual(route(u, 5, {}), { kind: "ignore" });
+});
+
+test("chosen_inline_result: malformed result_id → ignore", () => {
+  const owner = 5;
+  assert.deepEqual(route(chosenUpdate(1, owner, "xabc"), owner, { ownerChatId: 7 }), { kind: "ignore" });
+  // t<nonce> = the run-as-typed card: it executes via its AUTO-SENT message,
+  // so the chosen_inline_result for it must be ignored (no double execution)
+  assert.deepEqual(route(chosenUpdate(2, owner, "tabc123"), owner, { ownerChatId: 7 }), { kind: "ignore" });
+  assert.deepEqual(route(chosenUpdate(2, owner, "c" + "A".repeat(20)), owner, { ownerChatId: 7 }), { kind: "ignore" });
+  assert.deepEqual(route(chosenUpdate(3, owner, "c"), owner, { ownerChatId: 7 }), { kind: "ignore" });
+});
+
+test("typed /compact <instructions> carries them (inline-picker parity)", () => {
+  const owner = 5;
+  assert.deepEqual(route(msgUpdate(1, owner, "/compact keep the tests"), owner), { kind: "compact", chatId: 7, instructions: "keep the tests" });
+  assert.deepEqual(route(msgUpdate(2, owner, "/compact"), owner), { kind: "compact", chatId: 7 });
 });

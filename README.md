@@ -66,7 +66,7 @@ The poller also injects `/tg internal …` (machine-only, not listed).
 | `/models` | model list (current marked) with buttons |
 | `/thinking` | available thinking levels with buttons |
 | `/status` | session, dir, model, thinking, context usage, message count, busy state, GPU temp/util/memory (NVIDIA, if available) |
-| `/stop` | abort the current turn |
+| `/stop` | stop the current turn |
 | `/level_mute` | output level: mute — no agent output (commands still work) |
 | `/level_minimal` | output level: minimal — visible text only (no tools, no thinking) |
 | `/level_full` | output level: full — tool log + final answer (default) |
@@ -79,6 +79,34 @@ The poller also injects `/tg internal …` (machine-only, not listed).
 The Telegram `/` command menu shows these commands — set via `setMyCommands`
 on every poller start (self-healing; single source of truth in
 `src/bot-commands.ts`).
+
+## Inline command picker
+
+Run any command in this session from your phone, without typing it.
+
+**How to use:**
+1. Open the **/help** card and press the **⌨️ Other Pi commands** button
+   (or type `@bot /` in the chat input yourself).
+2. A searchable list of the session's commands opens — Pi built-ins,
+   extension commands, prompt templates and skills (tagged `[ext]`,
+   `[tpl]`, `[skill]`).
+3. Type to filter, tap a command — it is sent to the chat and runs
+   immediately.
+
+**Passing arguments:** keep typing after the command name (e.g. `/mcp
+login acme`) and tap the entry — the command runs with your arguments.
+
+**Notes:**
+- A few terminal-only commands (`/tree`, `/login`, …) are not in the
+  list — they only work in the Pi terminal. Typing one there shows an
+  explanation.
+- **One-time setup:** enable **Inline mode** for your bot — @BotFather →
+  `/mybots` → *Bot Settings* → *API Services* → *Inline mode*. That's the
+  only step; the ⌨️ button works right after.
+- If you skip it, nothing breaks: the ⌨️ button simply won't appear on
+  the /help card (a note in its place explains why), and pi-tg mentions
+  it in the terminal when you pair or run `/tg:config`. All other pi-tg
+  features work normally without it.
 
 ## Configuration
 

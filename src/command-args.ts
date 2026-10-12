@@ -1,6 +1,8 @@
 import type { TgAction } from "./router.ts";
 
-const PLAIN = new Set(["start", "help", "new", "sessions", "modelList", "thinkingList", "status", "stop", "level_mute", "level_minimal", "level_full", "compact", "reload", "killAsk"]);
+const PLAIN = new Set(["start", "help", "new", "sessions", "modelList", "thinkingList", "status", "stop", "level_mute", "level_minimal", "level_full", "reload", "killAsk"]);
+/** Single-token kinds (inline picker): the token is validated on parse. */
+const TOKEN = new Set(["cmdTerminal"]);
 const INDEX = new Set(["sessionActivate", "modelSet", "thinkingSet"]);
 
 /**
@@ -33,6 +35,18 @@ export function encodeInternal(action: TgAction): string | null {
       return `internal dialogText ${action.chatId} ${JSON.stringify({ r: action.replyToMessageId, t: action.text })}`;
     case "dialogPlain":
       return `internal dialogPlain ${action.chatId} ${JSON.stringify({ d: action.dialogId, t: action.text })}`;
+    case "cmdRun":
+      return `internal cmdRun ${action.chatId} ${action.nonce}`;
+    case "cmdSend":
+      return `internal cmdSend ${action.chatId} ${JSON.stringify({ name: action.name, args: action.args })}`;
+    case "importSet":
+      return `internal importSet ${action.chatId} ${JSON.stringify(action.path)}`;
+    case "cmdTerminal":
+      return `internal cmdTerminal ${action.chatId} ${action.name}`;
+    case "compact":
+      return action.instructions !== undefined
+        ? `internal compact ${action.chatId} ${JSON.stringify(action.instructions)}`
+        : `internal compact ${action.chatId}`;
     default: {
       const a = action as { kind: string; chatId: number; index?: number };
       return `internal ${a.kind} ${a.chatId}${INDEX.has(a.kind) ? ` ${a.index}` : ""}`;
@@ -53,6 +67,11 @@ export function parseInternal(args: string): TgAction | null {
     const i = Number(rest);
     if (!Number.isInteger(i) || i < 0) return null;
     return { kind: kind as TgAction["kind"], chatId, index: i } as TgAction;
+  }
+  if (TOKEN.has(kind)) {
+    // One bare token (nonce / command name) — no spaces.
+    if (!rest || /\s/.test(rest)) return null;
+    return { kind: kind as "cmdRun" | "cmdTerminal", chatId, ...(kind === "cmdRun" ? { nonce: rest } : { name: rest }) } as TgAction;
   }
   switch (kind) {
     case "pair": {
@@ -111,6 +130,42 @@ export function parseInternal(args: string): TgAction | null {
         const v: unknown = JSON.parse(rest);
         if (typeof v !== "string") return null;
         return kind === "nameSet" ? { kind, chatId, name: v } : { kind, chatId, text: v };
+      } catch {
+        return null;
+      }
+    }
+    case "compact": {
+      // Bare (legacy/plain) or a JSON string of custom instructions.
+      if (!rest) return { kind: "compact", chatId };
+      try {
+        const v: unknown = JSON.parse(rest);
+        if (typeof v !== "string") return null;
+        return { kind: "compact", chatId, instructions: v };
+      } catch {
+        return null;
+      }
+    }
+    case "importSet": {
+      try {
+        const v: unknown = JSON.parse(rest);
+        if (typeof v !== "string" || !v) return null;
+        return { kind: "importSet", chatId, path: v };
+      } catch {
+        return null;
+      }
+    }
+    case "cmdRun": {
+      const partsRest = rest.split(/\s+/);
+      if (partsRest.length !== 1 || !partsRest[0]) return null;
+      return { kind: "cmdRun", chatId, nonce: partsRest[0] };
+    }
+    case "cmdSend": {
+      try {
+        const v: unknown = JSON.parse(rest);
+        if (!v || typeof v !== "object") return null;
+        const o = v as { name?: unknown; args?: unknown };
+        if (typeof o.name !== "string" || !o.name || typeof o.args !== "string") return null;
+        return { kind: "cmdSend", chatId, name: o.name, args: o.args };
       } catch {
         return null;
       }

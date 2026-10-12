@@ -53,6 +53,10 @@ const handlers = new Map<string, (...a: unknown[]) => unknown>();
 // The fake pi replays `/tg …` sendUserMessage calls through the captured
 // command handler — exactly what real pi does (the poller's dispatch path).
 let tgCommand: { handler: (args: string, ctx: unknown) => Promise<void> } | undefined;
+let tgConfigCommand: { handler: (args: string, ctx: unknown) => Promise<void> } | undefined;
+// every sendUserMessage the extension sends (the resource-command execution
+// path: chosen picker item → cmdSend → pi.sendUserMessage("/name args"))
+const sentMessages: string[] = [];
 // The ctx the fake pi hands to the /tg command handler (the handler stores it
 // as the adapter's cmdCtx). Minimal by default; a test whose action reads ctx
 // (e.g. stop → isIdle) swaps in a fuller one for its duration.
@@ -60,12 +64,20 @@ let cmdCtxFake: unknown = { ui: { notify: () => {} } };
 piTelegram({
   registerCommand: (name: string, def: unknown) => {
     if (name === "tg") tgCommand = def as typeof tgCommand;
+    if (name === "tg:config") tgConfigCommand = def as typeof tgConfigCommand;
   },
   on: (name: string, fn: (...a: unknown[]) => unknown) => handlers.set(name, fn),
   sendUserMessage: (text: string, _opts?: unknown) => {
-    if (typeof text === "string" && text.startsWith("/tg ") && tgCommand)
-      void tgCommand.handler(text.slice(4), cmdCtxFake);
+    if (typeof text === "string") {
+      sentMessages.push(text);
+      if (text.startsWith("/tg ") && tgCommand)
+        void tgCommand.handler(text.slice(4), cmdCtxFake);
+    }
   },
+  // the session's resource commands (mimics pi.getCommands): one extension
+  // command so the picker list has content — every BUILT-IN is either a
+  // duplicate of a direct bot command (List A) or terminal-only (List B/C).
+  getCommands: () => [{ name: "mcp", description: "Manage MCP servers", source: "extension" as const }],
 } as never);
 // The fake ctx exposes the post-compact session context so index.ts can
 // re-derive pi's "after" count exactly as pi does internally (Σ estimateTokens
@@ -74,13 +86,18 @@ piTelegram({
 // `ui` mimics pi's shared ctx.ui object (mode tui + dialog methods) so
 // installUiProxy has something to patch, exactly like the real runner's.
 let selectPress: ((v?: string) => void) | undefined;
+// every TUI notice the extension emits (the ui() helper resolves to
+// sessionCtx — this is it — so capturing here sees startup/poller warnings)
+const uiNotices: { text: string; level?: string }[] = [];
 const fakeCtx = {
   cwd: "/tmp",
   mode: "tui",
   hasUI: true,
   isIdle: () => true, // the bridge's prompt gate calls ctx.isIdle()
   ui: {
-    notify: () => {},
+    notify: (text: string, level?: string) => {
+      uiNotices.push({ text, level });
+    },
     // mimics pi's showExtensionSelector: resolves on keypress OR opts.signal abort
     select: (_title: string, _options?: string[], opts?: { signal?: AbortSignal }) =>
       new Promise<string | undefined>((resolve) => {
@@ -806,4 +823,226 @@ test("replayed /stop update (regressed offset) is answered exactly once", async 
   await waitFor(() => idleAcks().length >= 1, "first idle-ack sent");
   await sleep(400); // a duplicate dispatch from the replayed update would have landed by now
   assert.equal(idleAcks().length, 1, "the replayed /stop update must NOT be answered a second time");
+});
+
+// ── inline command picker E2E (index.ts wiring) ────────────────────────────
+
+test("inline picker E2E: inline_query → articles + nonces; chosen_inline_result → executes the command", async (t) => {
+  const calls: WireCall[] = [];
+  const realFetch = globalThis.fetch;
+  t.after(() => {
+    handlers.get("session_shutdown")!(); // stop THIS test's poller
+    globalThis.fetch = realFetch;
+  });
+  let batch = 0;
+  let msgId = 900;
+  let failedIq4 = false;
+  let resolveLongPoll: ((updates: unknown[]) => void) | undefined;
+  globalThis.fetch = (async (url: string, init?: RequestInit): Promise<Response> => {
+    const method = String(url).split("/").pop() ?? "";
+    const body = (init?.body ? JSON.parse(String(init.body)) : {}) as Record<string, unknown>;
+    calls.push({ method, body, markdown: "" });
+    if (method === "getMe")
+      return new Response(JSON.stringify({ ok: true, result: { id: 1, is_bot: true, first_name: "Tg", username: "tgb" } }), { status: 200 });
+    if (method === "getUpdates") {
+      batch++;
+      if (batch === 1)
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            result: [
+              { update_id: 1, message: { message_id: 1, date: 1, chat: { id: 42, type: "private" }, from: { id: 123456, is_bot: false, first_name: "O" }, text: "hi" } },
+            ],
+          }),
+          { status: 200 },
+        );
+      return new Promise<Response>((resolve, reject) => {
+        const sig = init?.signal;
+        const onAbort = () => reject(new DOMException("Aborted", "AbortError"));
+        if (sig) {
+          if (sig.aborted) onAbort();
+          else sig.addEventListener("abort", onAbort, { once: true });
+        }
+        resolveLongPoll = (updates) => resolve(new Response(JSON.stringify({ ok: true, result: updates }), { status: 200 }));
+      });
+    }
+    if (method === "sendMessage" || method === "sendRichMessage")
+      return new Response(JSON.stringify({ ok: true, result: { message_id: ++msgId } }), { status: 200 });
+    // the first answer for iq4 is REJECTED (400) — the client's spinner must
+    // still be cleared by a fallback EMPTY answer for the same query id
+    if (method === "answerInlineQuery" && body.inline_query_id === "iq4" && !failedIq4) {
+      failedIq4 = true;
+      return new Response(
+        JSON.stringify({ ok: false, error_code: 400, description: "Bad Request: simulated rejection" }),
+        { status: 400 },
+      );
+    }
+    return new Response(JSON.stringify({ ok: true, result: true }), { status: 200 });
+  }) as typeof fetch;
+
+  const ctx = { cwd: "/tmp", mode: "tui", hasUI: true, isIdle: () => true, ui: { notify: () => {} }, sessionManager: fakeCtx.sessionManager };
+  handlers.get("session_start")!({}, ctx);
+  await waitFor(() => calls.filter((c) => c.method === "getUpdates").length >= 2, "owner chat learned");
+
+  // allowed_updates must include the two inline update types (Bot API)
+  const firstPoll = calls.find((c) => c.method === "getUpdates")!;
+  assert.ok((firstPoll.body.allowed_updates as string[]).includes("inline_query"), "polls for inline_query");
+  assert.ok((firstPoll.body.allowed_updates as string[]).includes("chosen_inline_result"), "polls for chosen_inline_result");
+
+  // 1) the owner's inline search → answerInlineQuery with the command table
+  const resolveBatch = async (n: number, updates: unknown[]) => {
+    await waitFor(() => calls.filter((c) => c.method === "getUpdates").length >= n, `getUpdates batch ${n} issued`);
+    resolveLongPoll!(updates);
+  };
+  await resolveBatch(2, [
+    { update_id: 20, inline_query: { id: "iq1", from: { id: 123456 }, query: "m", chat_type: "private" } },
+  ]);
+  await waitFor(() => calls.some((c) => c.method === "answerInlineQuery" && c.body.inline_query_id === "iq1"), "the inline query is answered");
+  const answer = calls.find((c) => c.method === "answerInlineQuery" && c.body.inline_query_id === "iq1")!;
+  const results = answer.body.results as { id: string; title: string; input_message_content: { message_text: string } }[];
+  const mcp = results.find((r) => r.title === "/mcp")!;
+  assert.ok(mcp, "the /mcp extension command is in the results");
+  assert.ok(!results.some((r) => r.title === "/model"), "the /model built-in is a duplicate of /models — NOT listed (List A)");
+  assert.equal(mcp.input_message_content.message_text, "/mcp", "the tap auto-sends the bare command (no emoji, no description)");
+  assert.equal(answer.body.is_personal, true, "results are per-user (no cross-user cache leak)");
+  assert.ok(!("reply_markup" in mcp), "the article carries NO Run button (2026-10-11 — no zombie button on the auto-sent card)");
+  assert.ok(/^c[a-z0-9]{1,32}$/.test(mcp.id), "the result id is c<nonce> (the pending-runs key)");
+
+  // 2) the owner taps it → chosen_inline_result → the resource command runs
+  //    (mcp → cmdSend → pi.sendUserMessage("/mcp") — the normal dispatch path)
+  //    the resource dispatch reads ctx.isIdle() through the adapter
+  cmdCtxFake = { ui: { notify: () => {} }, isIdle: () => true };
+  await resolveBatch(3, [
+    {
+      update_id: 21,
+      chosen_inline_result: {
+        from: { id: 123456 },
+        chat_type: "private",
+        query: "m",
+        result_id: mcp.id,
+      },
+    },
+  ]);
+  await waitFor(() => sentMessages.includes("/mcp"), "the chosen resource command is dispatched via sendUserMessage");
+  assert.ok(sentMessages.includes("/mcp"), "the tap executed /mcp exactly once through the message path");
+
+  // 3) a NON-owner inline search gets an empty answer (nothing leaks)
+  await resolveBatch(4, [
+    { update_id: 22, inline_query: { id: "iq2", from: { id: 999 }, query: "", chat_type: "private" } },
+  ]);
+  await waitFor(() => calls.some((c) => c.method === "answerInlineQuery" && c.body.inline_query_id === "iq2"), "the non-owner query is answered");
+  const answer2 = calls.find((c) => c.method === "answerInlineQuery" && c.body.inline_query_id === "iq2")!;
+  assert.deepEqual(answer2.body.results, [], "non-owner gets zero results");
+  assert.equal(answer2.body.is_personal, true, "the empty answer is per-user too");
+
+  // 4) the owner's query matching NOTHING → an EMPTY answer (the client's
+  //    spinner must clear so the user can press Enter and send the raw text
+  //    — e.g. "/mcp serve …" — as an ordinary message)
+  await resolveBatch(5, [
+    { update_id: 23, inline_query: { id: "iq3", from: { id: 123456 }, query: "zzz-no-match", chat_type: "private" } },
+  ]);
+  await waitFor(() => calls.some((c) => c.method === "answerInlineQuery" && c.body.inline_query_id === "iq3"), "the no-match query is answered");
+  const answer3 = calls.find((c) => c.method === "answerInlineQuery" && c.body.inline_query_id === "iq3")!;
+  assert.deepEqual(answer3.body.results, [], "no match → empty results (the spinner clears)");
+
+  // 5) a REJECTED answer must still end in an empty answer — the spinner
+  //    must ALWAYS clear, whatever the API did to the first attempt. Query
+  //    "qu" now matches NOTHING (List A removed /quit from the list), so
+  //    this also proves the empty-primary case: even an empty answer that
+  //    fails is retried empty (otherwise the spinner would never clear).
+  await resolveBatch(6, [
+    { update_id: 24, inline_query: { id: "iq4", from: { id: 123456 }, query: "qu", chat_type: "private" } },
+  ]);
+  await waitFor(
+    () => calls.filter((c) => c.method === "answerInlineQuery" && c.body.inline_query_id === "iq4").length >= 2,
+    "the rejected answer is followed by an empty fallback answer",
+  );
+  const iq4Fallback = calls.filter((c) => c.method === "answerInlineQuery" && c.body.inline_query_id === "iq4").pop()!;
+  assert.deepEqual(iq4Fallback.body.results, [], "the fallback answer is empty");
+
+  // 6) '<command> <args>' → a SINGLE run-as-typed result: the tap auto-sends
+  //    the full typed text, which the router executes (t-id: the
+  //    chosen_inline_result for it is ignored — no double execution)
+  await resolveBatch(7, [
+    { update_id: 25, inline_query: { id: "iq5", from: { id: 123456 }, query: "compact be brief", chat_type: "private" } },
+  ]);
+  await waitFor(() => calls.some((c) => c.method === "answerInlineQuery" && c.body.inline_query_id === "iq5"), "the args query is answered");
+  const answer5 = calls.find((c) => c.method === "answerInlineQuery" && c.body.inline_query_id === "iq5")!;
+  const r5 = answer5.body.results as { id: string; title: string; input_message_content: { message_text: string }; reply_markup?: unknown }[];
+  assert.equal(r5.length, 1, "exactly one result (the run-as-typed entry)");
+  assert.ok(r5[0]!.id.startsWith("t"), "t-id — NOT executed via chosen_inline_result");
+  assert.equal(r5[0]!.input_message_content.message_text, "/compact be brief", "the tap auto-sends the full typed command");
+  assert.equal(r5[0]!.reply_markup, undefined, "no ▶ Run button — the auto-send IS the execution");
+
+  // 7) unknown command + args → empty answer (the spinner clears)
+  await resolveBatch(8, [
+    { update_id: 26, inline_query: { id: "iq6", from: { id: 123456 }, query: "definitely-not-a-command serve x", chat_type: "private" } },
+  ]);
+  await waitFor(() => calls.some((c) => c.method === "answerInlineQuery" && c.body.inline_query_id === "iq6"), "the unknown-args query is answered");
+  const answer6 = calls.find((c) => c.method === "answerInlineQuery" && c.body.inline_query_id === "iq6")!;
+  assert.deepEqual(answer6.body.results, [], "unknown command with args → no results");
+
+  // 8) the hint appears the moment the query EXACTLY matches a name (the
+  //    client strips the trailing space, so "command+space" arrives as the
+  //    bare name) — before any argument character is typed
+  await resolveBatch(9, [
+    { update_id: 27, inline_query: { id: "iq7", from: { id: 123456 }, query: "mcp", chat_type: "private" } },
+  ]);
+  await waitFor(() => calls.some((c) => c.method === "answerInlineQuery" && c.body.inline_query_id === "iq7"), "the exact-name query is answered");
+  const answer7 = calls.find((c) => c.method === "answerInlineQuery" && c.body.inline_query_id === "iq7")!;
+  const r7 = answer7.body.results as { id: string; title: string; description?: string }[];
+  const mcpItem = r7.find((r) => r.title === "/mcp")!;
+  assert.ok(mcpItem.description!.toLowerCase().includes("tap to send"), "the keep-typing hint on the exact match");
+});
+
+// ── inline-mode-off warning: EVENT-DRIVEN (pairing / /tg:config only) ──
+
+const inlineModeOffWire = (calls: WireCall[]): void => {
+  globalThis.fetch = (async (url: string, init?: RequestInit): Promise<Response> => {
+    const method = String(url).split("/").pop() ?? "";
+    const body = (init?.body ? JSON.parse(String(init.body)) : {}) as Record<string, unknown>;
+    calls.push({ method, body, markdown: "" });
+    if (method === "getMe")
+      return new Response(
+        JSON.stringify({ ok: true, result: { id: 1, is_bot: true, first_name: "Tg", username: "tgb", supports_inline_queries: false } }),
+        { status: 200 },
+      );
+    if (method === "getUpdates")
+      return new Promise<Response>((_resolve, reject) => {
+        const sig = init?.signal;
+        const onAbort = () => reject(new DOMException("Aborted", "AbortError"));
+        if (sig) {
+          if (sig.aborted) onAbort();
+          else sig.addEventListener("abort", onAbort, { once: true });
+        }
+      });
+    return new Response(JSON.stringify({ ok: true, result: true }), { status: 200 });
+  }) as typeof fetch;
+};
+
+test("startup: inline mode off → NO TUI warning (2026-10-11: event-driven only — the /help footer is the standing signal)", async (t) => {
+  const calls: WireCall[] = [];
+  const realFetch = globalThis.fetch;
+  t.after(() => (globalThis.fetch = realFetch));
+  inlineModeOffWire(calls);
+  uiNotices.length = 0;
+  handlers.get("session_start")!({}, fakeCtx);
+  await waitFor(() => calls.some((c) => c.method === "getMe"), "getMe ran on startup");
+  await sleep(50); // give any (buggy) startup warning time to land
+  assert.ok(!uiNotices.some((n) => String(n.text).includes("INLINE MODE IS DISABLED")), "no per-restart nag");
+});
+
+test("/tg:config: inline mode off → the TUI warning fires (event-driven, 2026-10-11)", async (t) => {
+  const calls: WireCall[] = [];
+  const realFetch = globalThis.fetch;
+  t.after(() => (globalThis.fetch = realFetch));
+  inlineModeOffWire(calls);
+  const notices: { text: string; level?: string }[] = [];
+  const cfgCtx = { ui: { notify: (text: string, level?: string) => notices.push({ text, level }) } };
+  handlers.get("session_start")!({}, fakeCtx);
+  await waitFor(() => calls.some((c) => c.method === "getMe"), "startup getMe");
+  assert.ok(tgConfigCommand, "the /tg:config command is registered");
+  await tgConfigCommand.handler("123456:AAFAKEAAFAKEAAFAKEAAFAKE", cfgCtx); // <digits>:<20+ alnum>
+  assert.ok(notices.some((n) => String(n.text).includes("INLINE MODE IS DISABLED") && n.level === "warning"), "the config-time warning fired");
+  assert.ok(notices.some((n) => String(n.text).includes("token saved")), "the normal config notice still fires");
 });
