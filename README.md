@@ -93,12 +93,16 @@ Terminal-only built-ins (`/tree`, `/login`, … — no extension-API
 equivalent) are NOT listed; typing them still gets a 🖥 explanation. You
 can also just type `@bot /<name> [args]` — the only way to pass arguments.
 
-**One-time setup:** @BotFather → `/mybots` → *Bot Settings* → *API
-Services* → enable **Inline mode**. It makes the ⌨️ button and the
-command list work at all (the `chosen_inline_result` update that executes
-the tapped command arrives without any further toggle — live-verified on
-this Bot API build). If Inline mode is off, pi-tg warns about it in the
-TUI on startup/reload (`getMe().supports_inline_queries`).
+**One-time setup:** to use the picker, enable **Inline mode** for your
+bot: @BotFather → `/mybots` → *Bot Settings* → *API Services* →
+*Inline mode*. That's the only step — after it, the ⌨️ button works
+right away.
+
+If you skip it, nothing breaks: the ⌨️ button simply won't be shown on
+the /help card (a short note in its place explains why), and pi-tg will
+mention it in the terminal when you pair or run `/tg:config`. All other
+pi-tg features (commands, prompts, session mirroring) work normally
+without Inline mode.
 
 ## Configuration
 
