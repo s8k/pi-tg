@@ -178,7 +178,7 @@ export default function piTelegram(pi: ExtensionAPI): void {
       username = me.username;
       if (me.supports_inline_queries === false) {
         ui(
-          "pi-tg: INLINE MODE IS DISABLED for this bot — the ⌨️ picker button and the inline command list will not work. Enable it: @BotFather → /mybots → Bot Settings → API Services → Inline mode. Restart Pi or /tg:reload afterwards.",
+          "pi-tg: INLINE MODE IS DISABLED for this bot — the extension commands search and picker (in /help) will be unavailable. Enable it: @BotFather → /mybots → Bot Settings → API Services → Inline mode. Restart Pi or /tg:reload afterwards.",
           "warning",
         );
       }
