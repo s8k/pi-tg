@@ -82,27 +82,31 @@ on every poller start (self-healing; single source of truth in
 
 ## Inline command picker
 
-The `/help` card carries a **⌨️ Other Pi commands** button: pressing
-it opens Telegram's inline search (prefilled with `@bot /`) over the
-session's command table — pi built-ins, extension commands, prompt
-templates and skills (tagged `[ext]` / `[tpl]` / `[skill]`). Tapping a
-result auto-sends the command itself (e.g. `/mcp`) and executes it (1 tap):
-built-ins reuse
-the TG command paths, resource commands run through pi's command dispatch.
-Terminal-only built-ins (`/tree`, `/login`, … — no extension-API
-equivalent) are NOT listed; typing them still gets a 🖥 explanation. You
-can also just type `@bot /<name> [args]` — the only way to pass arguments.
+Run any command in this session from your phone, without typing it.
 
-**One-time setup:** to use the picker, enable **Inline mode** for your
-bot: @BotFather → `/mybots` → *Bot Settings* → *API Services* →
-*Inline mode*. That's the only step — after it, the ⌨️ button works
-right away.
+**How to use:**
+1. Open the **/help** card and press the **⌨️ Other Pi commands** button
+   (or type `@bot /` in the chat input yourself).
+2. A searchable list of the session's commands opens — Pi built-ins,
+   extension commands, prompt templates and skills (tagged `[ext]`,
+   `[tpl]`, `[skill]`).
+3. Type to filter, tap a command — it is sent to the chat and runs
+   immediately.
 
-If you skip it, nothing breaks: the ⌨️ button simply won't be shown on
-the /help card (a short note in its place explains why), and pi-tg will
-mention it in the terminal when you pair or run `/tg:config`. All other
-pi-tg features (commands, prompts, session mirroring) work normally
-without Inline mode.
+**Passing arguments:** keep typing after the command name (e.g. `/mcp
+login acme`) and tap the entry — the command runs with your arguments.
+
+**Notes:**
+- A few terminal-only commands (`/tree`, `/login`, …) are not in the
+  list — they only work in the Pi terminal. Typing one there shows an
+  explanation.
+- **One-time setup:** enable **Inline mode** for your bot — @BotFather →
+  `/mybots` → *Bot Settings* → *API Services* → *Inline mode*. That's the
+  only step; the ⌨️ button works right after.
+- If you skip it, nothing breaks: the ⌨️ button simply won't appear on
+  the /help card (a note in its place explains why), and pi-tg mentions
+  it in the terminal when you pair or run `/tg:config`. All other pi-tg
+  features work normally without it.
 
 ## Configuration
 
