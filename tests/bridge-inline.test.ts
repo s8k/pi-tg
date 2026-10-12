@@ -179,11 +179,12 @@ test("start: inline mode disabled → the help card also loses the button + gets
   assert.ok(lastRichText(out).includes("Inline mode is disabled"));
 });
 
-test("helpBlocks: default keeps the button line, inlineModeEnabled:false appends the footer", () => {
+test("helpBlocks: default keeps the button line, inlineModeEnabled:false appends divider + footer", () => {
   const def = helpBlocks();
   assert.ok(!JSON.stringify(def).includes("Inline mode is disabled"), "default: no footer");
   const off = helpBlocks({ inlineModeEnabled: false });
-  assert.equal(off.length, def.length + 1, "exactly one extra block: the footer");
+  assert.equal(off.length, def.length + 2, "two extra blocks: divider + footer");
+  assert.deepEqual(off[off.length - 2], { type: "divider" }, "a divider separates the command list from the warning");
   assert.ok(JSON.stringify(off[off.length - 1]).includes("Inline mode is disabled"));
 });
 

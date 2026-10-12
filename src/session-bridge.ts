@@ -204,7 +204,10 @@ export function helpBlocks(opts?: { inlineModeEnabled?: boolean }): TgBlock[] {
     ]),
   ];
   for (const { command, description } of BOT_COMMANDS) parts.push(cmd(`/${command}`, description));
-  if (opts?.inlineModeEnabled === false) parts.push(INLINE_MODE_OFF_FOOTER);
+  if (opts?.inlineModeEnabled === false) {
+    parts.push({ type: "divider" }); // separate the command list from the warning
+    parts.push(INLINE_MODE_OFF_FOOTER);
+  }
   return parts;
 }
 
