@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { SessionBridge } from "../src/session-bridge.ts";
+import { SessionBridge, helpBlocks } from "../src/session-bridge.ts";
 import { FakePi, FakeOut } from "./fake-pi.ts";
 import { makeDeps, lastSend, lastRichText } from "./helpers.ts";
 import { PICKER_BUTTON } from "../src/pi-commands.ts";
@@ -156,6 +156,35 @@ test("help card carries the ⌨️ Other Pi commands button (switch_inline_query
   const help = out.calls.filter((c) => c.kind === "sendRich").pop()!;
   assert.deepEqual(help.opts?.replyMarkup, PICKER_BUTTON);
   assert.ok(lastRichText(out).includes("other Pi commands"), "the /help line mentions the picker for the other Pi commands");
+});
+
+test("help card: inline mode disabled → NO picker button + footer explains why (2026-10-11)", async () => {
+  const { out, bridge } = setup();
+  bridge.setInlineModeEnabled(false);
+  await bridge.dispatch({ kind: "help", chatId: owner });
+  const help = out.calls.filter((c) => c.kind === "sendRich").pop()!;
+  assert.equal(help.opts?.replyMarkup, undefined, "the ⌨️ button is gone — it would be inert without inline mode");
+  const text = lastRichText(out);
+  assert.ok(text.includes("Inline mode is disabled"), "the footer names the missing feature's cause");
+  assert.ok(text.includes("@BotFather"), "the footer points to where to enable it");
+  assert.ok(text.includes("/status"), "the rest of the help card is intact");
+});
+
+test("start: inline mode disabled → the help card also loses the button + gets the footer", async () => {
+  const { out, bridge } = setup();
+  bridge.setInlineModeEnabled(false);
+  await bridge.dispatch({ kind: "start", chatId: owner });
+  const help = out.calls.filter((c) => c.kind === "sendRich").pop()!;
+  assert.equal(help.opts?.replyMarkup, undefined);
+  assert.ok(lastRichText(out).includes("Inline mode is disabled"));
+});
+
+test("helpBlocks: default keeps the button line, inlineModeEnabled:false appends the footer", () => {
+  const def = helpBlocks();
+  assert.ok(!JSON.stringify(def).includes("Inline mode is disabled"), "default: no footer");
+  const off = helpBlocks({ inlineModeEnabled: false });
+  assert.equal(off.length, def.length + 1, "exactly one extra block: the footer");
+  assert.ok(JSON.stringify(off[off.length - 1]).includes("Inline mode is disabled"));
 });
 
 test("status card has NO picker button (2026-10-11: the button lives on the /help card only)", async () => {

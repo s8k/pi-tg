@@ -181,7 +181,21 @@ const helpPara = (text: TgRichText): TgBlock => ({ type: "paragraph", text });
  * descriptions — so the menu and the card can never drift (the /help entry
  * included: its menu description carries the picker-button line).
  */
-export function helpBlocks(): TgBlock[] {
+/**
+ * Footer of the /help card when the bot has NO inline mode (getMe says so):
+ * the ⌨️ picker button is omitted and this line explains the lost feature
+ * and where to turn it back on.
+ */
+export const INLINE_MODE_OFF_FOOTER: TgBlock = {
+  type: "paragraph",
+  text: "⚠️ Inline mode is disabled — the session commands search and picker are unavailable. Enable it: @BotFather → /mybots → Bot Settings → API Services → Inline mode.",
+};
+
+/**
+ * `inlineModeEnabled: false` appends INLINE_MODE_OFF_FOOTER (the caller also
+ * omits the ⌨️ picker button — the button and the footer move together).
+ */
+export function helpBlocks(opts?: { inlineModeEnabled?: boolean }): TgBlock[] {
   const cmd = (c: string, desc: string): TgBlock => helpPara([{ type: "bold", text: c }, ` — ${desc}`]);
   const parts: TgBlock[] = [
     helpPara([
@@ -190,6 +204,7 @@ export function helpBlocks(): TgBlock[] {
     ]),
   ];
   for (const { command, description } of BOT_COMMANDS) parts.push(cmd(`/${command}`, description));
+  if (opts?.inlineModeEnabled === false) parts.push(INLINE_MODE_OFF_FOOTER);
   return parts;
 }
 
@@ -496,11 +511,29 @@ export class SessionBridge {
     return blocks;
   }
 
+  /**
+   * Inline mode availability (getMe().supports_inline_queries, learned on
+   * every poller start — /reload re-learns it). false → the /help card omits
+   * the ⌨️ button and carries the footer explaining why.
+   */
+  private inlineModeEnabled = true;
+  setInlineModeEnabled(enabled: boolean): void {
+    this.inlineModeEnabled = enabled;
+  }
+
+  /** The /help card: picker button iff inline mode is enabled; footer otherwise. */
+  private async sendHelp(chatId: number): Promise<void> {
+    const { out } = this.deps;
+    await out.sendRich(chatId, helpBlocks({ inlineModeEnabled: this.inlineModeEnabled }), {
+      replyMarkup: this.inlineModeEnabled ? PICKER_BUTTON : undefined,
+    });
+  }
+
   private async sendCardAndHelp(chatId: number): Promise<void> {
     // the picker button lives on the help card only (removed from the status
     // card 2026-10-11)
     await this.deps.out.sendRich(chatId, await this.statusBlocks());
-    await this.deps.out.sendRich(chatId, helpBlocks(), { replyMarkup: PICKER_BUTTON });
+    await this.sendHelp(chatId);
   }
 
   private async handle(action: TgAction): Promise<void> {
@@ -520,7 +553,7 @@ export class SessionBridge {
         await this.sendCardAndHelp(action.chatId);
         return;
       case "help":
-        await out.sendRich(action.chatId, helpBlocks(), { replyMarkup: PICKER_BUTTON });
+        await this.sendHelp(action.chatId);
         return;
       case "unknown":
         await out.send(action.chatId, `Unknown command ${escapeHtml(action.text)} — see /help`);
