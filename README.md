@@ -1,20 +1,16 @@
-<table align="center" border="0">
-  <tr>
-    <td align="center" valign="middle">
-      <a href="https://github.com/earendil-works/pi">
-        <img alt="Pi" src="docs/images/pi_logo.svg" width="120">
-      </a>
-    </td>
-    <td align="center" valign="middle">
-      <font size="7"><b>+</b></font>
-    </td>
-    <td align="center" valign="middle">
-      <a href="https://github.com/DrKLO/Telegram">
-        <img alt="Telegram" src="docs/images/tg_logo.svg" width="128">
-      </a>
-    </td>
-  </tr>
-</table>
+<p align="center">
+  <a href="https://github.com/earendil-works/pi">
+    <img alt="Pi" src="docs/images/pi_logo.svg" width="120" align="middle">
+  </a>
+  &nbsp;
+  <font size="5">
+    <b>+</b>
+  </font>
+  &nbsp;
+  <a href="https://github.com/DrKLO/Telegram">
+    <img alt="Telegram" src="docs/images/tg_logo.svg" width="128" align="middle">
+  </a>
+</p>
 
 <h1 align="center">
   <font size="7">
