@@ -3,9 +3,7 @@
     <img alt="Pi" src="docs/images/pi_logo.svg" width="120" align="middle">
   </a>
   &nbsp;
-  <font size="5">
-    <b>+</b>
-  </font>
+  <b>+</b>
   &nbsp;
   <a href="https://github.com/DrKLO/Telegram">
     <img alt="Telegram" src="docs/images/tg_logo.svg" width="128" align="middle">
@@ -13,9 +11,7 @@
 </p>
 
 <h1 align="center">
-  <font size="7">
-    <b>Pi-Tg</b>
-  </font>
+  <b>Pi-Tg</b>
 </h1>
 
 <p align="center">
@@ -44,7 +40,7 @@ Telegram (phone) ⇄ Bot API long polling ⇄ pi-tg (extension) ⇄ Pi harness
 
 ## Requirements
 
-- Node ≥ 22.18 (native TS type-stripping for `node --test`; dev on Node 26)
+- Node ≥ 24.21 (native TS type-stripping for `node --test`; dev on Node 26)
 - Pi ≥ 0.84 (TUI running)
 - A Telegram bot token (free: @BotFather → `/newbot`)
 
