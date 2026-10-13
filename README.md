@@ -1,15 +1,25 @@
-<p align="center" style="display: flex; align-items: center; justify-content: center; gap: 16px;">
-  <a href="https://github.com/earendil-works/pi">
-    <img alt="Pi" src="docs/images/pi_logo.svg" width="120" style="vertical-align: middle;">
-  </a>
-  <span style="font-size: 48px; font-weight: bold; line-height: 1;">+</span>
-  <a href="https://github.com/DrKLO/Telegram">
-    <img alt="Telegram" src="docs/images/tg_logo.svg" width="128" style="vertical-align: middle;">
-  </a>
-</p>
+<table align="center" border="0">
+  <tr>
+    <td align="center" valign="middle">
+      <a href="https://github.com/earendil-works/pi">
+        <img alt="Pi" src="docs/images/pi_logo.svg" width="120">
+      </a>
+    </td>
+    <td align="center" valign="middle">
+      <font size="7"><b>+</b></font>
+    </td>
+    <td align="center" valign="middle">
+      <a href="https://github.com/DrKLO/Telegram">
+        <img alt="Telegram" src="docs/images/tg_logo.svg" width="128">
+      </a>
+    </td>
+  </tr>
+</table>
 
-<h1 align="center" style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size: 42px; font-weight: 800; letter-spacing: -0.5px; margin-top: 12px; margin-bottom: 8px;">
-  Pi-Tg
+<h1 align="center">
+  <font size="7">
+    <b>Pi-Tg</b>
+  </font>
 </h1>
 
 <p align="center">
