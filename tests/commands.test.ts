@@ -83,11 +83,9 @@ function makeCtx() {
   return { ctx, notices, widgets };
 }
 
-const USAGE = "Usage: /tg | /tg:config <bot_token> | /tg:pair | /tg:unpair";
-
 // ── registration ──
 
-test("registers exactly the user-facing commands: tg, tg:config, tg:pair, tg:unpair", () => {
+test("registers exactly the commands: tg, tg:config, tg:pair, tg:unpair", () => {
   const { pi, cap } = makeFakePi();
   piTelegram(pi);
   assert.deepEqual([...cap.commands.keys()].sort(), ["tg", "tg:config", "tg:pair", "tg:unpair"]);
@@ -102,7 +100,7 @@ test("command descriptions follow pi's `<args> — Description` format", () => {
   // so commands that take args must carry the hint up front: `<args> — Description`.
   assert.equal(
     cap.commands.get("tg")!.description,
-    "Show session card (model, context usage, session path)",
+    "Reserved for pi-tg internal dispatch. Use /tg:* commands instead",
   );
   assert.equal(
     cap.commands.get("tg:config")!.description,
@@ -116,71 +114,34 @@ test("command descriptions follow pi's `<args> — Description` format", () => {
   assert.ok(!/<[a-z_]+>/i.test(cap.commands.get("tg:unpair")!.description ?? ""));
 });
 
-// ── /tg (session card) ──
+// ── /tg (reserved: machine dispatch is the poller's path) ──
 
-test("/tg with no args → session card widget", async () => {
+test("/tg typed by hand → reserved-command notice, no card", async () => {
   const { pi, cap } = makeFakePi();
   piTelegram(pi);
-  const { ctx, widgets } = makeCtx();
+  const { ctx, notices, widgets } = makeCtx();
   await cap.commands.get("tg")!.handler("", ctx);
-  // piAdapter is only built on session_start, so the card reports not-ready
-  assert.deepEqual(widgets["pi-tg"], ["pi-tg: not ready yet"]);
+  assert.match(notices.at(-1)!.text, /reserved internal command/);
+  assert.equal(notices.at(-1)!.level, "info");
+  assert.equal(Object.keys(widgets).length, 0, "no session-card widget is shown");
 });
 
-test("/tg with legacy `config` subcommand → usage error (subcommand removed)", async () => {
-  const { pi, cap } = makeFakePi();
-  piTelegram(pi);
-  const { ctx, notices } = makeCtx();
-  await cap.commands.get("tg")!.handler("config 123456:AAAAAAAAAAAAAAAAAAAAAA", ctx);
-  const last = notices.at(-1)!;
-  assert.equal(last.text, USAGE);
-  assert.equal(last.level, "error");
-  assert.ok(!existsSync(CFG_PATH), "legacy subcommand must not touch the config");
-});
-
-test("/tg with legacy `pair` subcommand → usage error (subcommand removed)", async () => {
-  const { pi, cap } = makeFakePi();
-  piTelegram(pi);
-  const { ctx, notices } = makeCtx();
-  await cap.commands.get("tg")!.handler("pair", ctx);
-  const last = notices.at(-1)!;
-  assert.equal(last.text, USAGE);
-  assert.equal(last.level, "error");
-});
-
-// ── /tg internal (machine dispatch, kept as the poller's path) ──
-
-test("/tg internal with a bad payload → error notice", async () => {
+test("/tg with an unrecognized payload → reserved-command notice", async () => {
   const { pi, cap } = makeFakePi();
   piTelegram(pi);
   const { ctx, notices } = makeCtx();
   await cap.commands.get("tg")!.handler("internal bogus 42", ctx);
-  assert.match(notices.at(-1)!.text, /bad \/tg internal payload/);
-  assert.equal(notices.at(-1)!.level, "error");
+  assert.match(notices.at(-1)!.text, /reserved internal command/);
+  assert.equal(notices.at(-1)!.level, "info");
 });
 
-test("/tg internal with a valid action but no bridge (pre-session_start) → error, no crash", async () => {
+test("/tg with a valid action but no bridge (pre-session_start) → reserved notice, no crash", async () => {
   const { pi, cap } = makeFakePi();
   piTelegram(pi);
   const { ctx, notices } = makeCtx();
   await cap.commands.get("tg")!.handler("internal start 42", ctx);
-  assert.match(notices.at(-1)!.text, /bad \/tg internal payload/);
-  assert.equal(notices.at(-1)!.level, "error");
-});
-
-// ── /tg argument completions ──
-
-test("/tg getArgumentCompletions: suggests `internal` (machine dispatch) only", () => {
-  const { pi, cap } = makeFakePi();
-  piTelegram(pi);
-  const f = cap.commands.get("tg")!.getArgumentCompletions!;
-  const i = f("i");
-  assert.equal(i!.length, 1);
-  assert.equal(i![0].value, "internal");
-  assert.match(i![0].label, /internal/);
-  assert.match(i![0].description ?? "", /poller/);
-  assert.equal(f("x"), null);
-  assert.equal(f("internal x"), null);
+  assert.match(notices.at(-1)!.text, /reserved internal command/);
+  assert.equal(notices.at(-1)!.level, "info");
 });
 
 // ── /tg:config ──

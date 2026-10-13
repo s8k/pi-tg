@@ -362,28 +362,6 @@ export default function piTelegram(pi: ExtensionAPI): void {
     await answer(results);
   }
 
-  function cardLines(): string[] {
-    const p = piAdapter;
-    if (!p) return ["pi-tg: not ready yet"];
-    const model = p.currentModel();
-    const usage = p.contextUsage();
-    const thinking = p.currentThinking();
-    return [
-      `📌 ${p.getSessionName() ?? "(unnamed session)"}`,
-      `📁 ${p.cwd}`,
-      `🤖 ${model?.name ?? "no model"}${thinking ? ` · thinking: ${thinking}` : ""}`,
-      `💬 ${p.messageCount()} messages`,
-      usage?.percent != null ? `🧠 ${usage.percent}% context` : "🧠 context: n/a",
-      `📄 ${p.currentSessionPath()}`,
-    ];
-  }
-
-  function showCard(ctx: ExtensionCommandContext): void {
-    const lines = cardLines();
-    if (ctx.mode === "tui" && ctx.hasUI) ctx.ui.setWidget("pi-tg", lines);
-    else ctx.ui.notify(lines.join("\n"), "info");
-  }
-
   async function showQr(ctx: ExtensionCommandContext): Promise<void> {
     const token = getBotToken(cfg, CFG);
     if (!token) {
@@ -403,8 +381,6 @@ export default function piTelegram(pi: ExtensionAPI): void {
   }
 
   // ── terminal commands ──
-
-  const TG_USAGE = "Usage: /tg | /tg:config <bot_token> | /tg:pair | /tg:unpair";
 
   async function runConfig(token: string, ctx: ExtensionCommandContext): Promise<void> {
     if (!tokenLooksValid(token)) {
@@ -458,28 +434,22 @@ export default function piTelegram(pi: ExtensionAPI): void {
 
   // One entry per command in pi's `/` completion list (see pi extensions docs).
   // `tg:config` / `tg:pair` use colon names the same way skills use /skill:name.
+  // `tg` is reserved for machine dispatch: the Telegram poller injects
+  // `/tg internal …` user messages. Typed by hand it only says so (pi offers
+  // no way to hide a registered command from the completion list).
   pi.registerCommand("tg", {
-    description: "Show session card (model, context usage, session path)",
-    getArgumentCompletions: (prefix: string) => {
-      const items = [{ value: "internal", label: "internal", description: "machine dispatch (poller → TUI)" }];
-      const filtered = items.filter((i) => i.value.startsWith(prefix));
-      return filtered.length > 0 ? filtered : null;
-    },
+    description: "Reserved for pi-tg internal dispatch. Use /tg:* commands instead",
     handler: async (args: string, ctx: ExtensionCommandContext) => {
       cmdCtx = ctx;
-      const sub = args.trim().split(/\s+/)[0] ?? "";
-      if (sub === "internal") {
-        // Machine-only path: the Telegram poller injects these.
-        const action = parseInternal(args.trim());
-        if (action && bridge) await bridge.dispatch(action);
-        else ctx.ui.notify("pi-tg: bad /tg internal payload", "error");
+      const action = parseInternal(args);
+      if (action && bridge) {
+        await bridge.dispatch(action);
         return;
       }
-      if (sub !== "") {
-        ctx.ui.notify(TG_USAGE, "error");
-        return;
-      }
-      showCard(ctx);
+      ctx.ui.notify(
+        "pi-tg: /tg is a reserved internal command. Use /tg:config, /tg:pair or /tg:unpair.",
+        "info",
+      );
     },
   });
 

@@ -172,7 +172,7 @@ export function customCommandMatch(
   query: string,
 ): { entry: SessionCommand; text: string } | null {
   // trimStart only: the TRAILING space is the signal that the user started
-  // typing arguments ("/tg " → the single run-as-typed entry for /tg)
+  // typing arguments ("/mcp " → the single run-as-typed entry for /mcp)
   const q = query.replace(/^\/+/, "").trimStart();
   const sp = q.indexOf(" ");
   if (sp < 0) return null;
