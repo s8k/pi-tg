@@ -22,6 +22,33 @@ describe("mathematical expressions + anchors (markdown → blocks)", () => {
     assert.deepEqual(mdToBlocks("Inline math: $$x^2$$ here"), [{ type: "paragraph", text: "Inline math: $$x^2$$ here" }]);
   });
 
+  test("line-initial $$…$$ glued to the preceding line (no blank line) → paragraph + math block", () => {
+    // LLMs commonly emit display math directly after a heading/text line with
+    // no blank line; the parser folds both into one paragraph — a line-initial
+    // math must still be split into its own block (anchor-split precedent).
+    assert.deepEqual(mdToBlocks("**6. Math**\n$$a^2 + b^2 = c^2$$"), [
+      { type: "paragraph", text: { type: "bold", text: "6. Math" } },
+      { type: "mathematical_expression", expression: "a^2 + b^2 = c^2" },
+    ]);
+    assert.deepEqual(mdToBlocks("Tip: note this.\n$$E = mc^2$$\nAfter"), [
+      { type: "paragraph", text: "Tip: note this." },
+      { type: "mathematical_expression", expression: "E = mc^2" },
+      { type: "paragraph", text: "After" },
+    ]);
+  });
+
+  test("a line-initial $$…$$ followed by same-line text stays literal (inline intent)", () => {
+    assert.deepEqual(mdToBlocks("$$x^2$$ then text"), [{ type: "paragraph", text: "$$x^2$$ then text" }]);
+  });
+
+  test("multi-line $$…$$ glued to the preceding line → paragraph + math block", () => {
+    assert.deepEqual(mdToBlocks("text\n$$\na + b\n$$\nmore"), [
+      { type: "paragraph", text: "text" },
+      { type: "mathematical_expression", expression: "a + b" },
+      { type: "paragraph", text: "more" },
+    ]);
+  });
+
   test("```math fence → mathematical_expression block (multi-line expression kept)", () => {
     const blocks = mdToBlocks("```math\n\\frac{a}{b} + c\n```");
     assert.deepEqual(blocks, [{ type: "mathematical_expression", expression: "\\frac{a}{b} + c" }]);

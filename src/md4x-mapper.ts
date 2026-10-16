@@ -375,6 +375,42 @@ export function mapBlocks(nodes: ComarkNode[], ctx: Ctx): TgBlock[] {
             continue;
           }
         }
+        // Line-initial `$$…$$` glued to adjacent lines (no blank line —
+        // common LLM output): the parser folds it into the same paragraph;
+        // split into paragraph-before / math block / paragraph-after (the
+        // anchor-split precedent). Math with same-line text on EITHER side
+        // stays literal (inline intent); mid-line math always stays literal
+        // (no inline-math entity in the blocks tier).
+        if (kids.some(k => isEl(k) && k[0] === "math-display")) {
+          const parts: TgBlock[] = [];
+          let buf: ComarkNode[] = [];
+          let bufRaw = "";
+          const flush = (side: "start" | "end") => {
+            if (buf.length === 0) return;
+            const t = trimEdge(mapInline(buf, ctx), side);
+            buf = [];
+            bufRaw = "";
+            if (t !== undefined && plainOf(t).trim() !== "") parts.push({ type: "paragraph", text: t });
+          };
+          for (let i = 0; i < kids.length; i++) {
+            const k = kids[i]!;
+            const restRaw = kids.slice(i + 1).map(rawOf).join("");
+            const atLineStart = bufRaw.trim() === "" || bufRaw.endsWith("\n");
+            const atLineEnd = restRaw.trim() === "" || /^\s*\n/.test(restRaw);
+            if (isEl(k) && k[0] === "math-display" && atLineStart && atLineEnd) {
+              flush("end");
+              const expr = rawTextOf(k).trim();
+              if (expr !== "") parts.push({ type: "mathematical_expression", expression: expr });
+              continue;
+            }
+            buf.push(k);
+            bufRaw += rawOf(k);
+          }
+          flush("start");
+          if (parts.length === 0) continue; // empty content 400s
+          out.push(...parts);
+          continue;
+        }
         const text = mapInline(kids, ctx);
         if (plainOf(text).trim() !== "") out.push({ type: "paragraph", text });
         continue;
