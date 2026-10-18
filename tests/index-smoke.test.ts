@@ -1132,6 +1132,128 @@ test("sent message ids persist to the config file (regression: /new's Clear must
     assert.ok(persisted().includes(c.msgId!), `message id ${c.msgId} is in the persisted sentMessageIds (got ${JSON.stringify(persisted())})`);
 });
 
+test("baseline: native stop button — the plugin KEEPS sending run drafts afterwards (real wiring, fake wire)", async (t) => {
+  // Faithful sequence: prompt → streaming draft (can_stop) → user presses the
+  // NATIVE stop button (stopped_message_generation) → pi aborts (message_end
+  // "aborted" + agent_end + agent_settled) → new prompt → the run's draft
+  // must go out again. PROVES the mirror/bridge/poller fully recover after a
+  // native stop — the 2026-10 "no more drafts after Stop" field report is
+  // therefore NOT plugin state: the wire keeps carrying sendRichMessageDraft
+  // (always draft_id 1) for subsequent runs.
+  const calls: (WireCall & { msgId?: number })[] = [];
+  const realFetch = globalThis.fetch;
+  t.after(() => (globalThis.fetch = realFetch));
+  // controllable run state for the bridge's stop path (pi.isIdle / ctx.abort) —
+  // the adapter's ctx() prefers the COMMAND ctx (stored when the /tg command
+  // handler ran), so swap cmdCtxFake (like the /stop test), not fakeCtx.
+  let running = false;
+  const origCmdCtx = cmdCtxFake;
+  t.after(() => (cmdCtxFake = origCmdCtx));
+  cmdCtxFake = {
+    cwd: "/tmp",
+    ui: { notify: () => {} },
+    isIdle: () => !running,
+    abort: () => {
+      running = false;
+    },
+  };
+
+  let getUpdatesCount = 0;
+  let nextId = 9100;
+  const ownerMsg = (text: string, update_id: number, message_id: number) => ({
+    update_id,
+    message: { message_id, date: 1, chat: { id: 42, type: "private" }, from: { id: 123456, is_bot: false, first_name: "O" }, text },
+  });
+  globalThis.fetch = (async (url: string, init?: RequestInit): Promise<Response> => {
+    const method = String(url).split("/").pop() ?? "";
+    const body = (init?.body ? JSON.parse(String(init.body)) : {}) as Record<string, unknown>;
+    const blocks = (body.rich_message as { blocks?: unknown[] } | undefined)?.blocks;
+    const call: WireCall & { msgId?: number } = { method, body, markdown: blocks ? blocksToPlainText(blocks as TgBlock[]) : "" };
+    calls.push(call);
+    if (method === "getMe")
+      return new Response(JSON.stringify({ ok: true, result: { id: 1, is_bot: true, first_name: "Tg", username: "tgb" } }), { status: 200 });
+    if (method === "getUpdates") {
+      getUpdatesCount++;
+      if (getUpdatesCount === 1) return new Response(JSON.stringify({ ok: true, result: [ownerMsg("hi", 1, 1)] }), { status: 200 });
+      if (getUpdatesCount === 2)
+        return new Response(JSON.stringify({ ok: true, result: [{ update_id: 2, stopped_message_generation: { chat: { id: 42, type: "private" }, draft_id: "1" } }] }), { status: 200 });
+      if (getUpdatesCount === 3) return new Response(JSON.stringify({ ok: true, result: [ownerMsg("next", 3, 3)] }), { status: 200 });
+      return new Promise<Response>((_resolve, reject) => {
+        const sig = init?.signal;
+        const onAbort = () => reject(new DOMException("Aborted", "AbortError"));
+        if (sig) {
+          if (sig.aborted) onAbort();
+          else sig.addEventListener("abort", onAbort, { once: true });
+        }
+      });
+    }
+    if (method === "sendMessage" || method === "sendRichMessage") {
+      call.msgId = ++nextId;
+      return new Response(JSON.stringify({ ok: true, result: { message_id: call.msgId } }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ ok: true, result: true }), { status: 200 });
+  }) as typeof fetch;
+
+  // the run is live from the moment the prompt is dispatched — the first
+  // getUpdates ("hi") is already in flight, so this must be set NOW or the
+  // stop update races ahead and sees an idle session.
+  running = true;
+  handlers.get("session_start")!({}, fakeCtx);
+  await waitFor(() => calls.some((c) => c.method === "sendRichMessageDraft"), "early draft for run 1");
+  const draftsAfterRun1 = calls.filter((c) => c.method === "sendRichMessageDraft").length;
+
+  // pi events for a streaming assistant message
+  handlers.get("agent_start")!();
+  handlers.get("message_start")!({ message: { role: "assistant", content: [] } });
+  handlers.get("message_update")!({ message: { role: "assistant", content: [{ type: "text", text: "working " }] } });
+  await sleep(50);
+
+  // user presses the NATIVE stop button on the draft
+  await waitFor(() => getUpdatesCount >= 2, "poller picks up stopped_message_generation");
+  await waitFor(() => calls.some((c) => c.method === "sendMessage" && String(c.body.text ?? "").includes("⏹️")), "the ⏹️ Stopping… ack");
+  assert.equal(running, false, "ctx.abort() was called");
+
+  // pi finishes the aborted run: aborted message_end + agent_end + settled
+  handlers.get("message_end")!({ message: { role: "assistant", content: [{ type: "text", text: "working " }], stopReason: "aborted" } });
+  handlers.get("agent_end")!({ messages: [] });
+  handlers.get("agent_settled")!();
+  await sleep(50);
+
+  // a NEW request — its draft must go out
+  await waitFor(() => getUpdatesCount >= 3, "poller picks up the new prompt");
+  await waitFor(
+    () => calls.filter((c) => c.method === "sendRichMessageDraft").length > draftsAfterRun1,
+    "a draft for the SECOND run",
+  );
+
+  // the stop state must be cleared on the WIRE: the first draft send after the
+  // native stop goes out can_stop=false (the one-time RESET packet — a
+  // can_stop=true send to a just-stopped id is filtered by Telegram and renders
+  // nothing, the 2026-10 field report), and every send after the reset resumes
+  // can_stop=true. Let run 2 stream so the resume is observable (the harness
+  // throttles draft updates by streamEditMs).
+  const stopIdx = calls.findIndex((c) => c.method === "sendMessage" && String(c.body.text ?? "").includes("⏹️"));
+  assert.ok(stopIdx >= 0, "the ⏹️ Stopping… ack was sent");
+  handlers.get("agent_start")!();
+  handlers.get("message_start")!({ message: { role: "assistant", content: [] } });
+  handlers.get("message_update")!({ message: { role: "assistant", content: [{ type: "text", text: "run2 " }] } });
+  await waitFor(
+    () => calls.filter((c) => c.method === "sendRichMessageDraft" && calls.indexOf(c) > stopIdx).length >= 2,
+    "run 2's streaming update after its early draft",
+  );
+
+  // 1) the draft stream identity stays the STABLE id 1 — before AND after the
+  //    stop. Fresh per-run ids are NOT reliably rendered by clients (the
+  //    regression the stable id exists to prevent) — never re-introduce it.
+  const drafts = calls.filter((c) => c.method === "sendRichMessageDraft");
+  assert.ok(drafts.every((c) => c.body.draft_id === 1), "every run draft uses the stable draft_id 1");
+  // 2) the reset packet + resume. (Wire note: can_stop=false is sent as an
+  // ABSENT key — the client only adds can_stop when true.)
+  const afterStop = drafts.filter((c) => calls.indexOf(c) > stopIdx);
+  assert.equal(afterStop[0]!.body.can_stop, undefined, "the first draft send after the stop is the can_stop=false reset packet (key absent)");
+  assert.ok(afterStop.slice(1).every((c) => c.body.can_stop === true), "every draft send after the reset packet resumes can_stop=true");
+});
+
 test("smoke: session card carries a 💲 cost line when the session branch has cost (real wiring, fake wire)", async (t) => {
   // End-to-end: wiring.ts's branch walk (cost over ALL cost-bearing entries)
   // feeds statusBlocks' conditional line. The smoke's fakeCtx has no

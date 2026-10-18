@@ -175,6 +175,7 @@ export default function piTelegram(pi: ExtensionAPI): void {
       // T6 early draft: the run's draft (spinner) goes out when the prompt is
       // dispatched, before pi's agent_start.
       onPromptAccepted: () => safeCall(() => currentMirror?.onPromptAccepted()),
+      onDraftStopped: (draftId: number) => safeCall(() => currentMirror?.onDraftStopped(draftId)),
     };
     bridge = new SessionBridge(deps);
     if (!token) {

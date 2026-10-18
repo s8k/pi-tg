@@ -149,6 +149,13 @@ export interface BridgeDeps {
    * that don't exercise the early draft leave it unset).
    */
   onPromptAccepted?: () => void;
+  /**
+   * The user pressed the native Stop on the RUN'S draft (stopped_message_
+   * generation's draft_id): the mirror arms its can_stop=false reset packet
+   * so the next send to the (suppressed) draft id renders again. index.ts
+   * wires it to the current mirror; optional (tests leave it unset).
+   */
+  onDraftStopped?: (draftId: number) => void;
   /** Dialog mirroring host (absent when mirrorDialogs is off or tests don't exercise it). */
   dialogs?: DialogsPort;
 }
@@ -639,6 +646,7 @@ export class SessionBridge {
         if (pi.isIdle()) await out.send(action.chatId, "Nothing to stop — session is idle.");
         else {
           pi.abort();
+          if (action.draftId !== undefined) this.deps.onDraftStopped?.(action.draftId); // the run's draft id is suppressed until the mirror's can_stop=false reset packet
           const stopMsg = await out.send(action.chatId, "⏹️ Stopping…");
           if (stopMsg !== undefined) void this.stampAfterIdle(action.chatId, stopMsg, "⏹️ Stopping… ✔️"); // waits for the aborted turn to end
         }
