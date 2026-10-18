@@ -78,6 +78,7 @@ piTelegram({
   // command so the picker list has content — every BUILT-IN is either a
   // duplicate of a direct bot command (List A) or terminal-only (List B/C).
   getCommands: () => [{ name: "mcp", description: "Manage MCP servers", source: "extension" as const }],
+  getSessionName: () => undefined, // status card → "Untitled session" (the real pi has it)
 } as never);
 // The fake ctx exposes the post-compact session context so index.ts can
 // re-derive pi's "after" count exactly as pi does internally (Σ estimateTokens
@@ -94,6 +95,7 @@ const fakeCtx = {
   mode: "tui",
   hasUI: true,
   isIdle: () => true, // the bridge's prompt gate calls ctx.isIdle()
+  getContextUsage: () => undefined, // status card → "📖 context: n/a" (the real ctx has it)
   ui: {
     notify: (text: string, level?: string) => {
       uiNotices.push({ text, level });
@@ -1128,4 +1130,88 @@ test("sent message ids persist to the config file (regression: /new's Clear must
   assert.ok(mine.length >= 1, "the bot sent at least one persistent message carrying my marker");
   for (const c of mine)
     assert.ok(persisted().includes(c.msgId!), `message id ${c.msgId} is in the persisted sentMessageIds (got ${JSON.stringify(persisted())})`);
+});
+
+test("smoke: session card carries a 💲 cost line when the session branch has cost (real wiring, fake wire)", async (t) => {
+  // End-to-end: wiring.ts's branch walk (cost over ALL cost-bearing entries)
+  // feeds statusBlocks' conditional line. The smoke's fakeCtx has no
+  // getBranch → give it a branch with one paid assistant message + a
+  // cache-warm usage entry (0.45 + 0.015 = 0.465 → the 3-decimal band),
+  // fire session_start, and inspect the card.
+  const calls: (WireCall & { msgId?: number })[] = [];
+  const realFetch = globalThis.fetch;
+  t.after(() => (globalThis.fetch = realFetch));
+  // The shared module-level fakeCtx: override getBranch for this test ONLY —
+  // restore it so the branch doesn't leak into the next test's cards.
+  const sm = fakeCtx.sessionManager as { getBranch?: () => unknown[] };
+  t.after(() => {
+    sm.getBranch = undefined;
+  });
+  sm.getBranch = () => [
+    { type: "message", message: { role: "assistant", usage: { input: 1000, output: 100, cost: { total: 0.45 } } } },
+    { type: "usage", kind: "cache_warm", usage: { cost: { total: 0.015 } } },
+  ];
+  // The card is only posted on session_start for a pending action (/new or a
+  // session switch) — seed one into the shared config file; session_start
+  // re-loads cfg, and onSessionReplaced clears it. Restore the file after.
+  const cfgPath = join(agentDir, "pi-telegram.json");
+  const cfgBefore = readFileSync(cfgPath, "utf-8");
+  t.after(() => writeFileSync(cfgPath, cfgBefore));
+  writeFileSync(
+    cfgPath,
+    JSON.stringify({ ...JSON.parse(cfgBefore), pendingAction: { type: "new", chatId: 42 } }),
+  );
+
+  let getUpdatesCount = 0;
+  let nextId = 9000;
+  globalThis.fetch = (async (url: string, init?: RequestInit): Promise<Response> => {
+    const method = String(url).split("/").pop() ?? "";
+    const body = (init?.body ? JSON.parse(String(init.body)) : {}) as Record<string, unknown>;
+    const blocks = (body.rich_message as { blocks?: unknown[] } | undefined)?.blocks;
+    const call: WireCall & { msgId?: number } = { method, body, markdown: blocks ? blocksToPlainText(blocks as TgBlock[]) : "" };
+    calls.push(call);
+    if (method === "getMe")
+      return new Response(JSON.stringify({ ok: true, result: { id: 1, is_bot: true, first_name: "Tg", username: "tgb" } }), { status: 200 });
+    if (method === "getUpdates") {
+      getUpdatesCount++;
+      if (getUpdatesCount === 1)
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            result: [
+              {
+                update_id: 1,
+                message: {
+                  message_id: 1,
+                  date: 1,
+                  chat: { id: 42, type: "private" },
+                  from: { id: 123456, is_bot: false, first_name: "O" },
+                  text: "hi",
+                },
+              },
+            ],
+          }),
+          { status: 200 },
+        );
+      return new Promise<Response>((_resolve, reject) => {
+        const sig = init?.signal;
+        const onAbort = () => reject(new DOMException("Aborted", "AbortError"));
+        if (sig) {
+          if (sig.aborted) onAbort();
+          else sig.addEventListener("abort", onAbort, { once: true });
+        }
+      });
+    }
+    if (method === "sendMessage" || method === "sendRichMessage") {
+      call.msgId = ++nextId;
+      return new Response(JSON.stringify({ ok: true, result: { message_id: call.msgId } }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ ok: true, result: true }), { status: 200 });
+  }) as typeof fetch;
+
+  handlers.get("session_start")!({}, fakeCtx);
+  await waitFor(() => calls.some((c) => c.method === "sendRichMessage"), "the session card");
+  const card = calls.find((c) => c.method === "sendRichMessage")!.markdown;
+  assert.ok(card.includes("💲 cost: $0.465"), `the card carries the summed cost line (got: ${card})`);
+  assert.ok(card.includes("🪙 tokens: ↑1k ↓100"), "the tokens line is intact");
 });
