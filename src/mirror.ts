@@ -167,6 +167,15 @@ export function fmtTokens(n: number): string {
 }
 
 /**
+ * USD amount for the session card's cost line (adaptive precision — the
+ * line is only shown for cost > 0, so this never renders a misleading
+ * $0.00 for a visible line): `$1.23` ≥ $1, `$0.452` ≥ $0.01, `$0.0045` below.
+ */
+export function fmtUsd(n: number): string {
+  return n >= 1 ? `$${n.toFixed(2)}` : n >= 0.01 ? `$${n.toFixed(3)}` : `$${n.toFixed(4)}`;
+}
+
+/**
  * The detail of a compact success string, shared by the manual and auto
  * lanes: `105,414 → 32,876 tokens` (before + after) or `105,414 tokens`
  * (before only — the auto lane falls back to this when the post-compact
