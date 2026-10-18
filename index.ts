@@ -23,6 +23,18 @@ import type { TgInlineQuery } from "./src/telegram-client.ts";
 // configPath also runs the one-time migration from the legacy `pi-telega.json`
 // filename (token + pairing carry over, no re-pair).
 const CFG = { agentDir: getAgentDir() };
+
+// TEMP field diagnostic (2026-10 draft-stop investigation): a load marker —
+// if /reload re-imports this module the line appears again; if the ESM cache
+// kept the old module, it won't (stale-code proof). See src/mirror.ts tgDebug.
+import { appendFileSync as tgAppend } from "node:fs";
+import { tmpdir as tgTmp } from "node:os";
+import { join as tgJoinPath } from "node:path";
+try {
+  tgAppend(tgJoinPath(tgTmp(), "pi-tg-debug.log"), `${new Date().toISOString()} [${process.pid}] index-module-loaded\n`);
+} catch {
+  /* ignore */
+}
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 /**

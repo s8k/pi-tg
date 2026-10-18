@@ -16,8 +16,9 @@ import { makeMirrorDeps, tick } from "./mirror-helpers.ts";
 type H = ReturnType<typeof makeMirrorDeps>;
 
 const draftCalls = (h: H) => h.out.calls.filter((c) => c.kind === "sendDraft");
-const latest = (h: H, draftId: number): string => {
-  const calls = draftCalls(h).filter((c) => c.draftId === draftId);
+/** Text of the latest draft call (all run drafts share one id per Mirror — no id filter needed). */
+const latest = (h: H): string => {
+  const calls = draftCalls(h);
   return calls[calls.length - 1]?.text ?? "";
 };
 const richSends = (h: H) => h.out.calls.filter((c) => c.kind === "sendRich");
@@ -46,11 +47,11 @@ test("live draft: the spinner line carries the in-flight message's usage", async
   const m = new Mirror(h.deps);
   m.onAgentStart();
   await tick();
-  assert.match(latest(h, 1), /^\w+…$/, "no usage yet → bare spinner, no suffix");
+  assert.match(latest(h), /^\w+…$/, "no usage yet → bare spinner, no suffix");
   m.onAssistantStart(msg(""));
   m.onAssistantUpdate(msg("Thinking hard", { usage: { input: 567, output: 12 } }));
   await tick();
-  assert.match(latest(h, 1), /\w+… ↑567 ↓12$/, "spinner + ` ↑in ↓out` on the spinner line");
+  assert.match(latest(h), /\w+… ↑567 ↓12$/, "spinner + ` ↑in ↓out` on the spinner line");
 });
 
 test("usage-only updates (no text) still refresh the draft", async () => {
@@ -63,7 +64,7 @@ test("usage-only updates (no text) still refresh the draft", async () => {
   );
   m.onAssistantUpdate({ role: "assistant", content: [{ type: "thinking", thinking: "a, b" }], usage: { input: 100, output: 40 } });
   await tick();
-  assert.match(latest(h, 1), /↑100 ↓40$/, "the latest usage lands in the draft even without a text change");
+  assert.match(latest(h), /↑100 ↓40$/, "the latest usage lands in the draft even without a text change");
 });
 
 test("usage accumulates across the run's assistant messages", async () => {
@@ -83,7 +84,7 @@ test("usage accumulates across the run's assistant messages", async () => {
   m.onAssistantStart(msg(""));
   m.onAssistantUpdate(msg("The answer.", { usage: { input: 300, output: 115 } }));
   await tick();
-  assert.match(latest(h, 1), /↑400 ↓165$/, "100+300 in, 50+115 out");
+  assert.match(latest(h), /↑400 ↓165$/, "100+300 in, 50+115 out");
 });
 
 test("clean end: m1 shows Completed with the run's total usage", async () => {
@@ -151,5 +152,5 @@ test("a pi retry carries the tokens over (cumulative across retries)", async () 
   m.onAssistantStart(msg("y"));
   m.onAssistantUpdate(msg("y2", { usage: { input: 200, output: 150 } }));
   await tick();
-  assert.match(latest(h, 1), /↑300 ↓155$/, "100+200 in, 5+150 out");
+  assert.match(latest(h), /↑300 ↓155$/, "100+200 in, 5+150 out");
 });

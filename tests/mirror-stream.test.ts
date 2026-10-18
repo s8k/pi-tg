@@ -16,8 +16,14 @@ type DraftCall = { draftId?: number; text?: string; blocks?: TgBlock[]; canStop?
 const draftCalls = (h: H): DraftCall[] =>
   h.out.calls.filter((c): c is (typeof h.out.calls)[number] & { kind: "sendDraft" } => c.kind === "sendDraft");
 const draftIds = (h: H): number[] => [...new Set(draftCalls(h).map((c) => c.draftId).filter((d): d is number => d !== undefined))];
-const latest = (h: H, draftId: number): string => {
-  const calls = draftCalls(h).filter((c) => c.draftId === draftId);
+/** The whole run used exactly ONE draft id, in the run lane (1..999_999 — below the compact lane). */
+const oneRunLaneId = (h: H, label?: string): void => {
+  const ids = draftIds(h);
+  assert.ok(ids.length === 1 && ids[0]! >= 1 && ids[0]! < 1_000_000, `${label ?? "one draft id"}: got ${JSON.stringify(ids)}`);
+};
+/** Text of the latest draft call (a run's drafts share one id per Mirror — no id filter needed). */
+const latest = (h: H): string => {
+  const calls = draftCalls(h);
   return calls[calls.length - 1]?.text ?? "";
 };
 
@@ -27,14 +33,14 @@ const textMsg = (text: string, extra: Partial<MirrorMessage> = {}): MirrorMessag
   ...extra,
 });
 
-test("agent_start creates the single draft (id 1) with can_stop + keep_on_stop and a thinking bottom line", async () => {
+test("agent_start creates the single draft (a random id in the run lane) with can_stop + keep_on_stop and a thinking bottom line", async () => {
   const h = makeMirrorDeps({ streamEditMs: 0 });
   const m = new Mirror(h.deps);
   m.onAgentStart();
   await tick();
   const calls = draftCalls(h);
   assert.equal(calls.length, 1);
-  assert.equal(calls[0]?.draftId, 1);
+  assert.ok(calls[0] && Number.isInteger(calls[0].draftId) && calls[0].draftId! >= 1 && calls[0].draftId! < 1_000_000, `spawn id ${calls[0]?.draftId} is in 1..999_999 (the run lane, below the compact lane)`);
   assert.equal(calls[0]?.canStop, true);
   assert.equal(calls[0]?.keepOnStop, true);
   assert.match(calls[0]?.text ?? "", /^\w+…$/, "the draft is the thinking spinner alone");
@@ -48,8 +54,8 @@ test("the answer text streams into the SAME draft — no second draft is ever cr
   m.onAssistantUpdate(textMsg("He"));
   m.onAssistantUpdate(textMsg("Hello"));
   await tick();
-  assert.deepEqual(draftIds(h), [1], "one draft for the whole run");
-  const content = latest(h, 1);
+  oneRunLaneId(h, "one draft for the whole run");
+  const content = latest(h);
   assert.ok(content.startsWith("Hello"), `text on top, got: ${JSON.stringify(content)}`);
   assert.match(content, /\n\w+…$/, "the spinner stays below the streaming text");
   assert.ok((draftCalls(h).at(-1)?.blocks ?? []).some((b) => b.type === "thinking"), "the last block is the thinking spinner");
@@ -87,7 +93,7 @@ test("textless candidates never trigger a draft update", async () => {
   m.onAssistantUpdate({ role: "assistant", content: [{ type: "thinking", thinking: "hmm, let me think" }] });
   await tick();
   assert.equal(draftCalls(h).length, 1, "the spawn send only — no update for textless parts");
-  assert.deepEqual(draftIds(h), [1]);
+  oneRunLaneId(h);
 });
 
 test("draft shows tool calls COLLAPSED (details) — same form as the finalized send (2026-10-08 experiment reverted 2026-10-11)", async () => {
@@ -134,7 +140,7 @@ test("a toolCall mid-stream does not wipe the tail — the text keeps showing un
     ],
   });
   await tick();
-  assert.ok(latest(h, 1).includes("Let me check the file."), "the text streams into the draft");
+  assert.ok(latest(h).includes("Let me check the file."), "the text streams into the draft");
   // the tool call arrives in the next chunk — the visible text must stay
   m.onAssistantUpdate({
     role: "assistant",
@@ -145,7 +151,7 @@ test("a toolCall mid-stream does not wipe the tail — the text keeps showing un
     ],
   });
   await tick();
-  assert.ok(latest(h, 1).includes("Let me check the file."), "no spinner flash when the toolCall chunk arrives");
+  assert.ok(latest(h).includes("Let me check the file."), "no spinner flash when the toolCall chunk arrives");
   // message_end commits: the text becomes a log block (same place), the tail clears
   m.onAssistantEnd({
     role: "assistant",
@@ -157,7 +163,7 @@ test("a toolCall mid-stream does not wipe the tail — the text keeps showing un
     stopReason: "toolUse",
   });
   await tick();
-  const log = latest(h, 1);
+  const log = latest(h);
   assert.equal((log.match(/Let me check the file\./g) ?? []).length, 1, "exactly once — committed, not duplicated");
   assert.ok(log.includes("⚙ read …"), log);
   assert.ok(log.includes("💭"), "why line from the thinking stream");
@@ -192,7 +198,7 @@ test("no flicker across a tool loop: committed text and streamed text are never 
   await tick();
 
   const calls = draftCalls(h);
-  assert.deepEqual(draftIds(h), [1], "one draft id for the whole loop");
+  oneRunLaneId(h, "one draft id for the whole loop");
   const all = calls.map((c) => c.text ?? "");
   const firstCommitted = all.findIndex((t) => t.includes("Let me check the file."));
   assert.ok(firstCommitted >= 0, "the text is visible from the first stream chunk");
@@ -219,15 +225,15 @@ test("re-candidate: the next message streams into the SAME draft; tool stamps up
     stopReason: "toolUse",
   });
   await tick();
-  assert.deepEqual(draftIds(h), [1], "a textless tool message adds nothing");
+  oneRunLaneId(h, "a textless tool message adds nothing");
   m.onToolEnd("c1", false, { content: [{ type: "text", text: "file body" }] });
   await tick();
-  assert.ok(latest(h, 1).includes("⚙ read ✔"), latest(h, 1));
+  assert.ok(latest(h).includes("⚙ read ✔"), latest(h));
   m.onAssistantStart(textMsg(""));
   m.onAssistantUpdate(textMsg("Fixed it."));
   await tick();
-  assert.deepEqual(draftIds(h), [1], "still one draft — the next message reuses it");
-  assert.ok(latest(h, 1).includes("Fixed it."), "the new message's text streams into the same draft");
+  oneRunLaneId(h, "still one draft — the next message reuses it");
+  assert.ok(latest(h).includes("Fixed it."), "the new message's text streams into the same draft");
 });
 
 test("confirm (stop, no tools): no further draft updates after (one-way switch)", async () => {
@@ -266,14 +272,14 @@ test("a 'length' stop WITH a tool call does NOT confirm — the run continues in
   // not finalized: the failed tool stamps in and the next candidate streams on
   m.onToolEnd("c2", true, { content: [{ type: "text", text: "not executed: output token limit" }] });
   await tick();
-  const log = latest(h, 1);
+  const log = latest(h);
   assert.ok(log.includes("⚙ bash ✖"), log);
   assert.ok(log.includes("not executed: output token limit"), log);
   m.onAssistantStart(textMsg(""));
   m.onAssistantUpdate(textMsg("Retry."));
   await tick();
-  assert.deepEqual(draftIds(h), [1], "still the single draft");
-  assert.ok(latest(h, 1).includes("Retry."), "the new candidate streams into it");
+  oneRunLaneId(h, "still the single draft");
+  assert.ok(latest(h).includes("Retry."), "the new candidate streams into it");
 });
 
 test("spinner-only run: the single draft never gains text", async () => {
@@ -284,7 +290,7 @@ test("spinner-only run: the single draft never gains text", async () => {
   m.onAssistantUpdate({ role: "assistant", content: [{ type: "thinking", thinking: "…" }] });
   m.onAssistantEnd({ role: "assistant", content: [{ type: "thinking", thinking: "…" }], stopReason: "stop" });
   await tick();
-  assert.deepEqual(draftIds(h), [1]);
+  oneRunLaneId(h);
 });
 
 test("muted: no draft calls of any kind", async () => {
@@ -308,11 +314,11 @@ test("shared throttle: a fast second update is coalesced and drained at streamEd
   m.onAssistantUpdate(textMsg("A")); // out now
   m.onAssistantUpdate(textMsg("AB")); // gated by the streamEditMs window
   await tick();
-  assert.ok(latest(h, 1).includes("A"), `latest shows "A", got: ${JSON.stringify(latest(h, 1))}`);
-  assert.ok(!latest(h, 1).includes("AB"), "the fast second update is still queued");
+  assert.ok(latest(h).includes("A"), `latest shows "A", got: ${JSON.stringify(latest(h))}`);
+  assert.ok(!latest(h).includes("AB"), "the fast second update is still queued");
   h.advance(1000);
   await tick();
-  assert.ok(latest(h, 1).includes("AB"), "the coalesced update drains at the window edge");
+  assert.ok(latest(h).includes("AB"), "the coalesced update drains at the window edge");
 });
 
 test("heartbeat re-sends the live draft", async () => {
@@ -326,7 +332,7 @@ test("heartbeat re-sends the live draft", async () => {
   h.advance(17000);
   await tick();
   assert.equal(draftCalls(h).length, 1, "exactly one refresh");
-  assert.equal(draftCalls(h)[0]?.draftId, 1);
+  assert.ok(Number.isInteger(draftCalls(h)[0]?.draftId) && (draftCalls(h)[0]?.draftId ?? 0) >= 1 && (draftCalls(h)[0]?.draftId ?? 0) < 1_000_000, "the refresh stays in the run lane");
   assert.ok(draftCalls(h)[0]?.text?.includes("Hi"), "the refresh carries the current content");
 });
 
@@ -421,7 +427,7 @@ test("run started without a learned chat: the draft spawns when onChatLearned fi
   m.onChatLearned();
   await tick();
   assert.equal(draftCalls(h).length, 1, "the draft spawned late");
-  assert.equal(draftCalls(h)[0]?.draftId, 1);
+  assert.ok(Number.isInteger(draftCalls(h)[0]?.draftId) && (draftCalls(h)[0]?.draftId ?? 0) >= 1 && (draftCalls(h)[0]?.draftId ?? 0) < 1_000_000, "the late spawn is in the run lane");
   assert.match(draftCalls(h)[0]?.text ?? "", /working on it/);
 
   await m.onAssistantEnd(textMsg("working on it", { stopReason: "stop" }));
@@ -446,7 +452,7 @@ test("onChatLearned is a no-op: no run in progress / a draft is already live", a
   assert.equal(draftCalls(h).length, 1);
   m.onChatLearned(); // a live draft exists — no second draft
   await tick();
-  assert.deepEqual(draftIds(h), [1]);
+  oneRunLaneId(h);
 });
 
 test("the run draft id is STABLE across runs (always 1) — clients follow one draft per chat", async () => {
@@ -464,10 +470,10 @@ test("the run draft id is STABLE across runs (always 1) — clients follow one d
   m.onAssistantStart(textMsg(""));
   m.onAssistantUpdate(textMsg("two"));
   await tick();
-  assert.deepEqual(
-    h.out.calls.filter((c) => c.kind === "sendDraft").map((c) => c.draftId),
-    [1, 1, 1, 1],
-    "every run streams into the same stable draft id 1",
+  const ids = h.out.calls.filter((c) => c.kind === "sendDraft").map((c) => c.draftId);
+  assert.ok(
+    ids.length === 4 && ids.every((id) => id === ids[0]! && id >= 1 && id < 1_000_000),
+    `every run streams into the SAME stable id (${ids.join(",")}) — stable across runs, never per-run`,
   );
 });
 
@@ -509,7 +515,7 @@ test("pauseForDialog: working draft → persistent segment; log segmented; next 
   await tick();
   const after = draftCalls(h).slice(draftsBefore);
   assert.ok(after.length > 0, "a fresh draft is re-spawned after the dialog");
-  assert.equal(after[after.length - 1]?.draftId, 1, "same stable draft id");
+  assert.equal(after[after.length - 1]?.draftId, draftCalls(h)[0]?.draftId, "same stable draft id (no stop — the id only rotates on a stop)");
   const cont = after[after.length - 1]?.text ?? "";
   assert.ok(cont.includes("post-dialog"), "the continuation streams");
   assert.ok(!cont.includes("pre-dialog work"), "the pre-dialog content was segmented out (no duplication)");

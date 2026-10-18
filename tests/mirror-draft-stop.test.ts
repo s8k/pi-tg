@@ -1,16 +1,19 @@
-// Draft stop lifecycle (field report 2026-10 + API guidance): after the user
-// presses the native Stop button, Telegram suppresses can_stop=true updates
-// for that draft_id until the stop state is handled — re-sending the stable
-// draft_id 1 with can_stop=true renders NOTHING (the current AND all later
-// runs' drafts were invisible; nothing plugin-side, not even /reload, could
-// recover it). The recovery is a one-time RESET packet: the first send after
-// the stop goes out can_stop=false (a fresh, non-stoppable generation phase
-// — clears the block), then can_stop=true resumes.
+// Draft id lifecycle (field-verified 2026-10, wire log): a draft id the user
+// STOPPED is silently filtered server-side — the API still returns success,
+// the client renders nothing, and the state survives reloads/restarts. A
+// can_stop=false "reset packet" does NOT clear it (tested in the field). The
+// only recovery is a NEW id.
 //
-// Regression guard in the same file: the id itself must stay the stable 1 —
-// fresh per-run ids are NOT reliably rendered by clients (live-verified:
-// per-run ids 1..7 were invisible while a probe on another id rendered), and
-// that is exactly the issue the stable id was introduced to fix.
+// Design under test (the careful Option A):
+// - the id is STABLE ACROSS RUNS — clients do not reliably follow a fresh
+//   per-run id (the live-verified regression that killed the per-run-id
+//   design, ids 1..7);
+// - but it is NOT a hardcoded constant: a random id (1..999_999, below the
+//   compact lane 1_000_000+seq) is chosen on first spawn — i.e. fresh on
+//   every plugin load, so /reload escapes a stuck id;
+// - on a native stop (or a "draft no longer exists" false return) the id
+//   ROTATES to a new random one for the next stream, and the live draft is
+//   retired at once.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Mirror, type MirrorMessage } from "../src/mirror.ts";
@@ -26,11 +29,18 @@ const textMsg = (text: string, extra: Partial<MirrorMessage> = {}): MirrorMessag
 const drafts = (calls: FakeOutCall[]): FakeOutCall[] => calls.filter((c) => c.kind === "sendDraft");
 const lastDraft = (calls: FakeOutCall[]): FakeOutCall | undefined => drafts(calls).at(-1);
 
-/** Start a run and wait for its draft spawn. */
-async function startRun(h: ReturnType<typeof makeMirrorDeps>, m: Mirror): Promise<void> {
+/** Run-draft ids: positive ints, kept below the compact-draft lane (1_000_000 + seq). */
+const assertRunDraftId = (id: number, label: string): void => {
+  assert.ok(Number.isInteger(id) && id >= 1 && id < 1_000_000, `${label}: id ${id} is in 1..999_999 (below the compact lane)`);
+};
+
+/** Start a run and return its draft stream id (the spawn must go out). */
+async function runDraftId(h: ReturnType<typeof makeMirrorDeps>, m: Mirror): Promise<number> {
   m.onAgentStart();
   await tick();
-  assert.ok(lastDraft(h.out.calls), "the run's draft went out");
+  const last = lastDraft(h.out.calls);
+  assert.ok(last, "the run's draft went out");
+  return last!.draftId!;
 }
 
 /** End the run (stop end) and let finalization settle. */
@@ -39,88 +49,95 @@ async function endRun(m: Mirror): Promise<void> {
   await tick();
 }
 
-test("regression guard: the run's draft ALWAYS uses the stable draft_id 1 (fresh per-run ids are not rendered by clients)", async () => {
+test("the id is a random one on first spawn and stays STABLE across runs (per-run ids were the old regression)", async () => {
   const h = makeMirrorDeps({ streamEditMs: 0 });
   const m = new Mirror(h.deps);
-  for (let run = 1; run <= 3; run++) {
-    await startRun(h, m);
-    await endRun(m);
-  }
-  assert.ok(drafts(h.out.calls).length >= 3, "each run spawned its draft");
-  assert.ok(drafts(h.out.calls).every((c) => c.draftId === 1), "every draft send used the stable id 1 — never a per-run id");
+  const id1 = await runDraftId(h, m);
+  assertRunDraftId(id1, "run 1");
+  await endRun(m);
+  const id2 = await runDraftId(h, m);
+  assert.equal(id2, id1, "run 2 reuses the SAME id — stable across runs (clients follow one draft per chat)");
+  await endRun(m);
+  const id3 = await runDraftId(h, m);
+  assert.equal(id3, id1, "run 3 reuses it too — the id only changes on a stop, never per run");
+
+  // a different plugin load (fresh mirror) gets a (different) random id
+  const h2 = makeMirrorDeps({ streamEditMs: 0 });
+  const m2 = new Mirror(h2.deps);
+  const fresh = await runDraftId(h2, m2);
+  assertRunDraftId(fresh, "fresh load");
+  assert.notEqual(fresh, id1, "a fresh load does not reuse the previous load's id (1-in-999999 flake)");
 });
 
-test("onDraftStopped: the next send is a can_stop=false reset packet, then can_stop=true resumes", async () => {
+test("within a run the live draft keeps its id across updates (same stream = animated refresh)", async () => {
   const h = makeMirrorDeps({ streamEditMs: 0 });
   const m = new Mirror(h.deps);
-  await startRun(h, m);
-  assert.equal(lastDraft(h.out.calls)!.canStop, true, "normal streaming sends carry can_stop=true");
-
-  m.onDraftStopped(1); // the native Stop button (stopped_message_generation)
-  m.onAssistantUpdate(textMsg("still going?"));
+  const id = await runDraftId(h, m);
+  m.onAssistantUpdate(textMsg("a"));
   await tick();
-  assert.equal(lastDraft(h.out.calls)!.canStop, false, "the first send after the stop is the can_stop=false RESET packet");
-
-  m.onAssistantUpdate(textMsg("more"));
+  m.onAssistantUpdate(textMsg("b"));
   await tick();
-  assert.equal(lastDraft(h.out.calls)!.canStop, true, "after the reset packet lands, can_stop=true resumes");
+  assert.ok(drafts(h.out.calls).every((c) => c.draftId === id), "every update in the run stays on the same id");
 });
 
-test("the reset flag survives finalization: the NEXT RUN's first draft send is the reset packet", async () => {
+test("onDraftStopped: the stopped id is NEVER reused — the live draft retires at once and the next stream is a fresh id", async () => {
   const h = makeMirrorDeps({ streamEditMs: 0 });
   const m = new Mirror(h.deps);
-  await startRun(h, m);
-  m.onDraftStopped(1); // user stopped run 1
-  await endRun(m); // run 1 finalizes (aborted)
+  const id1 = await runDraftId(h, m);
 
-  await startRun(h, m); // run 2
-  const first = lastDraft(h.out.calls)!;
-  assert.equal(first.draftId, 1, "run 2 reuses the stable id");
-  assert.equal(first.canStop, false, "run 2's first send clears the stop state (can_stop=false reset)");
-
-  m.onAssistantUpdate(textMsg("streaming"));
+  m.onDraftStopped(id1); // the native Stop button (stopped_message_generation)
   await tick();
-  assert.equal(lastDraft(h.out.calls)!.canStop, true, "subsequent sends resume can_stop=true");
+  assert.equal(m.hasLiveDraft(), false, "the stopped draft is retired immediately");
+
+  // past several heartbeat intervals: NOTHING re-sends the stopped id
+  h.advance(60_000);
+  assert.equal(drafts(h.out.calls).filter((c) => c.draftId === id1).length, 1, "the stopped id was sent exactly once (its spawn)");
+
+  await endRun(m);
+  const id2 = await runDraftId(h, m);
+  assertRunDraftId(id2, "run after stop");
+  assert.notEqual(id2, id1, "the next run streams on a FRESH id — the stopped one is dead server-side");
 });
 
 test("onDraftStopped for a foreign id (the compact draft, 1_000_000 + seq): no-op", async () => {
   const h = makeMirrorDeps({ streamEditMs: 0 });
   const m = new Mirror(h.deps);
-  await startRun(h, m);
+  const id = await runDraftId(h, m);
 
   m.onDraftStopped(1_000_001); // a compact draft was stopped — not ours
-  m.onAssistantUpdate(textMsg("streaming"));
   await tick();
-  assert.equal(lastDraft(h.out.calls)!.canStop, true, "no reset packet was armed — normal can_stop=true continues");
+  assert.equal(m.hasLiveDraft(), true, "the run's live draft is untouched");
+
+  await endRun(m);
+  const id2 = await runDraftId(h, m);
+  assert.equal(id2, id, "the run's stable id is unchanged by a foreign stop");
 });
 
-test("sendDraft → false (API: the draft no longer exists / id blocked): arms the reset packet; the next send is can_stop=false and recovers", async () => {
+test("sendDraft → false (API: the draft no longer exists): the id rotates, the live draft retires, the next spawn is fresh", async () => {
   const h = makeMirrorDeps({ streamEditMs: 0 });
   const m = new Mirror(h.deps);
-  await startRun(h, m);
+  const id1 = await runDraftId(h, m);
 
-  // the id is blocked server-side: the first (can_stop=true) send returns
-  // false; once the can_stop=false reset packet goes out, sends land again
+  // the stream died server-side — updates to its id now return false
   const realSendDraft = h.out.sendDraft;
-  let attempts = 0;
   h.out.sendDraft = async (chatId: number, draftId: number, blocks: TgBlock[], canStop?: boolean, keepOnStop?: boolean): Promise<boolean> => {
     await realSendDraft.call(h.out, chatId, draftId, blocks, canStop, keepOnStop);
-    attempts++;
-    return attempts > 1; // first send blocked, reset packet lands
+    return draftId !== id1; // the dead id fails; fresh ids work
   };
-
-  m.onAssistantUpdate(textMsg("blocked"));
-  await tick();
-  assert.equal(attempts, 1, "the blocked send went out once (can_stop=true)");
-
-  m.onAssistantUpdate(textMsg("reset"));
-  await tick();
-  const reset = lastDraft(h.out.calls)!;
-  assert.equal(reset.canStop, false, "the retry after a false is the can_stop=false reset packet");
-  assert.equal(attempts, 2, "exactly one retry — no hammering");
 
   m.onAssistantUpdate(textMsg("streaming"));
   await tick();
-  assert.equal(lastDraft(h.out.calls)!.canStop, true, "after the reset packet lands, can_stop=true resumes");
+  assert.equal(m.hasLiveDraft(), false, "the dead stream was retired on the false return");
+
+  // the next content event re-spawns on a FRESH id
+  m.onAssistantUpdate(textMsg("more"));
+  await tick();
+  const respawned = lastDraft(h.out.calls);
+  assert.ok(respawned && respawned.draftId !== id1, "the re-spawned draft uses a fresh id (the dead one is never reused)");
+  assertRunDraftId(respawned!.draftId!, "respawned");
+
+  // and nothing keeps hammering the dead id
   h.out.sendDraft = realSendDraft;
+  h.advance(60_000);
+  assert.equal(drafts(h.out.calls).filter((c) => c.draftId === id1).length, 2, "the dead id was sent at most twice (spawn + the failing update)");
 });

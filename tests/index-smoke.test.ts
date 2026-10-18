@@ -1175,8 +1175,12 @@ test("baseline: native stop button — the plugin KEEPS sending run drafts after
     if (method === "getUpdates") {
       getUpdatesCount++;
       if (getUpdatesCount === 1) return new Response(JSON.stringify({ ok: true, result: [ownerMsg("hi", 1, 1)] }), { status: 200 });
-      if (getUpdatesCount === 2)
-        return new Response(JSON.stringify({ ok: true, result: [{ update_id: 2, stopped_message_generation: { chat: { id: 42, type: "private" }, draft_id: "1" } }] }), { status: 200 });
+      if (getUpdatesCount === 2) {
+        // The server echoes the id of the draft whose Stop button was pressed
+        // (arrives as a string) — model that with the id actually sent.
+        const lastDraft = [...calls].reverse().find((c) => c.method === "sendRichMessageDraft");
+        return new Response(JSON.stringify({ ok: true, result: [{ update_id: 2, stopped_message_generation: { chat: { id: 42, type: "private" }, draft_id: String(lastDraft?.body.draft_id ?? 1) } }] }), { status: 200 });
+      }
       if (getUpdatesCount === 3) return new Response(JSON.stringify({ ok: true, result: [ownerMsg("next", 3, 3)] }), { status: 200 });
       return new Promise<Response>((_resolve, reject) => {
         const sig = init?.signal;
@@ -1242,16 +1246,18 @@ test("baseline: native stop button — the plugin KEEPS sending run drafts after
     "run 2's streaming update after its early draft",
   );
 
-  // 1) the draft stream identity stays the STABLE id 1 — before AND after the
-  //    stop. Fresh per-run ids are NOT reliably rendered by clients (the
-  //    regression the stable id exists to prevent) — never re-introduce it.
+  // 1) within a run the draft keeps ONE id (animated refresh) — a random id in
+  //    the run lane (1..999_999, below the compact lane 1_000_000+seq).
   const drafts = calls.filter((c) => c.method === "sendRichMessageDraft");
-  assert.ok(drafts.every((c) => c.body.draft_id === 1), "every run draft uses the stable draft_id 1");
-  // 2) the reset packet + resume. (Wire note: can_stop=false is sent as an
-  // ABSENT key — the client only adds can_stop when true.)
+  const id1 = Number(drafts[0]!.body.draft_id);
+  assert.ok(Number.isInteger(id1) && id1 >= 1 && id1 < 1_000_000, `run 1's draft id ${id1} is in 1..999_999 (below the compact lane)`);
+  const beforeStop = drafts.filter((c) => calls.indexOf(c) <= stopIdx);
+  assert.ok(beforeStop.every((c) => c.body.draft_id === id1), "run 1's drafts all keep the same id (stable within a run — never per-run ids)");
+  // 2) the STOPPED id is never reused: run 2 streams on a FRESH id, stoppable
+  //    from its first frame (a fresh, live stream).
   const afterStop = drafts.filter((c) => calls.indexOf(c) > stopIdx);
-  assert.equal(afterStop[0]!.body.can_stop, undefined, "the first draft send after the stop is the can_stop=false reset packet (key absent)");
-  assert.ok(afterStop.slice(1).every((c) => c.body.can_stop === true), "every draft send after the reset packet resumes can_stop=true");
+  assert.ok(afterStop.every((c) => c.body.draft_id !== id1), "run 2 streams on a FRESH id (the stopped id is dead server-side — never reused)");
+  assert.equal(afterStop[0]!.body.can_stop, true, "the fresh stream is stoppable from its first frame");
 });
 
 test("smoke: session card carries a 💲 cost line when the session branch has cost (real wiring, fake wire)", async (t) => {

@@ -77,6 +77,25 @@ import { RICH_CAP, DRAFT_TAIL_CAP, escapeHtml, toolArgsJson, extractWhy, chunkTe
 import { mdToBlocks, foldBlocks, tailBlocks, chunkBlocks, blocksToPlainText, blocksLen, blockCount, type TgBlock } from "./rich-blocks.ts";
 import { TgError } from "./telegram-client.ts";
 
+// ── TEMP field diagnostic (2026-10 draft-stop investigation) ─────────────────
+// Append-only wire log. One repro cycle answers: was the NEW code actually
+// loaded by /reload (module-load lines), did the stop update arrive with its
+// draft_id, what can_stop each draft send carried, and what the API returned
+// (true = accepted, false = "draft no longer exists", err = rejected).
+// Remove once the field behavior is confirmed.
+import { appendFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join as tgJoin } from "node:path";
+const TG_DEBUG_LOG = tgJoin(tmpdir(), "pi-tg-debug.log");
+function tgDebug(line: string): void {
+  try {
+    appendFileSync(TG_DEBUG_LOG, `${new Date().toISOString()} [${process.pid}] ${line}\n`);
+  } catch {
+    /* diagnostics must never break the mirror */
+  }
+}
+tgDebug("mirror-module-loaded");
+
 export interface MirrorMessage {
   role?: string;
   content?: unknown;
@@ -365,6 +384,13 @@ export const AUTO_COMPACT_STATUS = "🗜 Auto-compacting…";
 export const AUTO_COMPACT_DONE_TEXT = "🗜 Context auto-compacted ✔️";
 
 /** A 400 means this content is unparseable — quiet long cooldown; the same content cannot heal. */
+/**
+ * Run-draft ids are random integers in 1 .. RUN_DRAFT_ID_MAX - 1. The ceiling
+ * keeps the run's draft lane clear of the compact-draft lane (the bridge's
+ * COMPACT_DRAFT_ID_BASE = 1_000_000 + seq) — a live compact stream may share
+ * the chat with the run's draft, so the ranges must never overlap.
+ */
+const RUN_DRAFT_ID_MAX = 1_000_000;
 const DRAFT_400_COOLDOWN_MS = 60_000;
 /** While a draft keeps failing, re-notify at most this often (dead channel ≠ silent one). */
 const DRAFT_FAIL_RENOTIFY_MS = 300_000;
@@ -423,19 +449,24 @@ export class Mirror {
   private log: LogBlock[] = [];
   private draftId = 0; // the run's live draft stream id (0 = no live draft)
   /**
-   * A RESET packet is pending for the run's draft id: the first send after a
-   * user Stop (or a "draft no longer exists" false) must go out with
-   * can_stop=false — that tells Telegram a fresh, non-stoppable generation
-   * phase is starting and clears the manual block on the id. A can_stop=true
-   * send to a just-stopped id is filtered out and renders nothing (field
-   * report 2026-10: the stable id 1 stayed invisible for the current AND all
-   * later runs until the block was cleared). Once the reset packet lands,
-   * can_stop=true resumes. Why the id itself stays stable (never a fresh id):
-   * clients do NOT reliably render a new per-run draft id (live-verified:
-   * per-run ids 1..7 were invisible while a probe on another id rendered) —
-   * that regression is exactly why this design uses one id per chat.
+   * The chat's current draft stream id — STABLE across runs (clients do not
+   * reliably follow a fresh per-run id — the live-verified regression that
+   * killed the per-run-id design, ids 1..7), but NOT a hardcoded constant:
+   * a random id is chosen on first spawn (0 = not chosen yet), i.e. fresh on
+   * every plugin load — so /reload alone escapes a stuck id. Why not reuse
+   * one constant id forever: a draft id the user STOPPED is silently
+   * filtered server-side (the API still returns success — wire-log verified
+   * 2026-10; a can_stop=false "reset packet" does NOT clear it — field
+   * tested), and the state survives reloads/restarts. The only recovery is a
+   * new id, so onDraftStopped / a false return rotate stableDraftId (the
+   * API-recommended "generate a new unique id per stopped_message_
+   * generation").
    */
-  private draftResetPending = false;
+  private stableDraftId = 0;
+  /** A brand-new draft stream id (see stableDraftId). */
+  private newDraftId(): number {
+    return Math.floor(Math.random() * RUN_DRAFT_ID_MAX) + 1; // 1 .. RUN_DRAFT_ID_MAX - 1
+  }
   /** The in-flight message's text — rendered between the log and the spinner. */
   private tail = "";
   private endKind: "clean" | "stop" | "error" | undefined;
@@ -589,40 +620,40 @@ export class Mirror {
 
   /**
    * Ensure the run's draft exists, spawning it when missing. false = nothing
-   * to spawn (no live run / mute level / chat not paired yet). STABLE draft
-   * id (always 1): one draft stream per chat. Clients follow a single draft
-   * per chat and do NOT reliably pick up a NEW id from a later run
-   * (live-verified: a per-run id 1..7 was invisible while a probe on a
-   * different id rendered) — that regression is why the id is stable. Reusing
-   * id 1 re-creates the draft and clients re-follow it (verified with a
-   * re-sent probe) — including after a user Stop, as long as the first send
-   * clears the stop state: draftResetPending → a can_stop=false reset packet
-   * (runDraftOnce); a plain can_stop=true send to a just-stopped id is
-   * filtered and renders nothing (field report 2026-10).
+   * to spawn (no live run / mute level / chat not paired yet). Uses the
+   * chat's stableDraftId — chosen (randomly) on first spawn, then stable
+   * across runs; a user stop / dead stream rotates it (onDraftStopped /
+   * runDraftOnce). See the stableDraftId field for the why.
    */
   private ensureDraft(): boolean {
     if (this.draftId !== 0) return true; // a draft is already live for this run — reuse it
     if (this.phase !== "work") return false;
     if (this.deps.cfg.level === "mute" || this.deps.getChatId() === undefined) return false;
-    this.draftId = 1;
+    if (this.stableDraftId === 0) this.stableDraftId = this.newDraftId(); // first spawn of this load: pick a fresh random id
+    this.draftId = this.stableDraftId;
     this.armHeartbeat();
     return true;
   }
 
   /**
    * The user pressed the NATIVE Stop button on the run's draft (the bridge,
-   * from the stopped_message_generation update's draft_id): Telegram now
-   * suppresses can_stop=true updates for that id until the stop state is
-   * handled. Arm the reset packet — the NEXT send to the run's draft goes out
-   * with can_stop=false (runDraftOnce), which clears the block; subsequent
-   * sends resume can_stop=true. The draft is NOT retired: the run is ending
-   * anyway (the bridge aborts it), and the next run re-arms the same id — the
-   * flag survives finalization until the reset packet lands. A foreign id
+   * from the stopped_message_generation update's draft_id): that id is now
+   * silently filtered server-side (the API still returns success — wire-log
+   * verified 2026-10) and the state survives reloads/restarts; a
+   * can_stop=false send does not clear it (field-tested). The ONLY recovery
+   * is a new id: rotate stableDraftId (the next spawn streams on the fresh
+   * id) and retire the live draft at once (no heartbeat re-sending the dead
+   * id) — the run is ending anyway (the bridge aborts it). A foreign id
    * (e.g. a stopped compact draft, 1_000_000 + seq) is a no-op.
    */
   onDraftStopped(stoppedId: number): void {
-    if (stoppedId !== 1) return; // only the run's draft (stable id 1) is ours
-    this.draftResetPending = true;
+    tgDebug(`draft-stopped id=${stoppedId} live=${this.draftId} stable=${this.stableDraftId}`); // TEMP
+    if (stoppedId !== this.draftId && stoppedId !== this.stableDraftId) return; // not our stream (e.g. the compact lane)
+    this.stableDraftId = this.newDraftId();
+    if (this.draftId === stoppedId) {
+      this.draftId = 0;
+      this.stopHeartbeat();
+    }
   }
 
   /**
@@ -1359,35 +1390,34 @@ export class Mirror {
     const chatId = this.deps.getChatId();
     if (chatId === undefined) return;
     try {
-      // Reset packet: after a user Stop (or a "no longer exists" false), the
-      // FIRST send to the id must go out can_stop=false — that clears
-      // Telegram's manual block on the id; a can_stop=true send is filtered
-      // out and renders nothing (field report 2026-10).
-      const effectiveCanStop = this.draftResetPending ? false : canStop;
-      const up = await out.sendDraft(chatId, draftId, content, effectiveCanStop, true /* keepOnStop: keep the draft when Stop is pressed */);
+      const up = await out.sendDraft(chatId, draftId, content, canStop, true /* keepOnStop: keep the draft when Stop is pressed */);
+      tgDebug(`draft-send id=${draftId} canStop=${canStop} result=${up}`); // TEMP
       if (!up) {
-        // The API says the draft no longer exists / the id is still blocked:
-        // arm the reset packet for the next attempt and count it as a failure
-        // (first + periodic notify — a dead channel must not be a silent one).
-        // The retry is paced by the heartbeat / next content event.
-        this.draftResetPending = true;
+        // The API says the draft no longer exists: that id's stream is dead.
+        // Rotate to a new stream for the next spawn (a dead id is never
+        // reused) and retire the live draft — the next content event (or the
+        // next run) re-spawns on the fresh id. Count it as a failure (first +
+        // periodic notify — a dead channel must not be a silent one).
+        if (draftId === this.draftId || draftId === this.stableDraftId) {
+          this.stableDraftId = this.newDraftId();
+          if (this.draftId === draftId) {
+            this.draftId = 0;
+            this.stopHeartbeat();
+          }
+        }
         this.draftFailStreak++;
         const first = this.draftFailStreak === 1;
         const due = this.deps.now() - this.draftLastFailNotifyAt >= DRAFT_FAIL_RENOTIFY_MS;
         if (first || due) {
           this.deps.notify?.(
             first
-              ? `draft stream ${draftId} blocked (API: draft no longer exists) — the next update retries with a can_stop=false reset`
-              : `draft stream ${draftId} still blocked (${this.draftFailStreak}×)`,
+              ? `draft stream ${draftId} is dead (API: draft no longer exists) — switching to a new stream`
+              : `draft updates still failing (${this.draftFailStreak}×)`,
             "error",
           );
           this.draftLastFailNotifyAt = this.deps.now();
         }
         return;
-      }
-      if (this.draftResetPending) {
-        this.draftResetPending = false; // the reset packet landed — can_stop=true resumes
-        this.deps.notify?.(`draft stream ${draftId} re-armed after stop (can_stop reset)`, "info");
       }
       this.nextDraftAt = this.deps.now() + cfg.streamEditMs;
       if (this.draftFailStreak > 0) {
@@ -1395,6 +1425,7 @@ export class Mirror {
         this.draftFailStreak = 0;
       }
     } catch (err) {
+      tgDebug(`draft-send id=${draftId} canStop=${canStop} err=${String(err).slice(0, 200)}`); // TEMP
       this.draftFailStreak++;
       if (err instanceof TgError && err.code === 400) {
         // Same content will 400 identically: long quiet cooldown (a content change / next turn re-triggers).
