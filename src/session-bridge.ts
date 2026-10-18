@@ -517,7 +517,9 @@ export class SessionBridge {
       { type: "paragraph", text: `🪙 tokens: ↑${fmtTokens(tokens.input)} ↓${fmtTokens(tokens.output)}` },
       // The session's cost — shown ONLY when something was actually spent
       // (local models report cost 0 → the card is unchanged for them).
-      ...(tokens.cost > 0 ? [{ type: "paragraph", text: `💲 cost: ${fmtUsd(tokens.cost)}` }] : []),
+      // (spread operands don't get the array's contextual type — annotate,
+      // or `type` widens to `string` and fails TgBlock's literal union)
+      ...(tokens.cost > 0 ? ([{ type: "paragraph", text: `💲 cost: ${fmtUsd(tokens.cost)}` }] as TgBlock[]) : []),
       { type: "paragraph", text: `📨 messages: ${pi.messageCount()}` },
     ];
     // Bounded by the probe's own short timeout; unavailable → lines omitted.
