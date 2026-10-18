@@ -9,7 +9,7 @@ import { escapeHtml } from "./markdown.ts";
 import { mdToBlocks, type TgBlock, type TgRichText } from "./rich-blocks.ts";
 import { formatGpuLines, type GpuStats } from "./gpu.ts";
 import { COMPACT_CANCELLED_MSG } from "./compact.ts";
-import { AUTO_COMPACT_STATUS, AUTO_COMPACT_DONE_TEXT, fmtTokens } from "./mirror.ts";
+import { AUTO_COMPACT_STATUS, AUTO_COMPACT_DONE_TEXT, fmtTokens, fmtUsd } from "./mirror.ts";
 import { mergeCommands, dispatchFor, actionForDecision, PICKER_BUTTON } from "./pi-commands.ts";
 import { BOT_COMMANDS } from "./bot-commands.ts";
 import { readFileSync } from "node:fs";
@@ -83,8 +83,8 @@ export interface TelegramPi {
   setThinkingLevel(level: PiThinkingLevel): void;
   contextUsage(): PiContextUsage | undefined;
   messageCount(): number;
-  /** The session's cumulative token usage (sum over its assistant messages). */
-  sessionUsage(): { input: number; output: number };
+  /** The session's cumulative usage (tokens over assistant messages; cost over all cost-bearing branch entries). */
+  sessionUsage(): { input: number; output: number; cost: number };
   listSessions(): Promise<PiSessionInfo[]>;
   currentSessionPath(): string;
   notifyUi(text: string, level?: "info" | "warning" | "error"): void;
@@ -515,6 +515,9 @@ export class SessionBridge {
       // mirror's bottom line uses) sit ABOVE the messages line. ALWAYS shown
       // — `↑0 ↓0` proves the wiring is live.
       { type: "paragraph", text: `🪙 tokens: ↑${fmtTokens(tokens.input)} ↓${fmtTokens(tokens.output)}` },
+      // The session's cost — shown ONLY when something was actually spent
+      // (local models report cost 0 → the card is unchanged for them).
+      ...(tokens.cost > 0 ? [{ type: "paragraph", text: `💲 cost: ${fmtUsd(tokens.cost)}` }] : []),
       { type: "paragraph", text: `📨 messages: ${pi.messageCount()}` },
     ];
     // Bounded by the probe's own short timeout; unavailable → lines omitted.

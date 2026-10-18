@@ -95,6 +95,60 @@ test("status: card format 📌/📁/🤖/📖/📨/🪙, plain session name, rou
   assert.equal(lines2[4], "🪙 tokens: ↑0 ↓0"); // no usage yet → zeros, still shown, above the messages line
 });
 
+test("status: 💲 cost line — only when cost > 0, right after the tokens line, adaptive precision", async () => {
+  // cost 0.4521 → 3-decimal band; sits between 🪙 tokens and 📨 messages
+  const pi = new FakePi({
+    cwd: "/proj",
+    model: { id: "m1", name: "Model One", provider: "p", reasoning: false },
+    sessionUsage: { input: 12500, output: 128000, cost: 0.4521 },
+  });
+  const out = new FakeOut();
+  await new SessionBridge(makeDeps(pi.build(), out)).dispatch({ kind: "status", chatId: 7 });
+  const lines = lastRichText(out).split("\n");
+  assert.deepEqual(lines, [
+    "📌 Untitled session — idle · 🔊 full",
+    "📁 dir: /proj",
+    "🤖 model: Model One · 🧠 thinking: default",
+    "📖 context: n/a",
+    "🪙 tokens: ↑12.5k ↓128k",
+    "💲 cost: $0.452",
+    "📨 messages: 0",
+  ]);
+
+  // cost 0 → the line is absent entirely (local-model card is unchanged)
+  const pi2 = new FakePi({ cwd: "/proj", sessionUsage: { input: 5, output: 6, cost: 0 } });
+  const out2 = new FakeOut();
+  await new SessionBridge(makeDeps(pi2.build(), out2)).dispatch({ kind: "status", chatId: 7 });
+  assert.ok(!lastRichText(out2).includes("💲"), "no cost line at $0");
+});
+
+test("status: 💲 cost line — only when cost > 0, right after the tokens line, adaptive precision", async () => {
+  // cost 0.4521 → 3-decimal band; sits between 🪙 tokens and 📨 messages
+  const pi = new FakePi({
+    cwd: "/proj",
+    model: { id: "m1", name: "Model One", provider: "p", reasoning: false },
+    sessionUsage: { input: 12500, output: 128000, cost: 0.4521 },
+  });
+  const out = new FakeOut();
+  await new SessionBridge(makeDeps(pi.build(), out)).dispatch({ kind: "status", chatId: 7 });
+  const lines = lastRichText(out).split("\n");
+  assert.deepEqual(lines, [
+    "📌 Untitled session — idle · 🔊 full",
+    "📁 dir: /proj",
+    "🤖 model: Model One · 🧠 thinking: default",
+    "📖 context: n/a",
+    "🪙 tokens: ↑12.5k ↓128k",
+    "💲 cost: $0.452",
+    "📨 messages: 0",
+  ]);
+
+  // cost 0 → the line is absent entirely (local-model card is unchanged)
+  const pi2 = new FakePi({ cwd: "/proj", sessionUsage: { input: 5, output: 6, cost: 0 } });
+  const out2 = new FakeOut();
+  await new SessionBridge(makeDeps(pi2.build(), out2)).dispatch({ kind: "status", chatId: 7 });
+  assert.ok(!lastRichText(out2).includes("💲"), "no cost line at $0");
+});
+
 test("status: 🔥 GPU line from probeGpu (single + multi); omitted when probe unavailable", async () => {
   const base = {
     cwd: "/proj",
