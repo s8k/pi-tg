@@ -77,25 +77,6 @@ import { RICH_CAP, DRAFT_TAIL_CAP, escapeHtml, toolArgsJson, extractWhy, chunkTe
 import { mdToBlocks, foldBlocks, tailBlocks, chunkBlocks, blocksToPlainText, blocksLen, blockCount, type TgBlock } from "./rich-blocks.ts";
 import { TgError } from "./telegram-client.ts";
 
-// ── TEMP field diagnostic (2026-10 draft-stop investigation) ─────────────────
-// Append-only wire log. One repro cycle answers: was the NEW code actually
-// loaded by /reload (module-load lines), did the stop update arrive with its
-// draft_id, what can_stop each draft send carried, and what the API returned
-// (true = accepted, false = "draft no longer exists", err = rejected).
-// Remove once the field behavior is confirmed.
-import { appendFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join as tgJoin } from "node:path";
-const TG_DEBUG_LOG = tgJoin(tmpdir(), "pi-tg-debug.log");
-function tgDebug(line: string): void {
-  try {
-    appendFileSync(TG_DEBUG_LOG, `${new Date().toISOString()} [${process.pid}] ${line}\n`);
-  } catch {
-    /* diagnostics must never break the mirror */
-  }
-}
-tgDebug("mirror-module-loaded");
-
 export interface MirrorMessage {
   role?: string;
   content?: unknown;
@@ -647,7 +628,6 @@ export class Mirror {
    * (e.g. a stopped compact draft, 1_000_000 + seq) is a no-op.
    */
   onDraftStopped(stoppedId: number): void {
-    tgDebug(`draft-stopped id=${stoppedId} live=${this.draftId} stable=${this.stableDraftId}`); // TEMP
     if (stoppedId !== this.draftId && stoppedId !== this.stableDraftId) return; // not our stream (e.g. the compact lane)
     this.stableDraftId = this.newDraftId();
     if (this.draftId === stoppedId) {
@@ -1391,7 +1371,6 @@ export class Mirror {
     if (chatId === undefined) return;
     try {
       const up = await out.sendDraft(chatId, draftId, content, canStop, true /* keepOnStop: keep the draft when Stop is pressed */);
-      tgDebug(`draft-send id=${draftId} canStop=${canStop} result=${up}`); // TEMP
       if (!up) {
         // The API says the draft no longer exists: that id's stream is dead.
         // Rotate to a new stream for the next spawn (a dead id is never
@@ -1425,7 +1404,6 @@ export class Mirror {
         this.draftFailStreak = 0;
       }
     } catch (err) {
-      tgDebug(`draft-send id=${draftId} canStop=${canStop} err=${String(err).slice(0, 200)}`); // TEMP
       this.draftFailStreak++;
       if (err instanceof TgError && err.code === 400) {
         // Same content will 400 identically: long quiet cooldown (a content change / next turn re-triggers).
