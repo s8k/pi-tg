@@ -94,6 +94,15 @@ export default function piTelegram(pi: ExtensionAPI): void {
   let autoCompactLane: "mirror" | "bridge" | undefined;
 
   const persist = async (): Promise<void> => {
+    // Sync the live state into cfg BEFORE saving: session_start rebuilds
+    // TelegramState from cfg (restoreSentIds/restoreSeenIds) — without this
+    // sync the sent ids are never actually persisted, and a session
+    // replacement (/new, switch) restores an empty list: "Clear chat"
+    // could only delete the messages sent AFTER the replacement.
+    if (state) {
+      cfg.sentMessageIds = state.sentIds();
+      cfg.seenUpdateIds = state.seenIds();
+    }
     await saveConfig(cfg, CFG);
   };
 

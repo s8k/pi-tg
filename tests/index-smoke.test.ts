@@ -11,7 +11,7 @@
 // importing index.ts).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { blocksToPlainText, type TgBlock } from "../src/rich-blocks.ts";
@@ -1045,4 +1045,87 @@ test("/tg:config: inline mode off → the TUI warning fires (event-driven, 2026-
   await tgConfigCommand.handler("123456:AAFAKEAAFAKEAAFAKEAAFAKE", cfgCtx); // <digits>:<20+ alnum>
   assert.ok(notices.some((n) => String(n.text).includes("INLINE MODE IS DISABLED") && n.level === "warning"), "the config-time warning fired");
   assert.ok(notices.some((n) => String(n.text).includes("token saved")), "the normal config notice still fires");
+});
+
+test("sent message ids persist to the config file (regression: /new's Clear must see the PRE-replacement messages, not just the post-/new ack+card)", async (t) => {
+  // The user's live bug: /new replaces the session → session_start rebuilds
+  // TelegramState from cfg.sentMessageIds — but persist() never synced the
+  // live state's ids into cfg, so the restore saw an empty list and "Clear"
+  // only deleted the messages sent AFTER the replacement.
+  const calls: (WireCall & { msgId?: number })[] = [];
+  let nextId = 1000;
+  let getUpdatesCount = 0;
+  const realFetch = globalThis.fetch;
+  t.after(() => (globalThis.fetch = realFetch));
+  globalThis.fetch = (async (url: string, init?: RequestInit): Promise<Response> => {
+    const method = String(url).split("/").pop() ?? "";
+    const body = (init?.body ? JSON.parse(String(init.body)) : {}) as Record<string, unknown>;
+    const blocks = (body.rich_message as { blocks?: unknown[] } | undefined)?.blocks;
+    const call: WireCall & { msgId?: number } = { method, body, markdown: blocks ? blocksToPlainText(blocks as TgBlock[]) : "" };
+    calls.push(call);
+    if (method === "getMe")
+      return new Response(JSON.stringify({ ok: true, result: { id: 1, is_bot: true, first_name: "Tg", username: "tgb" } }), { status: 200 });
+    if (method === "getUpdates") {
+      getUpdatesCount++;
+      if (getUpdatesCount === 1)
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            result: [
+              {
+                update_id: 1,
+                message: {
+                  message_id: 1,
+                  date: 1,
+                  chat: { id: 42, type: "private" },
+                  from: { id: 123456, is_bot: false, first_name: "O" },
+                  text: "hi",
+                },
+              },
+            ],
+          }),
+          { status: 200 },
+        );
+      return new Promise<Response>((_resolve, reject) => {
+        const sig = init?.signal;
+        const onAbort = () => reject(new DOMException("Aborted", "AbortError"));
+        if (sig) {
+          if (sig.aborted) onAbort();
+          else sig.addEventListener("abort", onAbort, { once: true });
+        }
+      });
+    }
+    if (method === "sendMessage" || method === "sendRichMessage") {
+      call.msgId = ++nextId;
+      return new Response(JSON.stringify({ ok: true, result: { message_id: call.msgId } }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ ok: true, result: true }), { status: 200 });
+  }) as typeof fetch;
+
+  handlers.get("session_start")!({}, fakeCtx);
+  await waitFor(() => getUpdatesCount >= 2, "owner chat learned");
+
+  // A clean run: the persistent finalization sends must be tracked AND persisted.
+  // The answer carries a UNIQUE marker so I can identify MY sends — other tests
+  // in this file share the module + globalThis.fetch and can leave in-flight
+  // sends that land in `calls` but were tracked to an older generation's state.
+  const MARKER = "persist-probe-7f3a";
+  handlers.get("agent_start")!();
+  await sleep(50);
+  handlers.get("message_start")!({ message: { role: "assistant", content: [] } });
+  handlers.get("message_end")!({ message: { role: "assistant", content: [{ type: "text", text: MARKER }], stopReason: "stop" } });
+  await waitFor(() => calls.some((c) => c.method === "sendRichMessage" && c.markdown.includes(MARKER)), "the answer's persistent send");
+
+  // Wait until every persistent send carrying MY marker is in the config file.
+  const persisted = (): number[] =>
+    (JSON.parse(readFileSync(join(agentDir, "pi-telegram.json"), "utf-8")) as { sentMessageIds?: number[] }).sentMessageIds ?? [];
+  await waitFor(() => {
+    const mine = calls.filter((c) => (c.method === "sendMessage" || c.method === "sendRichMessage") && c.markdown.includes(MARKER) && c.msgId !== undefined);
+    if (mine.length === 0) return false;
+    return mine.every((c) => persisted().includes(c.msgId!));
+  }, "my persistent sends' ids persisted to the config file");
+  const mine = calls.filter((c) => (c.method === "sendMessage" || c.method === "sendRichMessage") && c.markdown.includes(MARKER) && c.msgId !== undefined);
+  assert.ok(mine.length >= 1, "the bot sent at least one persistent message carrying my marker");
+  for (const c of mine)
+    assert.ok(persisted().includes(c.msgId!), `message id ${c.msgId} is in the persisted sentMessageIds (got ${JSON.stringify(persisted())})`);
 });
