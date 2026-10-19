@@ -182,13 +182,13 @@ test("status: 🔥 GPU line from probeGpu (single + multi); omitted when probe u
   assert.ok(lines[7].startsWith("🔥 GPU 1: 72°C"));
 });
 
-test("status: 🧮 sys line (CPU + RAM) as the LAST card line; omitted when probe unavailable", async () => {
+test("status: 📊 sys line (CPU + RAM) as the LAST card line; omitted when probe unavailable", async () => {
   const base = { cwd: "/proj" };
 
   // makeDeps default: probeSys → null → no sys line
   const out0 = new FakeOut();
   await new SessionBridge(makeDeps(new FakePi(base).build(), out0)).dispatch({ kind: "status", chatId: 7 });
-  assert.ok(!lastRichText(out0).includes("🧮"), "no sys line by default");
+  assert.ok(!lastRichText(out0).includes("📊"), "no sys line by default");
 
   // probe available → the line is the LAST card line (after the GPU line)
   const out1 = new FakeOut();
@@ -196,7 +196,7 @@ test("status: 🧮 sys line (CPU + RAM) as the LAST card line; omitted when prob
   deps1.probeSys = () => ({ cpuPct: 12, ramUsedGb: 24.4, ramTotalGb: 91.7 });
   await new SessionBridge(deps1).dispatch({ kind: "status", chatId: 7 });
   const lines = lastRichText(out1).split("\n");
-  assert.equal(lines[lines.length - 1], "🧮 CPU: 12% · 🧾 RAM: 24.4/91.7 GB");
+  assert.equal(lines[lines.length - 1], "📊 CPU: 12% · RAM: 24.4/91.7 GB");
 
   // GPU + sys together: GPU line first, sys line last
   const out2 = new FakeOut();
@@ -206,7 +206,7 @@ test("status: 🧮 sys line (CPU + RAM) as the LAST card line; omitted when prob
   await new SessionBridge(deps2).dispatch({ kind: "status", chatId: 7 });
   const l2 = lastRichText(out2).split("\n");
   assert.ok(l2[l2.length - 2]!.startsWith("🔥 GPU"), "GPU line before the sys line");
-  assert.equal(l2[l2.length - 1], "🧮 CPU: 12% · 🧾 RAM: 24.4/91.7 GB");
+  assert.equal(l2[l2.length - 1], "📊 CPU: 12% · RAM: 24.4/91.7 GB");
 });
 
 test("pair: sets ownerId, sends welcome + card + help", async () => {

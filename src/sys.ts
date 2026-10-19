@@ -116,15 +116,16 @@ export class SysSampler {
 }
 
 /**
- * Pure renderer: ONE card line, `🧮 CPU: 12% · 🧾 RAM: 24.4/91.7 GB`
+ * Pure renderer: ONE card line, `📊 CPU: 12% · RAM: 24.4/91.7 GB`
+ * (the RAM part carries no icon — deliberate, 2026-10-18).
  * (parts omitted when null; `null` when nothing is available — including
  * for a `null` stats input).
  */
 export function formatSysLine(s: SysStats | null): string | null {
   const parts: string[] = [];
   if (!s) return null;
-  if (s.cpuPct !== null) parts.push(`🧮 CPU: ${s.cpuPct}%`);
+  if (s.cpuPct !== null) parts.push(`📊 CPU: ${s.cpuPct}%`);
   if (s.ramUsedGb !== null && s.ramTotalGb !== null)
-    parts.push(`🧾 RAM: ${s.ramUsedGb.toFixed(1)}/${s.ramTotalGb.toFixed(1)} GB`);
+    parts.push(`RAM: ${s.ramUsedGb.toFixed(1)}/${s.ramTotalGb.toFixed(1)} GB`);
   return parts.length ? parts.join(" · ") : null;
 }

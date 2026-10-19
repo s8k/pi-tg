@@ -81,9 +81,9 @@ test("SysSampler: zero totalmem → RAM nulls; free>total clamps used to 0; prob
 
 test("formatSysLine: combined / single-part / none", () => {
   const full: SysStats = { cpuPct: 12, ramUsedGb: 24.4, ramTotalGb: 91.7 };
-  assert.equal(formatSysLine(full), "🧮 CPU: 12% · 🧾 RAM: 24.4/91.7 GB");
-  assert.equal(formatSysLine({ cpuPct: 12, ramUsedGb: null, ramTotalGb: null }), "🧮 CPU: 12%");
-  assert.equal(formatSysLine({ cpuPct: null, ramUsedGb: 24.4, ramTotalGb: 91.7 }), "🧾 RAM: 24.4/91.7 GB");
+  assert.equal(formatSysLine(full), "📊 CPU: 12% · RAM: 24.4/91.7 GB");
+  assert.equal(formatSysLine({ cpuPct: 12, ramUsedGb: null, ramTotalGb: null }), "📊 CPU: 12%");
+  assert.equal(formatSysLine({ cpuPct: null, ramUsedGb: 24.4, ramTotalGb: 91.7 }), "RAM: 24.4/91.7 GB");
   // a half-RAM (used without total) renders nothing for the RAM part
   assert.equal(formatSysLine({ cpuPct: null, ramUsedGb: 24.4, ramTotalGb: null }), null);
   assert.equal(formatSysLine({ cpuPct: null, ramUsedGb: null, ramTotalGb: null }), null);
