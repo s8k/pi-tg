@@ -53,7 +53,7 @@ Telegram (phone) ⇄ Bot API long polling ⇄ pi-tg (extension) ⇄ Pi harness
 3. Copy the **API token** (`123456789:AAH…`) — this is the `<bot_token>` below; treat it like a password
 4. *(optional)* Unlock the Pi commands picker feature: @BotFather → `/mybots` → *Bot Settings* → *Inline mode* → **Turn On**
 
-### From npm
+### Install from npm
 
 1. `pi install npm:pi-tg`
 2. Start Pi - the extension loads automatically
@@ -62,7 +62,7 @@ Telegram (phone) ⇄ Bot API long polling ⇄ pi-tg (extension) ⇄ Pi harness
 5. Phone: scan the QR → open the bot → `/start` → ✅ paired.
    From now on only your Telegram User ID is served.
 
-### From source (development)
+### Install from source (development)
 
 1. `git clone https://github.com/s8k/pi-tg.git`
 2. `npm install` in the repo
