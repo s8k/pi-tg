@@ -8,6 +8,7 @@ import { pairWelcomeBlocks, notAuthorizedBlocks } from "./onboarding.ts";
 import { escapeHtml } from "./markdown.ts";
 import { mdToBlocks, type TgBlock, type TgRichText } from "./rich-blocks.ts";
 import { formatGpuLines, type GpuStats } from "./gpu.ts";
+import { formatSysLine, type SysStats } from "./sys.ts";
 import { COMPACT_CANCELLED_MSG } from "./compact.ts";
 import { AUTO_COMPACT_STATUS, AUTO_COMPACT_DONE_TEXT, fmtTokens, fmtUsd } from "./mirror.ts";
 import { mergeCommands, dispatchFor, actionForDecision, PICKER_BUTTON } from "./pi-commands.ts";
@@ -142,6 +143,7 @@ export interface BridgeDeps {
   sleep: (ms: number) => Promise<void>;
   /** GPU probe for /status; bounded by its own short timeout; undefined = unavailable. */
   probeGpu: () => Promise<GpuStats[] | undefined>;
+  probeSys: () => SysStats | null;
   /**
    * T6 early draft: called synchronously when the owner's prompt is
    * dispatched, BEFORE pi's agent_start — the run's draft (spinner) appears
@@ -532,6 +534,9 @@ export class SessionBridge {
     // Bounded by the probe's own short timeout; unavailable → lines omitted.
     const gpus = await this.deps.probeGpu();
     if (gpus) for (const line of formatGpuLines(gpus)) blocks.push({ type: "paragraph", text: line });
+    // CPU + RAM (checked on each card render; never throws → nulls → omitted).
+    const sysLine = formatSysLine(this.deps.probeSys());
+    if (sysLine) blocks.push({ type: "paragraph", text: sysLine });
     return blocks;
   }
 

@@ -9,6 +9,7 @@ import { encodeInternal, parseInternal } from "./src/command-args.ts";
 import { TelegramState } from "./src/state.ts";
 import { SessionBridge, INLINE_MODE_OFF_WARNING } from "./src/session-bridge.ts";
 import { probeGpu } from "./src/gpu.ts";
+import { SysSampler } from "./src/sys.ts";
 import type { Out, TelegramPi } from "./src/session-bridge.ts";
 import { Mirror, compactTokenDetail } from "./src/mirror.ts";
 import type { MirrorMessage } from "./src/mirror.ts";
@@ -162,6 +163,8 @@ export default function piTelegram(pi: ExtensionAPI): void {
       getSessionCtx: () => sessionCtx,
       listSessions: listSessionsImpl,
     });
+    // Checked on every session-card render (on-demand delta — see src/sys.ts).
+    const sysSampler = new SysSampler();
     const deps = {
       pi: piAdapter,
       out: outAdapter,
@@ -171,6 +174,7 @@ export default function piTelegram(pi: ExtensionAPI): void {
       persist,
       sleep,
       probeGpu,
+      probeSys: () => sysSampler.sample(),
       dialogs,
       // T6 early draft: the run's draft (spinner) goes out when the prompt is
       // dispatched, before pi's agent_start.

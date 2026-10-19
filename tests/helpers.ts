@@ -27,6 +27,7 @@ export function makeDeps(pi: TelegramPi, out: FakeOut, cfg: Partial<TelegramConf
     persist: async () => {},
     sleep: async () => {},
     probeGpu: async () => undefined, // no GPU in tests unless a test overrides
+    probeSys: () => null, // no sys line in tests unless a test overrides
   };
 }
 
