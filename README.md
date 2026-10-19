@@ -58,9 +58,11 @@ Telegram (phone) ⇄ Bot API long polling ⇄ pi-tg (extension) ⇄ Pi harness
 1. `pi install npm:pi-tg`
 2. Start Pi - the extension loads automatically
 3. In the TUI: `/tg:config <bot_token>`
-4. `/tg:pair` → a QR widget appears
-5. Phone: scan the QR → open the bot → `/start` → ✅ paired.
+4. `/tg:pair` → a pairing selector appears: instructions, a clickable link, and the QR
+5. Phone: open the link or scan the QR → open the bot → `/start` → ✅ paired.
    From now on only your Telegram User ID is served.
+   The selector closes the moment you pair — or press `Esc` / choose **Cancel**
+   to dismiss it early.
 
 ### Install from source (development)
 
@@ -93,7 +95,7 @@ Telegram (phone) ⇄ Bot API long polling ⇄ pi-tg (extension) ⇄ Pi harness
 | Command | Action |
 |---|---|
 | `/tg:config <bot_token>` | save bot token, restart poller |
-| `/tg:pair` | show QR (only while unpaired) |
+| `/tg:pair` | show the pairing selector (instructions + link + QR; `Esc`/Cancel to dismiss, auto-closes on pair) |
 | `/tg:unpair` | unpair the phone (bot silent until a new `/start`) |
 
 All three appear in the TUI’s `/` completion list (type `/tg` and Tab).
@@ -247,7 +249,7 @@ enforces the rule mechanically.
 | `src/command-args.ts` | `/tg internal …` encode/parse (pure) |
 | `src/session-bridge.ts` | all phone-command logic behind the `TelegramPi` interface |
 | `src/mirror.ts` | Pi events → one blocks draft per turn (footer, 17 s heartbeat) + blocks→plain finalization |
-| `src/onboarding.ts` | QR rendering, token validation, pairing texts (pure) |
+| `src/onboarding.ts` | QR rendering, token validation, pairing selector title, pairing texts (pure) |
 | `src/state.ts` | per-instance state: offset, sent ids, list caches |
 | `src/wiring.ts` | `makeOut` / `makeTelegramPi` adapters (structural Pi mirrors) |
 

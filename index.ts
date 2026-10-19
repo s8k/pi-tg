@@ -14,7 +14,7 @@ import { probeGitBranch } from "./src/git.ts";
 import type { Out, TelegramPi } from "./src/session-bridge.ts";
 import { Mirror, compactTokenDetail } from "./src/mirror.ts";
 import type { MirrorMessage } from "./src/mirror.ts";
-import { renderQr, qrWidgetFactory, tokenLooksValid, notAuthorizedBlocks } from "./src/onboarding.ts";
+import { tokenLooksValid, notAuthorizedBlocks, buildPairingTitle } from "./src/onboarding.ts";
 import { makeOut, makeTelegramPi, ctxIsAlive, wrapWaitForIdle, installUiProxy } from "./src/wiring.ts";
 import { PendingDialogs } from "./src/ui-dialogs.ts";
 import { runTgCompaction } from "./src/compact.ts";
@@ -87,6 +87,13 @@ export default function piTelegram(pi: ExtensionAPI): void {
   let pollAbort: AbortController | undefined;
   let pollPromise: Promise<unknown> | undefined;
   let currentMirror: Mirror | undefined;
+  /**
+   * Aborts the open pairing selector (set while it is up, cleared when it
+   * settles). The bridge calls it to close the selector the moment a Telegram
+   * account pairs (abort ⇒ the select resolves undefined). Idempotent — a
+   * second call is a no-op.
+   */
+  let qrAbort: (() => void) | undefined;
   /** Mirrored TUI dialogs (one instance per polling generation). */
   let dialogs: PendingDialogs | undefined;
   // T6 auto-compact lane, chosen at session_before_compact (auto): where the
@@ -163,6 +170,12 @@ export default function piTelegram(pi: ExtensionAPI): void {
       getCmdCtx: () => cmdCtx,
       getSessionCtx: () => sessionCtx,
       listSessions: listSessionsImpl,
+      // The bridge calls this to close the pairing selector on pairing
+      // completion. qrAbort is set while the select is up and is idempotent, so
+      // a stale/absent selector (non-tui, already dismissed) is a safe no-op.
+      uiCloseQr: () => {
+        qrAbort?.();
+      },
     });
     // Checked on every session-card render (on-demand delta — see src/sys.ts).
     const sysSampler = new SysSampler();
@@ -388,11 +401,41 @@ export default function piTelegram(pi: ExtensionAPI): void {
     try {
       const me = await c.getMe();
       if (!ctxIsAlive(ctx)) return; // session replaced mid-flight → ctx is stale
-      const qr = renderQr(`https://t.me/${me.username}`);
-      if (ctx.mode === "tui" && ctx.hasUI) ctx.ui.setWidget("pi-tg-qr", qrWidgetFactory(qr)); // factory form: array form is capped at 10 lines
-      else ctx.ui.notify(`open https://t.me/${me.username} in Telegram`, "info");
+      const url = `https://t.me/${me.username}`;
+      if (ctx.mode === "tui" && ctx.hasUI) await showPairingSelect(ctx, url);
+      else ctx.ui.notify(`Pair: open ${url} in Telegram, then press Start.`, "info");
     } catch (err) {
       ui(`pi-tg: getMe failed: ${String(err)}`, "error");
+    }
+  }
+
+  /**
+   * Show the pairing UI as a TUI selector (ctx.ui.select). The title carries
+   * the instructions + clickable bot URL + QR; the options carry a real Cancel
+   * button. It stays up until the user picks Cancel, presses Esc, the session
+   * is replaced, or a Telegram account pairs (the bridge aborts it via
+   * qrAbort). select is TUI-only, so non-tui modes use the notify fallback in
+   * showQr.
+   */
+  async function showPairingSelect(ctx: ExtensionCommandContext, url: string): Promise<void> {
+    const controller = new AbortController();
+    let paired = false;
+    // The bridge calls this the instant pairing lands → abort the selector.
+    qrAbort = () => {
+      paired = true;
+      controller.abort();
+    };
+    try {
+      // Resolves "Cancel" (picked), undefined (Esc), or undefined (our abort
+      // on pairing). `paired` distinguishes the auto-close from a dismissal.
+      await ctx.ui.select(buildPairingTitle(url), ["Cancel"], { signal: controller.signal });
+      if (!paired) {
+        // Use the live ctx (this handler's ctx may be stale if the session was
+        // replaced while the selector was up).
+        ui("pi-tg: pairing QR dismissed. Run /tg:pair to show it again.", "info");
+      }
+    } finally {
+      qrAbort = undefined;
     }
   }
 
@@ -432,6 +475,8 @@ export default function piTelegram(pi: ExtensionAPI): void {
       ctx.ui.notify(`pi-tg: already paired with owner ${cfg.ownerId}. Run /tg:unpair to unpair.`, "info");
       return;
     }
+    // The QR is a dismissible overlay: it closes on Esc / click, when the
+    // session is replaced, or as soon as a Telegram account pairs.
     await showQr(ctx);
   }
 
@@ -505,6 +550,7 @@ export default function piTelegram(pi: ExtensionAPI): void {
     // fresh sessionCtx. See pi docs: “reestablish any in-memory state in session_start”.
     cmdCtx = undefined;
     autoCompactLane = undefined; // the old instance's lane choice is stale
+    qrAbort = undefined; // the old instance's pairing selector is gone — never abort it
     cfg = loadConfig(CFG);
     state = new TelegramState(cfg.lastOffset ?? 0);
     state.restoreSentIds(cfg.sentMessageIds ?? []);

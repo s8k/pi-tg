@@ -39,6 +39,7 @@ export class FakePi {
   /** Last customInstructions passed to compact (inline picker /compact <text>). */
   compactInstructions: string | undefined;
   uiNotices: { text: string; level?: "info" | "warning" | "error" }[] = [];
+  closeQrCalls = 0;
 
   constructor(opts: FakePiOptions = {}) {
     this.opts = opts;
@@ -91,6 +92,7 @@ export class FakePi {
       listSessions: async () => self.opts.sessions ?? [],
       currentSessionPath: () => self.opts.sessionPath ?? "/proj/current.jsonl",
       notifyUi: (text, level) => self.uiNotices.push({ text, level }),
+      closeQr: () => { self.closeQrCalls++; },
       shutdown: () => self.shutdownCalls++,
     };
     return impl;

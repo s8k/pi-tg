@@ -89,6 +89,11 @@ export interface TelegramPi {
   listSessions(): Promise<PiSessionInfo[]>;
   currentSessionPath(): string;
   notifyUi(text: string, level?: "info" | "warning" | "error"): void;
+  /**
+   * Close the pairing modal once pairing completes. No-op in non-TUI modes
+   * (where /tg:pair fell back to a plain notify) or when no modal is open.
+   */
+  closeQr(): void;
   shutdown(): void;
   /** Live resource commands (pi.getCommands) — inline command picker. */
   getCommands(): { name: string; description: string; source: "extension" | "prompt" | "skill" }[];
@@ -584,6 +589,9 @@ export class SessionBridge {
         cfg.ownerId = action.fromId;
         cfg.ownerChatId = action.chatId; // the /start chat is the owner's chat — persist it
         await this.deps.persist();
+        // The pairing QR has done its job — close the TUI modal (no-op in
+        // non-TUI modes, where /tg:pair fell back to a plain notify).
+        this.deps.pi.closeQr();
         await out.sendRich(action.chatId, pairWelcomeBlocks(this.deps.botUsername, action.fromId));
         await this.sendCardAndHelp(action.chatId);
         // Event-driven (2026-10-11): pairing completion is when "one thing

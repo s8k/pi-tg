@@ -181,6 +181,24 @@ test("makeTelegramPi: no ctx at all → safe defaults, no throw", () => {
   assert.deepEqual(t.allModels(), []);
 });
 
+test("makeTelegramPi: closeQr forwards to deps.uiCloseQr", () => {
+  let calls = 0;
+  const t = makeTelegramPi({
+    pi: {} as PiLike,
+    getCmdCtx: () => undefined,
+    getSessionCtx: () => undefined,
+    listSessions: async () => [],
+    uiCloseQr: () => { calls++; },
+  });
+  t.closeQr();
+  assert.equal(calls, 1);
+});
+
+test("makeTelegramPi: closeQr without deps.uiCloseQr is a safe no-op", () => {
+  const t = makeTelegramPi({ pi: {} as PiLike, getCmdCtx: () => undefined, getSessionCtx: () => undefined, listSessions: async () => [] });
+  assert.doesNotThrow(() => t.closeQr());
+});
+
 /**
  * Mimics a pi ctx after session replacement: pi invalidates the session’s
  * ExtensionRunner, so EVERY property/method access on a captured ctx throws.

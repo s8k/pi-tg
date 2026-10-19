@@ -110,6 +110,11 @@ export interface TelegramPiDeps {
   getCmdCtx(): CtxLike | undefined;
   getSessionCtx(): CtxLike | undefined;
   listSessions(cwd: string): Promise<PiSessionInfo[]>;
+  /**
+   * Close the pairing modal (index.ts resolves the open ctx.ui.custom promise).
+   * Idempotent — a no-op when no modal is open (non-tui, already dismissed).
+   */
+  uiCloseQr?: () => void;
 }
 
 /**
@@ -260,6 +265,9 @@ export function makeTelegramPi(deps: TelegramPiDeps): TelegramPi {
     currentSessionPath: () => ctx()?.sessionManager.getSessionFile() ?? "",
     notifyUi(text, level) {
       ctx()?.ui.notify(text, level ?? "info");
+    },
+    closeQr() {
+      deps.uiCloseQr?.();
     },
     shutdown: () => requireCtx().shutdown(),
   };

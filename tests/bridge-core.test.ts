@@ -243,6 +243,8 @@ test("pair: sets ownerId, sends welcome + card + help", async () => {
   assert.ok(texts[1].startsWith("📌 Untitled session — idle")); // the STATUS card (not the old session card)
   assert.ok(texts[1].includes("📨 messages:"));
   assert.ok(texts[2].includes("/help"));
+  // pairing completes → the TUI pairing modal is closed (no-op when none open)
+  assert.equal(pi.closeQrCalls, 1);
 });
 
 test("notAuthorized: different text paired vs unpaired", async () => {

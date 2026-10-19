@@ -2,40 +2,65 @@ import QRCode from "qrcode";
 import type { TgBlock, TgRichText } from "./rich-blocks.ts";
 
 /**
- * Terminal QR: matrix rendered as █/▁ with a 4-module quiet zone.
- * A t.me bot link needs 25×25 at ECC-L → ~33 chars wide. No ANSI escapes.
+ * Terminal QR rendered with half-size blocks, so each character encodes TWO
+ * stacked modules (top + bottom) and the code is ~half the height of a one-
+ * module-per-char render:
+ *   █  both cells dark      ▀  top only      ▄  bottom only      (space) neither
+ * Terminal cells are ~2:1 tall:wide, so the two sub-cells stay roughly square
+ * and the code still scans. A 4-module (4-char) horizontal quiet zone frames
+ * each row; a blank pad line caps the top and bottom. No ANSI escapes.
  */
 export function renderQr(text: string): string {
   const { modules } = QRCode.create(text, { errorCorrectionLevel: "L" });
   const size = modules.size;
+  const data = modules.data as Uint8Array;
+  const dark = (r: number, c: number): boolean =>
+    r >= 0 && r < size && data[r * size + c] === 1;
   const rows: string[] = [];
-  for (let r = 0; r < size; r++) {
-    let row = "    ";
-    for (let c = 0; c < size; c++) row += modules.data[r * size + c] ? "█" : "▁";
-    rows.push(row + "    ");
+  for (let y = 0; y < size; y += 2) {
+    let row = "    "; // 4-module quiet zone (left)
+    for (let c = 0; c < size; c++) {
+      const top = dark(y, c);
+      const bottom = dark(y + 1, c);
+      row += top && bottom ? "█" : top ? "▀" : bottom ? "▄" : " ";
+    }
+    rows.push(row + "    "); // 4-module quiet zone (right)
   }
   const pad = " ".repeat(size + 8);
   return pad + "\n" + rows.join("\n") + "\n" + pad;
 }
 
 /**
- * Structural subset of pi-tui's Component (render + invalidate).
- * pi's setWidget caps *string[]* content at 10 lines and appends
- * "... (widget truncated)" — a 25×25 QR is 27 lines, so the QR must be
- * passed as a component factory instead.
+ * OSC 8 hyperlink (https://spec.commonmark.org/en/latest/autolinks/ and the
+ * xterm OSC 8 spec): `ESC]8;;<url> BEL <text> ESC]8;; BEL`. pi's TUI renders
+ * these as clickable links ("OSC 8 links take precedence over enclosing click
+ * regions") and resets hyperlinks after each line, so each line must carry its
+ * own start/stop pair. The visible `text` stays the plain URL, so a terminal
+ * without OSC 8 support still shows a copyable address.
  */
-export interface QrWidgetComponent {
-  render(width: number): string[];
-  invalidate(): void;
+export function osc8Link(text: string, url: string): string {
+  return `\u001b]8;;${url}\u0007${text}\u001b]8;;\u0007`;
 }
 
-/** Component factory for ctx.ui.setWidget(key, factory) — renders the full QR, uncapped. */
-export function qrWidgetFactory(qr: string): (tui: unknown, theme: unknown) => QrWidgetComponent {
-  const lines = qr.split("\n");
-  return (_tui, _theme) => ({
-    render: () => lines,
-    invalidate: () => {},
-  });
+/**
+ * Build the pairing selector's title for a bot URL — a multi-line TUI dialog
+ * title (ctx.ui.select renders the title as multi-line text). Order is fixed by
+ * design: title → plain-English instructions → the clickable bot URL → the QR.
+ * The Cancel button is a select option, not part of the title. No emojis: the
+ * terminal QR is the visual anchor and plain text stays crisp across themes.
+ * The QR (from renderQr) already carries a blank quiet-zone row at its top and
+ * bottom, so it separates the link from the option list without extra spacers.
+ */
+export function buildPairingTitle(url: string): string {
+  return [
+    "Pair Pi with Telegram",
+    "",
+    "To pair, open the link below in Telegram (or scan the QR code).",
+    "Then press Start in the bot's chat.",
+    "",
+    osc8Link(url, url),
+    ...renderQr(url).split("\n"),
+  ].join("\n");
 }
 
 /** BotFather token shape: <digits>:<20+ alnum/-_>. Real validation is getMe() in the bridge. */
