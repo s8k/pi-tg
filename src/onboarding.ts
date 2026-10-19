@@ -82,7 +82,7 @@ export function notAuthorizedBlocks(alreadyPaired: boolean): TgBlock[] {
       type: "paragraph",
       text: alreadyPaired
         ? "🔒 Not authorized — this bot is paired with another account."
-        : "🔒 Not paired yet. Press the *Start* button in this chat — the first account to press it becomes the owner.",
+        : "🔒 Not paired yet. Press the /start button in this chat — the first account to press it becomes the owner.",
     },
   ];
 }

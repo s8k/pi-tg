@@ -251,7 +251,7 @@ test("notAuthorized: different text paired vs unpaired", async () => {
   const out = new FakeOut();
   await new SessionBridge(makeDeps(new FakePi().build(), out, { ownerId: undefined }))
     .dispatch({ kind: "notAuthorized", chatId: 1, fromId: 2 });
-  assert.ok(lastRichText(out).includes("Start"));
+  assert.ok(lastRichText(out).includes("/start"));
   const out2 = new FakeOut();
   await new SessionBridge(makeDeps(new FakePi().build(), out2)).dispatch({
     kind: "notAuthorized",

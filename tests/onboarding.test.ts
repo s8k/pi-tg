@@ -69,5 +69,5 @@ test("pairing texts", () => {
   assert.ok(richPlain(pairWelcomeBlocks("mybot", 42)).includes("t.me/mybot"));
   assert.ok(!richPlain(pairWelcomeBlocks(undefined, 42)).includes("t.me/undefined"));
   assert.ok(richPlain(notAuthorizedBlocks(true)).includes("another account"));
-  assert.ok(richPlain(notAuthorizedBlocks(false)).includes("Start"));
+  assert.ok(richPlain(notAuthorizedBlocks(false)).includes("/start"));
 });

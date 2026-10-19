@@ -446,7 +446,35 @@ export default function piTelegram(pi: ExtensionAPI): void {
       ctx.ui.notify("pi-tg: invalid token (expected <digits>:<alnum/ -_>, e.g. 123456:AAH…)", "error");
       return;
     }
+    // A different EFFECTIVE token = a DIFFERENT bot. The stored pairing
+    // (ownerId/ownerChatId) belongs to the previous bot and must not carry
+    // over: ownerId is the global Telegram user id (identical across bots),
+    // and the router authorizes EVERY update from it — so a stale pairing
+    // would let the new bot accept the old owner's account with no fresh
+    // /start. Re-saving the SAME token keeps the pairing intact.
+    const prevToken = getBotToken(cfg, CFG);
     cfg.botToken = token;
+    if (getBotToken(cfg, CFG) !== prevToken) {
+      // Pairing is bot-scoped: the new bot was never /start-ed, so the old
+      // owner (a global Telegram id the router trusts outright) must not carry
+      // over. Reset the pairing…
+      cfg.ownerId = undefined;
+      cfg.ownerChatId = undefined;
+      ownerChatId = undefined; // Mirror must stop posting to the stale chat
+      // …and the bot-scoped pollers. These are per-bot: getUpdates drops every
+      // update with update_id < offset, so a carried-over offset (from the old
+      // bot's sequence) DEAFs the new bot (its fresh ids are all below it).
+      // Reset the LIVE state (the poller reads it directly) AND cfg — persist()
+      // below re-syncs cfg.sent/seen from state, so cfg alone would be clobbered.
+      if (state) {
+        state.setOffset(0);
+        state.restoreSentIds([]);
+        state.restoreSeenIds([], 0);
+      }
+      cfg.lastOffset = undefined;
+      cfg.sentMessageIds = [];
+      cfg.seenUpdateIds = [];
+    }
     await persist();
     const old = pollPromise;
     stopping = true;
@@ -488,6 +516,14 @@ export default function piTelegram(pi: ExtensionAPI): void {
     cfg.ownerId = undefined;
     cfg.ownerChatId = undefined;
     ownerChatId = undefined; // Mirror must stop posting to the stale chat
+    // sentMessageIds are CHAT-scoped (message_id is per-chat; "Clear chat"
+    // deletes them against the current chatId). The chat is going away, so drop
+    // the ids — reset the LIVE tracker too, since persist() re-syncs
+    // cfg.sentMessageIds from it. (restoreSentIds, not drainSent: we are NOT
+    // deleting these messages, just resetting the record.) lastOffset/
+    // seenUpdateIds are bot-scoped and stay (same bot, same update stream).
+    if (state) state.restoreSentIds([]);
+    cfg.sentMessageIds = [];
     await persist();
     if (!ctxIsAlive(ctx)) return; // session replaced while persisting
     ctx.ui.notify("pi-tg: unpaired. Bot is silent until a new account presses /start (/tg:pair shows the QR).", "info");
