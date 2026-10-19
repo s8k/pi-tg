@@ -13,9 +13,13 @@
     "remote-control",
     "mobile"
   ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/s8k/pi-tg.git"
+  },
   "license": "MIT",
   "engines": {
-    "node": ">=24.21.0"
+    "node": ">=22.19.0"
   },
   "files": [
     "index.ts",
