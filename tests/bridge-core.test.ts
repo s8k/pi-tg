@@ -171,15 +171,15 @@ test("status: 🔥 GPU line from probeGpu (single + multi); omitted when probe u
   const deps1 = makeDeps(new FakePi(base).build(), out1);
   deps1.probeGpu = async () => [gpu];
   await new SessionBridge(deps1).dispatch({ kind: "status", chatId: 7 });
-  assert.equal(lastRichText(out1).split("\n")[6], "🔥 GPU: 67°C · 96% · 14.2/24.0 GB");
+  assert.equal(lastRichText(out1).split("\n")[6], "🔥 GPU: 96% · 67°C · 14.2/24.0 GB");
 
   const out2 = new FakeOut();
   const deps2 = makeDeps(new FakePi(base).build(), out2);
   deps2.probeGpu = async () => [gpu, { tempC: 72, utilPct: 50, memUsedGb: 8, memTotalGb: 24 }];
   await new SessionBridge(deps2).dispatch({ kind: "status", chatId: 7 });
   const lines = lastRichText(out2).split("\n");
-  assert.ok(lines[6].startsWith("🔥 GPU 0: 67°C"));
-  assert.ok(lines[7].startsWith("🔥 GPU 1: 72°C"));
+  assert.ok(lines[6].startsWith("🔥 GPU 0: 96%"));
+  assert.ok(lines[7].startsWith("🔥 GPU 1: 50%"));
 });
 
 test("status: 📊 sys line (CPU + RAM) as the LAST card line; omitted when probe unavailable", async () => {

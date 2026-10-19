@@ -33,11 +33,11 @@ test("parseGpuCsv: [N/A] fields → null; short/malformed rows skipped; never th
 
 test("formatGpuLines: single GPU, multi-GPU indexing, n/a parts, empty → []", () => {
   const one: GpuStats = { tempC: 67, utilPct: 96, memUsedGb: 14.19140625, memTotalGb: 24 };
-  assert.deepEqual(formatGpuLines([one]), ["🔥 GPU: 67°C · 96% · 14.2/24.0 GB"]);
+  assert.deepEqual(formatGpuLines([one]), ["🔥 GPU: 96% · 67°C · 14.2/24.0 GB"]);
   const multi = [one, { tempC: 72, utilPct: 50, memUsedGb: 8, memTotalGb: 24 }];
   const lines = formatGpuLines(multi);
-  assert.ok(lines[0].startsWith("🔥 GPU 0: 67°C"));
-  assert.ok(lines[1].startsWith("🔥 GPU 1: 72°C"));
+  assert.ok(lines[0].startsWith("🔥 GPU 0: 96%"));
+  assert.ok(lines[1].startsWith("🔥 GPU 1: 50%"));
   const partial: GpuStats = { tempC: null, utilPct: null, memUsedGb: null, memTotalGb: null };
   assert.deepEqual(formatGpuLines([partial]), ["🔥 GPU: n/a · n/a · n/a/n/a GB"]);
   assert.deepEqual(formatGpuLines([]), []);
