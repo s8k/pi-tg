@@ -144,6 +144,8 @@ export interface BridgeDeps {
   /** GPU probe for /status; bounded by its own short timeout; undefined = unavailable. */
   probeGpu: () => Promise<GpuStats[] | undefined>;
   probeSys: () => SysStats | null;
+  /** The session cwd's git branch (`` when undetermined → line omitted). */
+  probeBranch: (cwd: string) => Promise<string | undefined>;
   /**
    * T6 early draft: called synchronously when the owner's prompt is
    * dispatched, BEFORE pi's agent_start — the run's draft (spinner) appears
@@ -518,6 +520,13 @@ export class SessionBridge {
       // entity data — the session name / cwd are NEVER parsed or escaped
       { type: "paragraph", text: ["📌 ", name, ` — ${pi.isIdle() ? "idle" : "busy"} · ${LEVEL_BADGES[cfg.level]}`] },
       { type: "paragraph", text: ["📁 dir: ", { type: "code", text: pi.cwd }] },
+    ];
+    // The cwd's git branch — directly UNDER the dir line; undetermined
+    // (no git, not a repo, timeout) → the line is omitted. Bounded by the
+    // probe's own short timeout; never throws.
+    const branch = await this.deps.probeBranch(pi.cwd);
+    if (branch) blocks.push({ type: "paragraph", text: `🌿 branch: ${branch}` });
+    blocks.push(
       { type: "paragraph", text: `🤖 model: ${model?.name ?? "n/a"} · 🧠 thinking: ${pi.currentThinking() ?? "default"}` },
       { type: "paragraph", text: `📖 context: ${usage?.percent != null ? `${Math.round(usage.percent)}%` : "n/a"}${usage?.tokens != null ? ` (${usage.tokens}/${usage.contextWindow})` : ""}` },
       // The session's cumulative tokens (same ` ↑<in> ↓<out>` display the
@@ -530,7 +539,7 @@ export class SessionBridge {
       // or `type` widens to `string` and fails TgBlock's literal union)
       ...(tokens.cost > 0 ? ([{ type: "paragraph", text: `💲 cost: ${fmtUsd(tokens.cost)}` }] as TgBlock[]) : []),
       { type: "paragraph", text: `📨 messages: ${pi.messageCount()}` },
-    ];
+    );
     // Bounded by the probe's own short timeout; unavailable → lines omitted.
     const gpus = await this.deps.probeGpu();
     if (gpus) for (const line of formatGpuLines(gpus)) blocks.push({ type: "paragraph", text: line });

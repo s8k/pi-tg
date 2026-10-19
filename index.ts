@@ -10,6 +10,7 @@ import { TelegramState } from "./src/state.ts";
 import { SessionBridge, INLINE_MODE_OFF_WARNING } from "./src/session-bridge.ts";
 import { probeGpu } from "./src/gpu.ts";
 import { SysSampler } from "./src/sys.ts";
+import { probeGitBranch } from "./src/git.ts";
 import type { Out, TelegramPi } from "./src/session-bridge.ts";
 import { Mirror, compactTokenDetail } from "./src/mirror.ts";
 import type { MirrorMessage } from "./src/mirror.ts";
@@ -175,6 +176,7 @@ export default function piTelegram(pi: ExtensionAPI): void {
       sleep,
       probeGpu,
       probeSys: () => sysSampler.sample(),
+      probeBranch: (cwd: string) => probeGitBranch(cwd),
       dialogs,
       // T6 early draft: the run's draft (spinner) goes out when the prompt is
       // dispatched, before pi's agent_start.

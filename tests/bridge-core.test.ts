@@ -209,6 +209,27 @@ test("status: 📊 sys line (CPU + RAM) as the LAST card line; omitted when prob
   assert.equal(l2[l2.length - 1], "📊 CPU: 12% · RAM: 24.4/91.7 GB");
 });
 
+test("status: 🌿 branch line directly UNDER the dir line; omitted when the probe finds nothing", async () => {
+  const base = { cwd: "/proj" };
+
+  // makeDeps default: probeBranch → undefined → no branch line (6 base lines)
+  const out0 = new FakeOut();
+  await new SessionBridge(makeDeps(new FakePi(base).build(), out0)).dispatch({ kind: "status", chatId: 7 });
+  const l0 = lastRichText(out0).split("\n");
+  assert.equal(l0.length, 6);
+  assert.ok(!l0.some((l) => l.includes("🌿")), "no branch line by default");
+
+  // probe available → the line sits right under the dir line
+  const out1 = new FakeOut();
+  const deps1 = makeDeps(new FakePi(base).build(), out1);
+  deps1.probeBranch = async (cwd) => (cwd === "/proj" ? "feat/session-cost-card" : undefined);
+  await new SessionBridge(deps1).dispatch({ kind: "status", chatId: 7 });
+  const l1 = lastRichText(out1).split("\n");
+  assert.ok(l1[1]!.startsWith("📁 dir: "), "line 1 is the dir line");
+  assert.equal(l1[2], "🌿 branch: feat/session-cost-card", "line 2 is the branch line");
+  assert.ok(l1[3]!.startsWith("🤖 model:"), "the rest of the card follows");
+});
+
 test("pair: sets ownerId, sends welcome + card + help", async () => {
   const pi = new FakePi();
   const out = new FakeOut();
