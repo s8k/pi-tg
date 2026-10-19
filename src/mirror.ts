@@ -167,6 +167,15 @@ export function fmtTokens(n: number): string {
 }
 
 /**
+ * USD amount for the session card's cost line (adaptive precision — the
+ * line is only shown for cost > 0, so this never renders a misleading
+ * $0.00 for a visible line): `$1.23` ≥ $1, `$0.452` ≥ $0.01, `$0.0045` below.
+ */
+export function fmtUsd(n: number): string {
+  return n >= 1 ? `$${n.toFixed(2)}` : n >= 0.01 ? `$${n.toFixed(3)}` : `$${n.toFixed(4)}`;
+}
+
+/**
  * The detail of a compact success string, shared by the manual and auto
  * lanes: `105,414 → 32,876 tokens` (before + after) or `105,414 tokens`
  * (before only — the auto lane falls back to this when the post-compact
@@ -356,6 +365,13 @@ export const AUTO_COMPACT_STATUS = "🗜 Auto-compacting…";
 export const AUTO_COMPACT_DONE_TEXT = "🗜 Context auto-compacted ✔️";
 
 /** A 400 means this content is unparseable — quiet long cooldown; the same content cannot heal. */
+/**
+ * Run-draft ids are random integers in 1 .. RUN_DRAFT_ID_MAX - 1. The ceiling
+ * keeps the run's draft lane clear of the compact-draft lane (the bridge's
+ * COMPACT_DRAFT_ID_BASE = 1_000_000 + seq) — a live compact stream may share
+ * the chat with the run's draft, so the ranges must never overlap.
+ */
+const RUN_DRAFT_ID_MAX = 1_000_000;
 const DRAFT_400_COOLDOWN_MS = 60_000;
 /** While a draft keeps failing, re-notify at most this often (dead channel ≠ silent one). */
 const DRAFT_FAIL_RENOTIFY_MS = 300_000;
@@ -412,7 +428,26 @@ export class Mirror {
   private phase: "work" | "finalized" = "finalized"; // one-way switch
   // the single draft's content: work log + in-flight tail + bottom line
   private log: LogBlock[] = [];
-  private draftId = 0; // the run's single draft id
+  private draftId = 0; // the run's live draft stream id (0 = no live draft)
+  /**
+   * The chat's current draft stream id — STABLE across runs (clients do not
+   * reliably follow a fresh per-run id — the live-verified regression that
+   * killed the per-run-id design, ids 1..7), but NOT a hardcoded constant:
+   * a random id is chosen on first spawn (0 = not chosen yet), i.e. fresh on
+   * every plugin load — so /reload alone escapes a stuck id. Why not reuse
+   * one constant id forever: a draft id the user STOPPED is silently
+   * filtered server-side (the API still returns success — wire-log verified
+   * 2026-10; a can_stop=false "reset packet" does NOT clear it — field
+   * tested), and the state survives reloads/restarts. The only recovery is a
+   * new id, so onDraftStopped / a false return rotate stableDraftId (the
+   * API-recommended "generate a new unique id per stopped_message_
+   * generation").
+   */
+  private stableDraftId = 0;
+  /** A brand-new draft stream id (see stableDraftId). */
+  private newDraftId(): number {
+    return Math.floor(Math.random() * RUN_DRAFT_ID_MAX) + 1; // 1 .. RUN_DRAFT_ID_MAX - 1
+  }
   /** The in-flight message's text — rendered between the log and the spinner. */
   private tail = "";
   private endKind: "clean" | "stop" | "error" | undefined;
@@ -566,23 +601,39 @@ export class Mirror {
 
   /**
    * Ensure the run's draft exists, spawning it when missing. false = nothing
-   * to spawn (no live run / mute level / chat not paired yet). STABLE draft
-   * id (always 1): one draft stream per chat. Telegram clients follow a
-   * single draft per chat and do not reliably pick up a NEW draft id from a
-   * later run (live-verified: a per-run id 1..7 was invisible while a probe
-   * on a different id rendered). Reusing id 1 re-creates the draft — clients
-   * re-follow it (verified with a re-sent probe). Also the post-dialog
-   * re-spawn path: pauseForDialog retires the draft, and the next content
-   * event's requestUpdate re-spawns it — the fresh draft lands BELOW the
-   * stamped dialog (live-verified on PC + Android, probe 2026-09-27).
+   * to spawn (no live run / mute level / chat not paired yet). Uses the
+   * chat's stableDraftId — chosen (randomly) on first spawn, then stable
+   * across runs; a user stop / dead stream rotates it (onDraftStopped /
+   * runDraftOnce). See the stableDraftId field for the why.
    */
   private ensureDraft(): boolean {
     if (this.draftId !== 0) return true; // a draft is already live for this run — reuse it
     if (this.phase !== "work") return false;
     if (this.deps.cfg.level === "mute" || this.deps.getChatId() === undefined) return false;
-    this.draftId = 1;
+    if (this.stableDraftId === 0) this.stableDraftId = this.newDraftId(); // first spawn of this load: pick a fresh random id
+    this.draftId = this.stableDraftId;
     this.armHeartbeat();
     return true;
+  }
+
+  /**
+   * The user pressed the NATIVE Stop button on the run's draft (the bridge,
+   * from the stopped_message_generation update's draft_id): that id is now
+   * silently filtered server-side (the API still returns success — wire-log
+   * verified 2026-10) and the state survives reloads/restarts; a
+   * can_stop=false send does not clear it (field-tested). The ONLY recovery
+   * is a new id: rotate stableDraftId (the next spawn streams on the fresh
+   * id) and retire the live draft at once (no heartbeat re-sending the dead
+   * id) — the run is ending anyway (the bridge aborts it). A foreign id
+   * (e.g. a stopped compact draft, 1_000_000 + seq) is a no-op.
+   */
+  onDraftStopped(stoppedId: number): void {
+    if (stoppedId !== this.draftId && stoppedId !== this.stableDraftId) return; // not our stream (e.g. the compact lane)
+    this.stableDraftId = this.newDraftId();
+    if (this.draftId === stoppedId) {
+      this.draftId = 0;
+      this.stopHeartbeat();
+    }
   }
 
   /**
@@ -1319,7 +1370,34 @@ export class Mirror {
     const chatId = this.deps.getChatId();
     if (chatId === undefined) return;
     try {
-      await out.sendDraft(chatId, draftId, content, canStop, true /* keepOnStop: keep the draft when Stop is pressed */);
+      const up = await out.sendDraft(chatId, draftId, content, canStop, true /* keepOnStop: keep the draft when Stop is pressed */);
+      if (!up) {
+        // The API says the draft no longer exists: that id's stream is dead.
+        // Rotate to a new stream for the next spawn (a dead id is never
+        // reused) and retire the live draft — the next content event (or the
+        // next run) re-spawns on the fresh id. Count it as a failure (first +
+        // periodic notify — a dead channel must not be a silent one).
+        if (draftId === this.draftId || draftId === this.stableDraftId) {
+          this.stableDraftId = this.newDraftId();
+          if (this.draftId === draftId) {
+            this.draftId = 0;
+            this.stopHeartbeat();
+          }
+        }
+        this.draftFailStreak++;
+        const first = this.draftFailStreak === 1;
+        const due = this.deps.now() - this.draftLastFailNotifyAt >= DRAFT_FAIL_RENOTIFY_MS;
+        if (first || due) {
+          this.deps.notify?.(
+            first
+              ? `draft stream ${draftId} is dead (API: draft no longer exists) — switching to a new stream`
+              : `draft updates still failing (${this.draftFailStreak}×)`,
+            "error",
+          );
+          this.draftLastFailNotifyAt = this.deps.now();
+        }
+        return;
+      }
       this.nextDraftAt = this.deps.now() + cfg.streamEditMs;
       if (this.draftFailStreak > 0) {
         this.deps.notify?.(`draft updates recovered after ${this.draftFailStreak} failure(s)`, "info");

@@ -1,6 +1,8 @@
 import type { TgAction } from "./router.ts";
 
-const PLAIN = new Set(["start", "help", "new", "sessions", "modelList", "thinkingList", "status", "stop", "level_mute", "level_minimal", "level_full", "reload", "killAsk"]);
+// NB: "stop" is NOT plain — the native Stop carries the stopped draft's id
+// (draftId) so the mirror can arm its can_stop=false reset packet.
+const PLAIN = new Set(["start", "help", "new", "sessions", "modelList", "thinkingList", "status", "level_mute", "level_minimal", "level_full", "reload", "killAsk"]);
 /** Single-token kinds (inline picker): the token is validated on parse. */
 const TOKEN = new Set(["cmdTerminal"]);
 const INDEX = new Set(["sessionActivate", "modelSet", "thinkingSet"]);
@@ -47,6 +49,8 @@ export function encodeInternal(action: TgAction): string | null {
       return action.instructions !== undefined
         ? `internal compact ${action.chatId} ${JSON.stringify(action.instructions)}`
         : `internal compact ${action.chatId}`;
+    case "stop":
+      return action.draftId !== undefined ? `internal stop ${action.chatId} ${action.draftId}` : `internal stop ${action.chatId}`;
     default: {
       const a = action as { kind: string; chatId: number; index?: number };
       return `internal ${a.kind} ${a.chatId}${INDEX.has(a.kind) ? ` ${a.index}` : ""}`;
@@ -74,6 +78,14 @@ export function parseInternal(args: string): TgAction | null {
     return { kind: kind as "cmdRun" | "cmdTerminal", chatId, ...(kind === "cmdRun" ? { nonce: rest } : { name: rest }) } as TgAction;
   }
   switch (kind) {
+    case "stop": {
+      // The native Stop carries the stopped draft's id (the mirror arms its
+      // can_stop=false reset packet for it); a typed /stop carries none.
+      if (!rest) return { kind: "stop", chatId };
+      const d = Number(rest);
+      if (!Number.isInteger(d) || d <= 0) return null;
+      return { kind: "stop", chatId, draftId: d };
+    }
     case "pair": {
       const fromId = Number(rest);
       if (!Number.isInteger(fromId) || fromId <= 0) return null;

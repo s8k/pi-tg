@@ -318,7 +318,27 @@ test("makeTelegramPi: sessionUsage sums assistant usage across the session branc
     },
   });
   const t = makeTelegramPi({ pi: {} as PiLike, getCmdCtx: () => ctx, getSessionCtx: () => undefined, listSessions: async () => [] });
-  assert.deepEqual(t.sessionUsage(), { input: 150, output: 275 });
+  assert.deepEqual(t.sessionUsage(), { input: 150, output: 275, cost: 0 });
+});
+
+test("makeTelegramPi: sessionUsage sums cost over assistant + usage + compaction/branch-summary entries (branch scope)", () => {
+  const ctx = makeFakeCtx({
+    sessionManager: {
+      getSessionFile: () => "/proj/s.jsonl",
+      getSessionName: () => undefined,
+      getBranch: () => [
+        { type: "message", message: { role: "user", content: "hi" } },
+        { type: "message", message: { role: "assistant", usage: { input: 100, output: 200, cost: { total: 0.1 } } } },
+        { type: "message", message: { role: "assistant", usage: { input: 50, output: 75 } } }, // local model — no cost field
+        { type: "usage", kind: "cache_warm", usage: { input: 0, output: 0, totalTokens: 50000, cost: { total: 0.015 } } },
+        { type: "compaction", usage: { input: 10, output: 20, cost: { total: 0.005 } } },
+        { type: "branch_summary", usage: { cost: { total: 0.001 } } },
+        { type: "usage", kind: "mystery-kind", usage: { cost: { total: 0.004 } } }, // unknown kinds count (docs)
+      ],
+    },
+  });
+  const t = makeTelegramPi({ pi: {} as PiLike, getCmdCtx: () => ctx, getSessionCtx: () => undefined, listSessions: async () => [] });
+  assert.deepEqual(t.sessionUsage(), { input: 150, output: 275, cost: 0.125 });
 });
 
 // ── TUI dialog mirroring (Option A): installUiProxy ─────────────────────────

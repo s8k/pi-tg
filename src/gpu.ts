@@ -56,8 +56,8 @@ export function formatGpuLines(stats: GpuStats[]): string[] {
   return stats.map(
     (s, i) =>
       `🔥 GPU${multi ? ` ${i}` : ""}: ` +
-      `${s.tempC !== null ? `${s.tempC}°C` : "n/a"} · ` +
       `${s.utilPct !== null ? `${s.utilPct}%` : "n/a"} · ` +
+      `${s.tempC !== null ? `${s.tempC}°C` : "n/a"} · ` +
       `${gb(s.memUsedGb)}/${gb(s.memTotalGb)} GB`,
   );
 }

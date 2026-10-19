@@ -234,17 +234,27 @@ export function makeTelegramPi(deps: TelegramPiDeps): TelegramPi {
     // The session's cumulative tokens (the card's ` ↑<in> ↓<out>`): the FULL
     // branch (getBranch is not compaction-aware — every assistant message of
     // the session's life counts, like messageCount), assistant role only.
+    // Cost = ALL cost-bearing entries on the branch (assistant messages +
+    // `usage` entries of any kind + compaction/branch-summary generation) —
+    // exact for the session being viewed, same branch scope as the tokens.
     sessionUsage: () => {
       let input = 0;
       let output = 0;
+      let cost = 0;
       for (const e of ctx()?.sessionManager.getBranch() ?? []) {
-        if (e.type !== "message") continue;
-        const m = e.message as { role?: string; usage?: { input?: number; output?: number } } | undefined;
-        if (m?.role !== "assistant") continue;
-        input += m.usage?.input ?? 0;
-        output += m.usage?.output ?? 0;
+        if (e.type === "message") {
+          const m = e.message as
+            | { role?: string; usage?: { input?: number; output?: number; cost?: { total?: number } } }
+            | undefined;
+          if (m?.role !== "assistant") continue;
+          input += m.usage?.input ?? 0;
+          output += m.usage?.output ?? 0;
+          cost += m.usage?.cost?.total ?? 0;
+        } else if (e.type === "usage" || e.type === "compaction" || e.type === "branch_summary") {
+          cost += (e as { usage?: { cost?: { total?: number } } }).usage?.cost?.total ?? 0;
+        }
       }
-      return { input, output };
+      return { input, output, cost };
     },
     listSessions: () => deps.listSessions(ctx()?.cwd ?? ""),
     currentSessionPath: () => ctx()?.sessionManager.getSessionFile() ?? "",
