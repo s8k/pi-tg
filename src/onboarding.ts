@@ -56,7 +56,7 @@ export function buildPairingTitle(url: string): string {
     "Pair Pi with Telegram",
     "",
     "To pair, open the link below in Telegram (or scan the QR code).",
-    "Then press Start in the bot's chat.",
+    "Then press Start (or send /start) in the bot's chat.",
     "",
     osc8Link(url, url),
     ...renderQr(url).split("\n"),
