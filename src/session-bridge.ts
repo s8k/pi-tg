@@ -8,8 +8,9 @@ import { pairWelcomeBlocks, notAuthorizedBlocks } from "./onboarding.ts";
 import { escapeHtml } from "./markdown.ts";
 import { mdToBlocks, type TgBlock, type TgRichText } from "./rich-blocks.ts";
 import { formatGpuLines, type GpuStats } from "./gpu.ts";
+import { formatSysLine, type SysStats } from "./sys.ts";
 import { COMPACT_CANCELLED_MSG } from "./compact.ts";
-import { AUTO_COMPACT_STATUS, AUTO_COMPACT_DONE_TEXT, fmtTokens } from "./mirror.ts";
+import { AUTO_COMPACT_STATUS, AUTO_COMPACT_DONE_TEXT, fmtTokens, fmtUsd } from "./mirror.ts";
 import { mergeCommands, dispatchFor, actionForDecision, PICKER_BUTTON } from "./pi-commands.ts";
 import { BOT_COMMANDS } from "./bot-commands.ts";
 import { readFileSync } from "node:fs";
@@ -83,11 +84,16 @@ export interface TelegramPi {
   setThinkingLevel(level: PiThinkingLevel): void;
   contextUsage(): PiContextUsage | undefined;
   messageCount(): number;
-  /** The session's cumulative token usage (sum over its assistant messages). */
-  sessionUsage(): { input: number; output: number };
+  /** The session's cumulative usage (tokens over assistant messages; cost over all cost-bearing branch entries). */
+  sessionUsage(): { input: number; output: number; cost: number };
   listSessions(): Promise<PiSessionInfo[]>;
   currentSessionPath(): string;
   notifyUi(text: string, level?: "info" | "warning" | "error"): void;
+  /**
+   * Close the pairing modal once pairing completes. No-op in non-TUI modes
+   * (where /tg:pair fell back to a plain notify) or when no modal is open.
+   */
+  closeQr(): void;
   shutdown(): void;
   /** Live resource commands (pi.getCommands) — inline command picker. */
   getCommands(): { name: string; description: string; source: "extension" | "prompt" | "skill" }[];
@@ -142,6 +148,9 @@ export interface BridgeDeps {
   sleep: (ms: number) => Promise<void>;
   /** GPU probe for /status; bounded by its own short timeout; undefined = unavailable. */
   probeGpu: () => Promise<GpuStats[] | undefined>;
+  probeSys: () => SysStats | null;
+  /** The session cwd's git branch (`` when undetermined → line omitted). */
+  probeBranch: (cwd: string) => Promise<string | undefined>;
   /**
    * T6 early draft: called synchronously when the owner's prompt is
    * dispatched, BEFORE pi's agent_start — the run's draft (spinner) appears
@@ -149,6 +158,13 @@ export interface BridgeDeps {
    * that don't exercise the early draft leave it unset).
    */
   onPromptAccepted?: () => void;
+  /**
+   * The user pressed the native Stop on the RUN'S draft (stopped_message_
+   * generation's draft_id): the mirror arms its can_stop=false reset packet
+   * so the next send to the (suppressed) draft id renders again. index.ts
+   * wires it to the current mirror; optional (tests leave it unset).
+   */
+  onDraftStopped?: (draftId: number) => void;
   /** Dialog mirroring host (absent when mirrorDialogs is off or tests don't exercise it). */
   dialogs?: DialogsPort;
 }
@@ -509,17 +525,32 @@ export class SessionBridge {
       // entity data — the session name / cwd are NEVER parsed or escaped
       { type: "paragraph", text: ["📌 ", name, ` — ${pi.isIdle() ? "idle" : "busy"} · ${LEVEL_BADGES[cfg.level]}`] },
       { type: "paragraph", text: ["📁 dir: ", { type: "code", text: pi.cwd }] },
+    ];
+    // The cwd's git branch — directly UNDER the dir line; undetermined
+    // (no git, not a repo, timeout) → the line is omitted. Bounded by the
+    // probe's own short timeout; never throws.
+    const branch = await this.deps.probeBranch(pi.cwd);
+    if (branch) blocks.push({ type: "paragraph", text: `🌿 branch: ${branch}` });
+    blocks.push(
       { type: "paragraph", text: `🤖 model: ${model?.name ?? "n/a"} · 🧠 thinking: ${pi.currentThinking() ?? "default"}` },
       { type: "paragraph", text: `📖 context: ${usage?.percent != null ? `${Math.round(usage.percent)}%` : "n/a"}${usage?.tokens != null ? ` (${usage.tokens}/${usage.contextWindow})` : ""}` },
       // The session's cumulative tokens (same ` ↑<in> ↓<out>` display the
       // mirror's bottom line uses) sit ABOVE the messages line. ALWAYS shown
       // — `↑0 ↓0` proves the wiring is live.
       { type: "paragraph", text: `🪙 tokens: ↑${fmtTokens(tokens.input)} ↓${fmtTokens(tokens.output)}` },
+      // The session's cost — shown ONLY when something was actually spent
+      // (local models report cost 0 → the card is unchanged for them).
+      // (spread operands don't get the array's contextual type — annotate,
+      // or `type` widens to `string` and fails TgBlock's literal union)
+      ...(tokens.cost > 0 ? ([{ type: "paragraph", text: `💲 cost: ${fmtUsd(tokens.cost)}` }] as TgBlock[]) : []),
       { type: "paragraph", text: `📨 messages: ${pi.messageCount()}` },
-    ];
+    );
     // Bounded by the probe's own short timeout; unavailable → lines omitted.
     const gpus = await this.deps.probeGpu();
     if (gpus) for (const line of formatGpuLines(gpus)) blocks.push({ type: "paragraph", text: line });
+    // CPU + RAM (checked on each card render; never throws → nulls → omitted).
+    const sysLine = formatSysLine(this.deps.probeSys());
+    if (sysLine) blocks.push({ type: "paragraph", text: sysLine });
     return blocks;
   }
 
@@ -558,6 +589,9 @@ export class SessionBridge {
         cfg.ownerId = action.fromId;
         cfg.ownerChatId = action.chatId; // the /start chat is the owner's chat — persist it
         await this.deps.persist();
+        // The pairing QR has done its job — close the TUI modal (no-op in
+        // non-TUI modes, where /tg:pair fell back to a plain notify).
+        this.deps.pi.closeQr();
         await out.sendRich(action.chatId, pairWelcomeBlocks(this.deps.botUsername, action.fromId));
         await this.sendCardAndHelp(action.chatId);
         // Event-driven (2026-10-11): pairing completion is when "one thing
@@ -634,6 +668,7 @@ export class SessionBridge {
         if (pi.isIdle()) await out.send(action.chatId, "Nothing to stop — session is idle.");
         else {
           pi.abort();
+          if (action.draftId !== undefined) this.deps.onDraftStopped?.(action.draftId); // the run's draft id is suppressed until the mirror's can_stop=false reset packet
           const stopMsg = await out.send(action.chatId, "⏹️ Stopping…");
           if (stopMsg !== undefined) void this.stampAfterIdle(action.chatId, stopMsg, "⏹️ Stopping… ✔️"); // waits for the aborted turn to end
         }
@@ -809,14 +844,14 @@ export class SessionBridge {
         return;
       }
       case "kill": {
+        if (!action.nonce) return; // a callback without a nonce is inert
         const p = this.consumeOneShot(action.nonce);
-        if (action.nonce && !p) return; // stale tap — the question is already stamped
+        if (!p) return; // stale tap — the question is already stamped
         if (!action.yes) {
-          if (p) await this.stampOneShot(p, "✅ Kept running — Pi is still alive.");
-          else await out.send(action.chatId, "OK — Pi keeps running."); // legacy (no nonce) — plain message
+          await this.stampOneShot(p, "✅ Kept running — Pi is still alive.");
           return;
         }
-        if (p) await this.stampOneShot(p, "☠ Shutting down…");
+        await this.stampOneShot(p, "☠ Shutting down…");
         await out.send(action.chatId, "👋 Shutting down pi… (bot goes silent)");
         pi.shutdown();
         return;
@@ -1017,20 +1052,19 @@ export class SessionBridge {
 
   private async handleClear(action: Extract<TgAction, { kind: "clear" }>): Promise<void> {
     const { out, state, sleep } = this.deps;
+    if (!action.nonce) return; // a callback without a nonce is inert
     const p = this.consumeOneShot(action.nonce);
-    if (action.nonce && !p) return; // stale tap — the question is already stamped
+    if (!p) return; // stale tap — the question is already stamped
     if (!action.doIt) {
-      if (p) await this.stampOneShot(p, "✅ Kept — chat history stays.");
-      else await out.send(action.chatId, "OK — chat history kept."); // legacy (no nonce) — plain message
+      await this.stampOneShot(p, "✅ Kept — chat history stays.");
       return;
     }
     const ids = state.drainSent();
     if (ids.length === 0) {
-      if (p) await this.stampOneShot(p, "✅ Nothing to clear.");
-      else await out.send(action.chatId, "Nothing to clear.");
+      await this.stampOneShot(p, "✅ Nothing to clear.");
       return;
     }
-    if (p) await this.stampOneShot(p, "🧹 Clearing…");
+    await this.stampOneShot(p, "🧹 Clearing…");
     await out.send(action.chatId, `🧹 Clearing ${ids.length} messages…`);
     let cleared = 0;
     for (const id of ids) {

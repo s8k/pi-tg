@@ -17,6 +17,7 @@ test("round-trip: every dispatchable action", () => {
     { kind: "thinkingSet", chatId: 7, index: 1 },
     { kind: "status", chatId: 7 },
     { kind: "stop", chatId: 7 },
+    { kind: "stop", chatId: 7, draftId: 1 }, // the native Stop carries the stopped draft's id
     { kind: "compact", chatId: 7 },
     { kind: "nameSet", chatId: 7, name: "my name & stuff" },
     { kind: "killAsk", chatId: 7 },

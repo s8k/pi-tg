@@ -9,10 +9,12 @@ import { encodeInternal, parseInternal } from "./src/command-args.ts";
 import { TelegramState } from "./src/state.ts";
 import { SessionBridge, INLINE_MODE_OFF_WARNING } from "./src/session-bridge.ts";
 import { probeGpu } from "./src/gpu.ts";
+import { SysSampler } from "./src/sys.ts";
+import { probeGitBranch } from "./src/git.ts";
 import type { Out, TelegramPi } from "./src/session-bridge.ts";
 import { Mirror, compactTokenDetail } from "./src/mirror.ts";
 import type { MirrorMessage } from "./src/mirror.ts";
-import { renderQr, qrWidgetFactory, tokenLooksValid, notAuthorizedBlocks } from "./src/onboarding.ts";
+import { tokenLooksValid, notAuthorizedBlocks, buildPairingTitle } from "./src/onboarding.ts";
 import { makeOut, makeTelegramPi, ctxIsAlive, wrapWaitForIdle, installUiProxy } from "./src/wiring.ts";
 import { PendingDialogs } from "./src/ui-dialogs.ts";
 import { runTgCompaction } from "./src/compact.ts";
@@ -20,8 +22,6 @@ import { mergeCommands, filterCommands, customCommandMatch, toInlineResults, toC
 import type { TgInlineQuery } from "./src/telegram-client.ts";
 
 // pi's agent dir honors PI_CODING_AGENT_DIR (tests point it at a temp dir).
-// configPath also runs the one-time migration from the legacy `pi-telega.json`
-// filename (token + pairing carry over, no re-pair).
 const CFG = { agentDir: getAgentDir() };
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
@@ -85,6 +85,13 @@ export default function piTelegram(pi: ExtensionAPI): void {
   let pollAbort: AbortController | undefined;
   let pollPromise: Promise<unknown> | undefined;
   let currentMirror: Mirror | undefined;
+  /**
+   * Aborts the open pairing selector (set while it is up, cleared when it
+   * settles). The bridge calls it to close the selector the moment a Telegram
+   * account pairs (abort ⇒ the select resolves undefined). Idempotent — a
+   * second call is a no-op.
+   */
+  let qrAbort: (() => void) | undefined;
   /** Mirrored TUI dialogs (one instance per polling generation). */
   let dialogs: PendingDialogs | undefined;
   // T6 auto-compact lane, chosen at session_before_compact (auto): where the
@@ -94,6 +101,15 @@ export default function piTelegram(pi: ExtensionAPI): void {
   let autoCompactLane: "mirror" | "bridge" | undefined;
 
   const persist = async (): Promise<void> => {
+    // Sync the live state into cfg BEFORE saving: session_start rebuilds
+    // TelegramState from cfg (restoreSentIds/restoreSeenIds) — without this
+    // sync the sent ids are never actually persisted, and a session
+    // replacement (/new, switch) restores an empty list: "Clear chat"
+    // could only delete the messages sent AFTER the replacement.
+    if (state) {
+      cfg.sentMessageIds = state.sentIds();
+      cfg.seenUpdateIds = state.seenIds();
+    }
     await saveConfig(cfg, CFG);
   };
 
@@ -152,7 +168,15 @@ export default function piTelegram(pi: ExtensionAPI): void {
       getCmdCtx: () => cmdCtx,
       getSessionCtx: () => sessionCtx,
       listSessions: listSessionsImpl,
+      // The bridge calls this to close the pairing selector on pairing
+      // completion. qrAbort is set while the select is up and is idempotent, so
+      // a stale/absent selector (non-tui, already dismissed) is a safe no-op.
+      uiCloseQr: () => {
+        qrAbort?.();
+      },
     });
+    // Checked on every session-card render (on-demand delta — see src/sys.ts).
+    const sysSampler = new SysSampler();
     const deps = {
       pi: piAdapter,
       out: outAdapter,
@@ -162,10 +186,13 @@ export default function piTelegram(pi: ExtensionAPI): void {
       persist,
       sleep,
       probeGpu,
+      probeSys: () => sysSampler.sample(),
+      probeBranch: (cwd: string) => probeGitBranch(cwd),
       dialogs,
       // T6 early draft: the run's draft (spinner) goes out when the prompt is
       // dispatched, before pi's agent_start.
       onPromptAccepted: () => safeCall(() => currentMirror?.onPromptAccepted()),
+      onDraftStopped: (draftId: number) => safeCall(() => currentMirror?.onDraftStopped(draftId)),
     };
     bridge = new SessionBridge(deps);
     if (!token) {
@@ -362,28 +389,6 @@ export default function piTelegram(pi: ExtensionAPI): void {
     await answer(results);
   }
 
-  function cardLines(): string[] {
-    const p = piAdapter;
-    if (!p) return ["pi-tg: not ready yet"];
-    const model = p.currentModel();
-    const usage = p.contextUsage();
-    const thinking = p.currentThinking();
-    return [
-      `📌 ${p.getSessionName() ?? "(unnamed session)"}`,
-      `📁 ${p.cwd}`,
-      `🤖 ${model?.name ?? "no model"}${thinking ? ` · thinking: ${thinking}` : ""}`,
-      `💬 ${p.messageCount()} messages`,
-      usage?.percent != null ? `🧠 ${usage.percent}% context` : "🧠 context: n/a",
-      `📄 ${p.currentSessionPath()}`,
-    ];
-  }
-
-  function showCard(ctx: ExtensionCommandContext): void {
-    const lines = cardLines();
-    if (ctx.mode === "tui" && ctx.hasUI) ctx.ui.setWidget("pi-tg", lines);
-    else ctx.ui.notify(lines.join("\n"), "info");
-  }
-
   async function showQr(ctx: ExtensionCommandContext): Promise<void> {
     const token = getBotToken(cfg, CFG);
     if (!token) {
@@ -394,24 +399,120 @@ export default function piTelegram(pi: ExtensionAPI): void {
     try {
       const me = await c.getMe();
       if (!ctxIsAlive(ctx)) return; // session replaced mid-flight → ctx is stale
-      const qr = renderQr(`https://t.me/${me.username}`);
-      if (ctx.mode === "tui" && ctx.hasUI) ctx.ui.setWidget("pi-tg-qr", qrWidgetFactory(qr)); // factory form: array form is capped at 10 lines
-      else ctx.ui.notify(`open https://t.me/${me.username} in Telegram`, "info");
+      const url = `https://t.me/${me.username}`;
+      if (ctx.mode === "tui" && ctx.hasUI) await showPairingSelect(ctx, url);
+      else ctx.ui.notify(`Pair: open ${url} in Telegram, then press Start.`, "info");
     } catch (err) {
       ui(`pi-tg: getMe failed: ${String(err)}`, "error");
     }
   }
 
+  /**
+   * Show the pairing UI as a TUI selector (ctx.ui.select). The title carries
+   * the instructions + clickable bot URL + QR; the options carry a real Cancel
+   * button. It stays up until the user picks Cancel, presses Esc, the session
+   * is replaced, or a Telegram account pairs (the bridge aborts it via
+   * qrAbort). select is TUI-only, so non-tui modes use the notify fallback in
+   * showQr.
+   */
+  async function showPairingSelect(ctx: ExtensionCommandContext, url: string): Promise<void> {
+    const controller = new AbortController();
+    let paired = false;
+    // The bridge calls this the instant pairing lands → abort the selector.
+    qrAbort = () => {
+      paired = true;
+      controller.abort();
+    };
+    try {
+      // Resolves "Cancel" (picked), undefined (Esc), or undefined (our abort
+      // on pairing). `paired` distinguishes the auto-close from a dismissal.
+      await ctx.ui.select(buildPairingTitle(url), ["Cancel"], { signal: controller.signal });
+      if (!paired) {
+        // Use the live ctx (this handler's ctx may be stale if the session was
+        // replaced while the selector was up).
+        ui("pi-tg: pairing QR dismissed. Run /tg:pair to show it again.", "info");
+      }
+    } finally {
+      qrAbort = undefined;
+    }
+  }
+
   // ── terminal commands ──
 
-  const TG_USAGE = "Usage: /tg | /tg:config <bot_token> | /tg:pair | /tg:unpair";
+  // Drain a bot's existing update backlog: advance lastOffset past every queued
+  // update and mark each seen, WITHOUT processing it. Used on a token change (a
+  // new bot must not re-answer its old queue) and on an unpaired startup (a
+  // burst of messages that piled up while the bot was offline must not spam
+  // "not paired"). Best effort: a bad token / network error just leaves the
+  // offset low; the poller surfaces API failures itself.
+  async function drainBacklog(token: string): Promise<void> {
+    if (!state) return;
+    state.restoreSeenIds([], 0); // drop the previous bot's / stale seen ids
+    state.setOffset(0);          // drain from the very beginning
+    let off = 0;
+    let guard = 0;
+    try {
+      const drainClient = new TelegramClient(token, {});
+      for (;;) {
+        // Per-call abort so a stalled getUpdates can't hang the drain forever
+        // (the API's long-poll timeout is 1s; this is a safety net and lets
+        // tests' fake wires resolve it).
+        const ac = new AbortController();
+        const timer = setTimeout(() => ac.abort(), 2000);
+        let batch: TgUpdate[];
+        try {
+          batch = await drainClient.getUpdates(off, 1, ac.signal);
+        } finally {
+          clearTimeout(timer);
+        }
+        if (batch.length === 0) break;
+        for (const u of batch) state.markSeen(u.update_id);
+        off = Math.max(off, ...batch.map((u) => u.update_id)) + 1;
+        state.setOffset(off);
+        if (++guard >= 100) break; // safety cap
+      }
+    } catch {
+      off = state.getOffset(); // keep wherever we advanced past
+    }
+    cfg.lastOffset = off === 0 ? undefined : off;
+    cfg.seenUpdateIds = state.seenIds();
+    await persist();
+  }
 
   async function runConfig(token: string, ctx: ExtensionCommandContext): Promise<void> {
     if (!tokenLooksValid(token)) {
       ctx.ui.notify("pi-tg: invalid token (expected <digits>:<alnum/ -_>, e.g. 123456:AAH…)", "error");
       return;
     }
+    // A different EFFECTIVE token = a DIFFERENT bot. The stored pairing
+    // (ownerId/ownerChatId) belongs to the previous bot and must not carry
+    // over: ownerId is the global Telegram user id (identical across bots),
+    // and the router authorizes EVERY update from it — so a stale pairing
+    // would let the new bot accept the old owner's account with no fresh
+    // /start. Re-saving the SAME token keeps the pairing intact.
+    const prevToken = getBotToken(cfg, CFG);
     cfg.botToken = token;
+    const tokenChanged = getBotToken(cfg, CFG) !== prevToken;
+    if (tokenChanged) {
+      // Pairing is bot-scoped: the new bot was never /start-ed, so the old
+      // owner (a global Telegram id the router trusts outright) must not carry
+      // over. Reset the pairing…
+      cfg.ownerId = undefined;
+      cfg.ownerChatId = undefined;
+      ownerChatId = undefined; // Mirror must stop posting to the stale chat
+      // …and the chat-scoped sent ids (a new bot = a new chat context).
+      // lastOffset/seenUpdateIds are handled by the DRAIN below (after the old
+      // poller stops): we must not let the new poller re-read the bot's backlog
+      // (an unpaired bot would reply "not paired" to every stale message, and a
+      // stale /start in it would auto-pair the new bot to the wrong account).
+      if (state) {
+        state.restoreSentIds([]);
+      } else {
+        cfg.lastOffset = undefined;
+        cfg.seenUpdateIds = [];
+      }
+      cfg.sentMessageIds = [];
+    }
     await persist();
     const old = pollPromise;
     stopping = true;
@@ -420,6 +521,10 @@ export default function piTelegram(pi: ExtensionAPI): void {
     // A session replacement can happen while we were waiting above — in that
     // case this handler's ctx is stale and must not be used any more.
     if (!ctxIsAlive(ctx)) return;
+    if (tokenChanged && state) {
+      await drainBacklog(token);
+      if (!ctxIsAlive(ctx)) return;
+    }
     pollPromise = startPolling().catch((err) => ui(`pi-tg: ${String(err)}`, "error"));
     void pollPromise;
     // Event-driven (2026-10-11): key configuration is one of the two moments
@@ -440,6 +545,8 @@ export default function piTelegram(pi: ExtensionAPI): void {
       ctx.ui.notify(`pi-tg: already paired with owner ${cfg.ownerId}. Run /tg:unpair to unpair.`, "info");
       return;
     }
+    // The QR is a dismissible overlay: it closes on Esc / click, when the
+    // session is replaced, or as soon as a Telegram account pairs.
     await showQr(ctx);
   }
 
@@ -451,6 +558,14 @@ export default function piTelegram(pi: ExtensionAPI): void {
     cfg.ownerId = undefined;
     cfg.ownerChatId = undefined;
     ownerChatId = undefined; // Mirror must stop posting to the stale chat
+    // sentMessageIds are CHAT-scoped (message_id is per-chat; "Clear chat"
+    // deletes them against the current chatId). The chat is going away, so drop
+    // the ids — reset the LIVE tracker too, since persist() re-syncs
+    // cfg.sentMessageIds from it. (restoreSentIds, not drainSent: we are NOT
+    // deleting these messages, just resetting the record.) lastOffset/
+    // seenUpdateIds are bot-scoped and stay (same bot, same update stream).
+    if (state) state.restoreSentIds([]);
+    cfg.sentMessageIds = [];
     await persist();
     if (!ctxIsAlive(ctx)) return; // session replaced while persisting
     ctx.ui.notify("pi-tg: unpaired. Bot is silent until a new account presses /start (/tg:pair shows the QR).", "info");
@@ -458,28 +573,22 @@ export default function piTelegram(pi: ExtensionAPI): void {
 
   // One entry per command in pi's `/` completion list (see pi extensions docs).
   // `tg:config` / `tg:pair` use colon names the same way skills use /skill:name.
+  // `tg` is reserved for machine dispatch: the Telegram poller injects
+  // `/tg internal …` user messages. Typed by hand it only says so (pi offers
+  // no way to hide a registered command from the completion list).
   pi.registerCommand("tg", {
-    description: "Show session card (model, context usage, session path)",
-    getArgumentCompletions: (prefix: string) => {
-      const items = [{ value: "internal", label: "internal", description: "machine dispatch (poller → TUI)" }];
-      const filtered = items.filter((i) => i.value.startsWith(prefix));
-      return filtered.length > 0 ? filtered : null;
-    },
+    description: "Reserved for pi-tg internal dispatch. Use /tg:* commands instead",
     handler: async (args: string, ctx: ExtensionCommandContext) => {
       cmdCtx = ctx;
-      const sub = args.trim().split(/\s+/)[0] ?? "";
-      if (sub === "internal") {
-        // Machine-only path: the Telegram poller injects these.
-        const action = parseInternal(args.trim());
-        if (action && bridge) await bridge.dispatch(action);
-        else ctx.ui.notify("pi-tg: bad /tg internal payload", "error");
+      const action = parseInternal(args);
+      if (action && bridge) {
+        await bridge.dispatch(action);
         return;
       }
-      if (sub !== "") {
-        ctx.ui.notify(TG_USAGE, "error");
-        return;
-      }
-      showCard(ctx);
+      ctx.ui.notify(
+        "pi-tg: /tg is a reserved internal command. Use /tg:config, /tg:pair or /tg:unpair.",
+        "info",
+      );
     },
   });
 
@@ -519,6 +628,7 @@ export default function piTelegram(pi: ExtensionAPI): void {
     // fresh sessionCtx. See pi docs: “reestablish any in-memory state in session_start”.
     cmdCtx = undefined;
     autoCompactLane = undefined; // the old instance's lane choice is stale
+    qrAbort = undefined; // the old instance's pairing selector is gone — never abort it
     cfg = loadConfig(CFG);
     state = new TelegramState(cfg.lastOffset ?? 0);
     state.restoreSentIds(cfg.sentMessageIds ?? []);
@@ -544,6 +654,13 @@ export default function piTelegram(pi: ExtensionAPI): void {
       // the loop backs off and retries instead of dying.
       stopping = true;
       pollAbort?.abort();
+      // Unpaired: drain any backlog that piled up while the bot was offline so
+      // it doesn't spam one "not paired" reply per stale message on startup.
+      // (A /start pressed while offline is skipped too — the user re-presses it.)
+      if (cfg.ownerId === undefined) {
+        const token = getBotToken(cfg, CFG);
+        if (token) await drainBacklog(token);
+      }
       // startPolling's sync setup (client/out/bridge) is done by the time this
       // line runs — only its long-poll loop is still pending.
       const loop = startPolling();

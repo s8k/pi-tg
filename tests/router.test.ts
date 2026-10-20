@@ -90,10 +90,12 @@ test("stopped_message_generation → stop (the draft's native Stop button)", () 
       draft_id: "6",
     },
   };
-  assert.deepEqual(route(live, 42), { kind: "stop", chatId: 55 });
+  // The stopped draft's id is carried through (the mirror arms its
+  // can_stop=false reset packet for it).
+  assert.deepEqual(route(live, 42), { kind: "stop", chatId: 55, draftId: 6 });
   // ownerId is irrelevant: the draft's Stop button only ever comes from the
   // user it was shown to (we only send drafts in the owner's private chat).
-  assert.deepEqual(route(live, undefined), { kind: "stop", chatId: 55 });
+  assert.deepEqual(route(live, undefined), { kind: "stop", chatId: 55, draftId: 6 });
 });
 
 test("dialog callbacks: da:<id>:<idx> → dialogAnswer, dc:<id> → dialogCancel, owner-gated, malformed → ignore", () => {

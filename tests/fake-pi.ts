@@ -13,7 +13,7 @@ export interface FakePiOptions {
   sessionPath?: string;
   messageCount?: number;
   contextUsage?: PiContextUsage;
-  sessionUsage?: { input: number; output: number };
+  sessionUsage?: { input: number; output: number; cost?: number };
   sessions?: PiSessionInfo[];
   modelSetResult?: boolean;
   /** Live resource commands for the inline picker (pi.getCommands). */
@@ -39,6 +39,7 @@ export class FakePi {
   /** Last customInstructions passed to compact (inline picker /compact <text>). */
   compactInstructions: string | undefined;
   uiNotices: { text: string; level?: "info" | "warning" | "error" }[] = [];
+  closeQrCalls = 0;
 
   constructor(opts: FakePiOptions = {}) {
     this.opts = opts;
@@ -87,10 +88,11 @@ export class FakePi {
       setThinkingLevel: (level) => self.setThinkings.push(level),
       contextUsage: () => self.opts.contextUsage,
       messageCount: () => self.opts.messageCount ?? 0,
-      sessionUsage: () => self.opts.sessionUsage ?? { input: 0, output: 0 },
+      sessionUsage: () => ({ input: 0, output: 0, cost: 0, ...self.opts.sessionUsage }),
       listSessions: async () => self.opts.sessions ?? [],
       currentSessionPath: () => self.opts.sessionPath ?? "/proj/current.jsonl",
       notifyUi: (text, level) => self.uiNotices.push({ text, level }),
+      closeQr: () => { self.closeQrCalls++; },
       shutdown: () => self.shutdownCalls++,
     };
     return impl;

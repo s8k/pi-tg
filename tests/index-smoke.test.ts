@@ -11,7 +11,7 @@
 // importing index.ts).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { blocksToPlainText, type TgBlock } from "../src/rich-blocks.ts";
@@ -21,7 +21,7 @@ process.env.PI_CODING_AGENT_DIR = agentDir;
 process.env.PI_TELEGRAM_BOT_TOKEN = "TEST-TOKEN";
 // paired config: the mirror only works for the owner's chat, and the chat id
 // is learned from the first owner update (below)
-writeFileSync(join(agentDir, "pi-telegram.json"), JSON.stringify({ botToken: "TEST-TOKEN", ownerId: 123456 }));
+writeFileSync(join(agentDir, "pi-tg.json"), JSON.stringify({ botToken: "TEST-TOKEN", ownerId: 123456 }));
 
 const { default: piTelegram } = await import("../index.ts");
 
@@ -78,6 +78,7 @@ piTelegram({
   // command so the picker list has content — every BUILT-IN is either a
   // duplicate of a direct bot command (List A) or terminal-only (List B/C).
   getCommands: () => [{ name: "mcp", description: "Manage MCP servers", source: "extension" as const }],
+  getSessionName: () => undefined, // status card → "Untitled session" (the real pi has it)
 } as never);
 // The fake ctx exposes the post-compact session context so index.ts can
 // re-derive pi's "after" count exactly as pi does internally (Σ estimateTokens
@@ -94,6 +95,7 @@ const fakeCtx = {
   mode: "tui",
   hasUI: true,
   isIdle: () => true, // the bridge's prompt gate calls ctx.isIdle()
+  getContextUsage: () => undefined, // status card → "📖 context: n/a" (the real ctx has it)
   ui: {
     notify: (text: string, level?: string) => {
       uiNotices.push({ text, level });
@@ -1045,4 +1047,299 @@ test("/tg:config: inline mode off → the TUI warning fires (event-driven, 2026-
   await tgConfigCommand.handler("123456:AAFAKEAAFAKEAAFAKEAAFAKE", cfgCtx); // <digits>:<20+ alnum>
   assert.ok(notices.some((n) => String(n.text).includes("INLINE MODE IS DISABLED") && n.level === "warning"), "the config-time warning fired");
   assert.ok(notices.some((n) => String(n.text).includes("token saved")), "the normal config notice still fires");
+});
+
+test("sent message ids persist to the config file (regression: /new's Clear must see the PRE-replacement messages, not just the post-/new ack+card)", async (t) => {
+  // The user's live bug: /new replaces the session → session_start rebuilds
+  // TelegramState from cfg.sentMessageIds — but persist() never synced the
+  // live state's ids into cfg, so the restore saw an empty list and "Clear"
+  // only deleted the messages sent AFTER the replacement.
+  const calls: (WireCall & { msgId?: number })[] = [];
+  let nextId = 1000;
+  let getUpdatesCount = 0;
+  const realFetch = globalThis.fetch;
+  t.after(() => (globalThis.fetch = realFetch));
+  globalThis.fetch = (async (url: string, init?: RequestInit): Promise<Response> => {
+    const method = String(url).split("/").pop() ?? "";
+    const body = (init?.body ? JSON.parse(String(init.body)) : {}) as Record<string, unknown>;
+    const blocks = (body.rich_message as { blocks?: unknown[] } | undefined)?.blocks;
+    const call: WireCall & { msgId?: number } = { method, body, markdown: blocks ? blocksToPlainText(blocks as TgBlock[]) : "" };
+    calls.push(call);
+    if (method === "getMe")
+      return new Response(JSON.stringify({ ok: true, result: { id: 1, is_bot: true, first_name: "Tg", username: "tgb" } }), { status: 200 });
+    if (method === "getUpdates") {
+      getUpdatesCount++;
+      if (getUpdatesCount === 1)
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            result: [
+              {
+                update_id: 1,
+                message: {
+                  message_id: 1,
+                  date: 1,
+                  chat: { id: 42, type: "private" },
+                  from: { id: 123456, is_bot: false, first_name: "O" },
+                  text: "hi",
+                },
+              },
+            ],
+          }),
+          { status: 200 },
+        );
+      return new Promise<Response>((_resolve, reject) => {
+        const sig = init?.signal;
+        const onAbort = () => reject(new DOMException("Aborted", "AbortError"));
+        if (sig) {
+          if (sig.aborted) onAbort();
+          else sig.addEventListener("abort", onAbort, { once: true });
+        }
+      });
+    }
+    if (method === "sendMessage" || method === "sendRichMessage") {
+      call.msgId = ++nextId;
+      return new Response(JSON.stringify({ ok: true, result: { message_id: call.msgId } }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ ok: true, result: true }), { status: 200 });
+  }) as typeof fetch;
+
+  handlers.get("session_start")!({}, fakeCtx);
+  await waitFor(() => getUpdatesCount >= 2, "owner chat learned");
+
+  // A clean run: the persistent finalization sends must be tracked AND persisted.
+  // The answer carries a UNIQUE marker so I can identify MY sends — other tests
+  // in this file share the module + globalThis.fetch and can leave in-flight
+  // sends that land in `calls` but were tracked to an older generation's state.
+  const MARKER = "persist-probe-7f3a";
+  handlers.get("agent_start")!();
+  await sleep(50);
+  handlers.get("message_start")!({ message: { role: "assistant", content: [] } });
+  handlers.get("message_end")!({ message: { role: "assistant", content: [{ type: "text", text: MARKER }], stopReason: "stop" } });
+  await waitFor(() => calls.some((c) => c.method === "sendRichMessage" && c.markdown.includes(MARKER)), "the answer's persistent send");
+
+  // Wait until every persistent send carrying MY marker is in the config file.
+  const persisted = (): number[] =>
+    (JSON.parse(readFileSync(join(agentDir, "pi-tg.json"), "utf-8")) as { sentMessageIds?: number[] }).sentMessageIds ?? [];
+  await waitFor(() => {
+    const mine = calls.filter((c) => (c.method === "sendMessage" || c.method === "sendRichMessage") && c.markdown.includes(MARKER) && c.msgId !== undefined);
+    if (mine.length === 0) return false;
+    return mine.every((c) => persisted().includes(c.msgId!));
+  }, "my persistent sends' ids persisted to the config file");
+  const mine = calls.filter((c) => (c.method === "sendMessage" || c.method === "sendRichMessage") && c.markdown.includes(MARKER) && c.msgId !== undefined);
+  assert.ok(mine.length >= 1, "the bot sent at least one persistent message carrying my marker");
+  for (const c of mine)
+    assert.ok(persisted().includes(c.msgId!), `message id ${c.msgId} is in the persisted sentMessageIds (got ${JSON.stringify(persisted())})`);
+});
+
+test("baseline: native stop button — the plugin KEEPS sending run drafts afterwards (real wiring, fake wire)", async (t) => {
+  // Faithful sequence: prompt → streaming draft (can_stop) → user presses the
+  // NATIVE stop button (stopped_message_generation) → pi aborts (message_end
+  // "aborted" + agent_end + agent_settled) → new prompt → the run's draft
+  // must go out again. PROVES the mirror/bridge/poller fully recover after a
+  // native stop — the 2026-10 "no more drafts after Stop" field report is
+  // therefore NOT plugin state: the wire keeps carrying sendRichMessageDraft
+  // (always draft_id 1) for subsequent runs.
+  const calls: (WireCall & { msgId?: number })[] = [];
+  const realFetch = globalThis.fetch;
+  t.after(() => (globalThis.fetch = realFetch));
+  // controllable run state for the bridge's stop path (pi.isIdle / ctx.abort) —
+  // the adapter's ctx() prefers the COMMAND ctx (stored when the /tg command
+  // handler ran), so swap cmdCtxFake (like the /stop test), not fakeCtx.
+  let running = false;
+  const origCmdCtx = cmdCtxFake;
+  t.after(() => (cmdCtxFake = origCmdCtx));
+  cmdCtxFake = {
+    cwd: "/tmp",
+    ui: { notify: () => {} },
+    isIdle: () => !running,
+    abort: () => {
+      running = false;
+    },
+  };
+
+  let getUpdatesCount = 0;
+  let nextId = 9100;
+  const ownerMsg = (text: string, update_id: number, message_id: number) => ({
+    update_id,
+    message: { message_id, date: 1, chat: { id: 42, type: "private" }, from: { id: 123456, is_bot: false, first_name: "O" }, text },
+  });
+  globalThis.fetch = (async (url: string, init?: RequestInit): Promise<Response> => {
+    const method = String(url).split("/").pop() ?? "";
+    const body = (init?.body ? JSON.parse(String(init.body)) : {}) as Record<string, unknown>;
+    const blocks = (body.rich_message as { blocks?: unknown[] } | undefined)?.blocks;
+    const call: WireCall & { msgId?: number } = { method, body, markdown: blocks ? blocksToPlainText(blocks as TgBlock[]) : "" };
+    calls.push(call);
+    if (method === "getMe")
+      return new Response(JSON.stringify({ ok: true, result: { id: 1, is_bot: true, first_name: "Tg", username: "tgb" } }), { status: 200 });
+    if (method === "getUpdates") {
+      getUpdatesCount++;
+      if (getUpdatesCount === 1) return new Response(JSON.stringify({ ok: true, result: [ownerMsg("hi", 1, 1)] }), { status: 200 });
+      if (getUpdatesCount === 2) {
+        // The server echoes the id of the draft whose Stop button was pressed
+        // (arrives as a string) — model that with the id actually sent.
+        const lastDraft = [...calls].reverse().find((c) => c.method === "sendRichMessageDraft");
+        return new Response(JSON.stringify({ ok: true, result: [{ update_id: 2, stopped_message_generation: { chat: { id: 42, type: "private" }, draft_id: String(lastDraft?.body.draft_id ?? 1) } }] }), { status: 200 });
+      }
+      if (getUpdatesCount === 3) return new Response(JSON.stringify({ ok: true, result: [ownerMsg("next", 3, 3)] }), { status: 200 });
+      return new Promise<Response>((_resolve, reject) => {
+        const sig = init?.signal;
+        const onAbort = () => reject(new DOMException("Aborted", "AbortError"));
+        if (sig) {
+          if (sig.aborted) onAbort();
+          else sig.addEventListener("abort", onAbort, { once: true });
+        }
+      });
+    }
+    if (method === "sendMessage" || method === "sendRichMessage") {
+      call.msgId = ++nextId;
+      return new Response(JSON.stringify({ ok: true, result: { message_id: call.msgId } }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ ok: true, result: true }), { status: 200 });
+  }) as typeof fetch;
+
+  // the run is live from the moment the prompt is dispatched — the first
+  // getUpdates ("hi") is already in flight, so this must be set NOW or the
+  // stop update races ahead and sees an idle session.
+  running = true;
+  handlers.get("session_start")!({}, fakeCtx);
+  await waitFor(() => calls.some((c) => c.method === "sendRichMessageDraft"), "early draft for run 1");
+  const draftsAfterRun1 = calls.filter((c) => c.method === "sendRichMessageDraft").length;
+
+  // pi events for a streaming assistant message
+  handlers.get("agent_start")!();
+  handlers.get("message_start")!({ message: { role: "assistant", content: [] } });
+  handlers.get("message_update")!({ message: { role: "assistant", content: [{ type: "text", text: "working " }] } });
+  await sleep(50);
+
+  // user presses the NATIVE stop button on the draft
+  await waitFor(() => getUpdatesCount >= 2, "poller picks up stopped_message_generation");
+  await waitFor(() => calls.some((c) => c.method === "sendMessage" && String(c.body.text ?? "").includes("⏹️")), "the ⏹️ Stopping… ack");
+  assert.equal(running, false, "ctx.abort() was called");
+
+  // pi finishes the aborted run: aborted message_end + agent_end + settled
+  handlers.get("message_end")!({ message: { role: "assistant", content: [{ type: "text", text: "working " }], stopReason: "aborted" } });
+  handlers.get("agent_end")!({ messages: [] });
+  handlers.get("agent_settled")!();
+  await sleep(50);
+
+  // a NEW request — its draft must go out
+  await waitFor(() => getUpdatesCount >= 3, "poller picks up the new prompt");
+  await waitFor(
+    () => calls.filter((c) => c.method === "sendRichMessageDraft").length > draftsAfterRun1,
+    "a draft for the SECOND run",
+  );
+
+  // the stop state must be cleared on the WIRE: the first draft send after the
+  // native stop goes out can_stop=false (the one-time RESET packet — a
+  // can_stop=true send to a just-stopped id is filtered by Telegram and renders
+  // nothing, the 2026-10 field report), and every send after the reset resumes
+  // can_stop=true. Let run 2 stream so the resume is observable (the harness
+  // throttles draft updates by streamEditMs).
+  const stopIdx = calls.findIndex((c) => c.method === "sendMessage" && String(c.body.text ?? "").includes("⏹️"));
+  assert.ok(stopIdx >= 0, "the ⏹️ Stopping… ack was sent");
+  handlers.get("agent_start")!();
+  handlers.get("message_start")!({ message: { role: "assistant", content: [] } });
+  handlers.get("message_update")!({ message: { role: "assistant", content: [{ type: "text", text: "run2 " }] } });
+  await waitFor(
+    () => calls.filter((c) => c.method === "sendRichMessageDraft" && calls.indexOf(c) > stopIdx).length >= 2,
+    "run 2's streaming update after its early draft",
+  );
+
+  // 1) within a run the draft keeps ONE id (animated refresh) — a random id in
+  //    the run lane (1..999_999, below the compact lane 1_000_000+seq).
+  const drafts = calls.filter((c) => c.method === "sendRichMessageDraft");
+  const id1 = Number(drafts[0]!.body.draft_id);
+  assert.ok(Number.isInteger(id1) && id1 >= 1 && id1 < 1_000_000, `run 1's draft id ${id1} is in 1..999_999 (below the compact lane)`);
+  const beforeStop = drafts.filter((c) => calls.indexOf(c) <= stopIdx);
+  assert.ok(beforeStop.every((c) => c.body.draft_id === id1), "run 1's drafts all keep the same id (stable within a run — never per-run ids)");
+  // 2) the STOPPED id is never reused: run 2 streams on a FRESH id, stoppable
+  //    from its first frame (a fresh, live stream).
+  const afterStop = drafts.filter((c) => calls.indexOf(c) > stopIdx);
+  assert.ok(afterStop.every((c) => c.body.draft_id !== id1), "run 2 streams on a FRESH id (the stopped id is dead server-side — never reused)");
+  assert.equal(afterStop[0]!.body.can_stop, true, "the fresh stream is stoppable from its first frame");
+});
+
+test("smoke: session card carries a 💲 cost line when the session branch has cost (real wiring, fake wire)", async (t) => {
+  // End-to-end: wiring.ts's branch walk (cost over ALL cost-bearing entries)
+  // feeds statusBlocks' conditional line. The smoke's fakeCtx has no
+  // getBranch → give it a branch with one paid assistant message + a
+  // cache-warm usage entry (0.45 + 0.015 = 0.465 → the 3-decimal band),
+  // fire session_start, and inspect the card.
+  const calls: (WireCall & { msgId?: number })[] = [];
+  const realFetch = globalThis.fetch;
+  t.after(() => (globalThis.fetch = realFetch));
+  // The shared module-level fakeCtx: override getBranch for this test ONLY —
+  // restore it so the branch doesn't leak into the next test's cards.
+  const sm = fakeCtx.sessionManager as { getBranch?: () => unknown[] };
+  t.after(() => {
+    sm.getBranch = undefined;
+  });
+  sm.getBranch = () => [
+    { type: "message", message: { role: "assistant", usage: { input: 1000, output: 100, cost: { total: 0.45 } } } },
+    { type: "usage", kind: "cache_warm", usage: { cost: { total: 0.015 } } },
+  ];
+  // The card is only posted on session_start for a pending action (/new or a
+  // session switch) — seed one into the shared config file; session_start
+  // re-loads cfg, and onSessionReplaced clears it. Restore the file after.
+  const cfgPath = join(agentDir, "pi-tg.json");
+  const cfgBefore = readFileSync(cfgPath, "utf-8");
+  t.after(() => writeFileSync(cfgPath, cfgBefore));
+  writeFileSync(
+    cfgPath,
+    JSON.stringify({ ...JSON.parse(cfgBefore), pendingAction: { type: "new", chatId: 42 } }),
+  );
+
+  let getUpdatesCount = 0;
+  let nextId = 9000;
+  globalThis.fetch = (async (url: string, init?: RequestInit): Promise<Response> => {
+    const method = String(url).split("/").pop() ?? "";
+    const body = (init?.body ? JSON.parse(String(init.body)) : {}) as Record<string, unknown>;
+    const blocks = (body.rich_message as { blocks?: unknown[] } | undefined)?.blocks;
+    const call: WireCall & { msgId?: number } = { method, body, markdown: blocks ? blocksToPlainText(blocks as TgBlock[]) : "" };
+    calls.push(call);
+    if (method === "getMe")
+      return new Response(JSON.stringify({ ok: true, result: { id: 1, is_bot: true, first_name: "Tg", username: "tgb" } }), { status: 200 });
+    if (method === "getUpdates") {
+      getUpdatesCount++;
+      if (getUpdatesCount === 1)
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            result: [
+              {
+                update_id: 1,
+                message: {
+                  message_id: 1,
+                  date: 1,
+                  chat: { id: 42, type: "private" },
+                  from: { id: 123456, is_bot: false, first_name: "O" },
+                  text: "hi",
+                },
+              },
+            ],
+          }),
+          { status: 200 },
+        );
+      return new Promise<Response>((_resolve, reject) => {
+        const sig = init?.signal;
+        const onAbort = () => reject(new DOMException("Aborted", "AbortError"));
+        if (sig) {
+          if (sig.aborted) onAbort();
+          else sig.addEventListener("abort", onAbort, { once: true });
+        }
+      });
+    }
+    if (method === "sendMessage" || method === "sendRichMessage") {
+      call.msgId = ++nextId;
+      return new Response(JSON.stringify({ ok: true, result: { message_id: call.msgId } }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ ok: true, result: true }), { status: 200 });
+  }) as typeof fetch;
+
+  handlers.get("session_start")!({}, fakeCtx);
+  await waitFor(() => calls.some((c) => c.method === "sendRichMessage"), "the session card");
+  const card = calls.find((c) => c.method === "sendRichMessage")!.markdown;
+  assert.ok(card.includes("💲 cost: $0.465"), `the card carries the summed cost line (got: ${card})`);
+  assert.ok(card.includes("🪙 tokens: ↑1k ↓100"), "the tokens line is intact");
 });

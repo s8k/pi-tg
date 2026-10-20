@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -18,7 +18,7 @@ export type PendingAction =
 
 /**
  * Agent output level — the mirror's render filter: `mute` = nothing (old
- * `muted: true`), `minimal` = visible text only (narration + answer),
+ * `mute` = nothing, `minimal` = visible text only (narration + answer),
  * `full` = today's behavior (draft + work log + final answer, default).
  * Commands, cards and help are unaffected by any level.
  */
@@ -47,7 +47,7 @@ export interface TelegramConfig {
   errorSettleMs: number;
   /** Code fences with a body of more than this many lines are wrapped in a closed <details>. */
   codeFoldLines: number;
-  /** Agent output level (see `OutputLevel`). Legacy `muted` still parses: true → "mute", false → "full". */
+  /** Agent output level (see `OutputLevel`). */
   level: OutputLevel;
   /** Mirror other extensions' TUI dialogs (select/confirm/input/editor) to Telegram as interactive messages. */
   mirrorDialogs: boolean;
@@ -90,26 +90,10 @@ export const DEFAULTS: Pick<
   seenUpdateIds: [],
 };
 
-/** Pre-rename config filename — kept only for the one-time migration below. */
-const LEGACY_CONFIG_FILENAME = "pi-telega.json";
-
 export function configPath(opts?: ConfigOptions): string {
   if (opts?.path) return opts.path; // explicit override (tests) — no side effects
   const dir = opts?.agentDir ?? join(homedir(), ".pi", "agent");
-  const fresh = join(dir, "pi-telegram.json");
-  // One-time migration from the pre-rename filename: move the existing config
-  // (token + pairing) so a rename never forces a re-pair. Idempotent and
-  // self-healing: while the fresh file is absent the attempt repeats.
-  const legacy = join(dir, LEGACY_CONFIG_FILENAME);
-  if (!existsSync(fresh) && existsSync(legacy)) {
-    try {
-      writeFileSync(fresh, readFileSync(legacy, "utf-8"), "utf-8");
-      unlinkSync(legacy);
-    } catch {
-      /* best effort — the next call retries; the old file is never destroyed */
-    }
-  }
-  return fresh;
+  return join(dir, "pi-tg.json");
 }
 
 function clampInt(value: unknown, fallback: number, min: number, max: number): number {
@@ -133,6 +117,19 @@ function capIdList(value: unknown, cap: number): number[] {
   return ids.slice(-cap);
 }
 
+/**
+ * Decode a stored botToken. The token is base64-encoded at rest; a value
+ * containing ':' can never be base64 (the alphabet has no ':'), so that is
+ * the legacy plaintext format from before encoding was introduced and is
+ * passed through untouched. A base64 string that decodes to nothing (garbage)
+ * is returned as-is so a hand-corrupted file behaves like before.
+ */
+function decodeStoredToken(stored: string): string {
+  if (stored.includes(":")) return stored;
+  const decoded = Buffer.from(stored, "base64").toString("utf-8");
+  return decoded !== "" ? decoded : stored;
+}
+
 const capSentIds = (value: unknown): number[] => capIdList(value, 500);
 const capSeenIds = (value: unknown): number[] => capIdList(value, 200);
 
@@ -151,11 +148,9 @@ function sanitizePending(value: unknown): PendingAction | undefined {
   return undefined;
 }
 
-/** `level`: a valid value wins; otherwise legacy `muted` (strict boolean: true → "mute", false → "full"); otherwise the default. */
+/** `level`: a valid value wins; anything else (including unknown fields) → the default. */
 function parseLevel(obj: Record<string, unknown>): OutputLevel {
   if (obj.level === "mute" || obj.level === "minimal" || obj.level === "full") return obj.level;
-  if (obj.muted === true) return "mute";
-  if (obj.muted === false) return "full";
   return DEFAULTS.level;
 }
 
@@ -163,7 +158,7 @@ function parseLevel(obj: Record<string, unknown>): OutputLevel {
 export function sanitize(raw: unknown): TelegramConfig {
   const obj = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
   return {
-    botToken: typeof obj.botToken === "string" && obj.botToken.trim() !== "" ? obj.botToken : undefined,
+    botToken: typeof obj.botToken === "string" && obj.botToken.trim() !== "" ? decodeStoredToken(obj.botToken) : undefined,
     ownerId: typeof obj.ownerId === "number" && Number.isFinite(obj.ownerId) ? obj.ownerId : undefined,
     ownerChatId: typeof obj.ownerChatId === "number" && Number.isFinite(obj.ownerChatId) ? obj.ownerChatId : undefined,
     streamEditMs: clampInt(obj.streamEditMs, DEFAULTS.streamEditMs, 500, 10_000),
@@ -202,6 +197,11 @@ export function saveConfig(cfg: TelegramConfig, opts?: ConfigOptions): void {
   const path = configPath(opts);
   mkdirSync(dirname(path), { recursive: true });
   const tmp = `${path}.tmp`;
-  writeFileSync(tmp, JSON.stringify(cfg, null, 2), "utf-8");
+  // Base64 at rest: the in-memory cfg keeps the plaintext token, only the
+  // serialized form is encoded (never mutates the caller's object).
+  const toStore = cfg.botToken !== undefined
+    ? { ...cfg, botToken: Buffer.from(cfg.botToken, "utf-8").toString("base64") }
+    : cfg;
+  writeFileSync(tmp, JSON.stringify(toStore, null, 2), "utf-8");
   renameSync(tmp, path);
 }

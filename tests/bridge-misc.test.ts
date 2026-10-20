@@ -98,14 +98,16 @@ test("/kill: ask → confirm buttons (nonced); No stamps the question (keyboard 
   assert.ok(out.calls[out.calls.length - 1].text?.includes("👋 Shutting down pi…"));
 });
 
-test("kill/clear: no nonce (legacy) → the old plain-message behavior, no crash", async () => {
+test("kill/clear: a callback without a nonce is fully inert (no sends, no shutdown, no crash)", async () => {
   const pi = new FakePi();
   const out = new FakeOut();
   const bridge = new SessionBridge(makeDeps(pi.build(), out));
-  await bridge.dispatch({ kind: "kill", chatId: 7, yes: false });
-  assert.ok(out.calls[out.calls.length - 1].text?.includes("keeps running"));
-  await bridge.dispatch({ kind: "clear", chatId: 7, doIt: false });
-  assert.ok(out.calls[out.calls.length - 1].text?.includes("chat history kept"));
+  const before = out.calls.length;
+  await bridge.dispatch({ kind: "kill", chatId: 7, yes: true }); // even "Yes, kill" must not fire
+  assert.equal(out.calls.length, before, "no-nonce kill sends nothing");
+  assert.equal(pi.shutdownCalls, 0, "no-nonce kill does not shut down");
+  await bridge.dispatch({ kind: "clear", chatId: 7, doIt: true });
+  assert.equal(out.calls.length, before, "no-nonce clear sends nothing");
 });
 
 test("clear: Keep → no deletes; Clear → drains tracker, deletes each, throttled, summarizes", async () => {

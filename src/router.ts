@@ -30,7 +30,7 @@ export type TgAction =
   | { kind: "thinkingList"; chatId: number }
   | { kind: "thinkingSet"; chatId: number; index: number }
   | { kind: "status"; chatId: number }
-  | { kind: "stop"; chatId: number }
+  | { kind: "stop"; chatId: number; draftId?: number } // draftId set for the native Stop (stopped_message_generation): the stopped draft's id
   | { kind: "level_mute"; chatId: number }
   | { kind: "level_minimal"; chatId: number }
   | { kind: "level_full"; chatId: number }
@@ -113,7 +113,10 @@ export function route(
   // The rich draft's native Stop button (Bot API 10.2). Reuses the existing
   // `stop` action: the bridge aborts the turn and mirrors a ⏹️ message.
   const stopped = update.stopped_message_generation;
-  if (stopped) return { kind: "stop", chatId: stopped.chat.id };
+  if (stopped) {
+    const draftId = Number(stopped.draft_id); // arrives as a string (spike 2026-08-31)
+    return { kind: "stop", chatId: stopped.chat.id, ...(draftId > 0 ? { draftId } : {}) };
+  }
 
   // Inline picker Flow A: the user tapped an inline-query result — Telegram
   // auto-sent the card and now asks the bot to execute the command. Owner

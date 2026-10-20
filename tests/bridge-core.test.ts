@@ -95,6 +95,60 @@ test("status: card format 📌/📁/🤖/📖/📨/🪙, plain session name, rou
   assert.equal(lines2[4], "🪙 tokens: ↑0 ↓0"); // no usage yet → zeros, still shown, above the messages line
 });
 
+test("status: 💲 cost line — only when cost > 0, right after the tokens line, adaptive precision", async () => {
+  // cost 0.4521 → 3-decimal band; sits between 🪙 tokens and 📨 messages
+  const pi = new FakePi({
+    cwd: "/proj",
+    model: { id: "m1", name: "Model One", provider: "p", reasoning: false },
+    sessionUsage: { input: 12500, output: 128000, cost: 0.4521 },
+  });
+  const out = new FakeOut();
+  await new SessionBridge(makeDeps(pi.build(), out)).dispatch({ kind: "status", chatId: 7 });
+  const lines = lastRichText(out).split("\n");
+  assert.deepEqual(lines, [
+    "📌 Untitled session — idle · 🔊 full",
+    "📁 dir: /proj",
+    "🤖 model: Model One · 🧠 thinking: default",
+    "📖 context: n/a",
+    "🪙 tokens: ↑12.5k ↓128k",
+    "💲 cost: $0.452",
+    "📨 messages: 0",
+  ]);
+
+  // cost 0 → the line is absent entirely (local-model card is unchanged)
+  const pi2 = new FakePi({ cwd: "/proj", sessionUsage: { input: 5, output: 6, cost: 0 } });
+  const out2 = new FakeOut();
+  await new SessionBridge(makeDeps(pi2.build(), out2)).dispatch({ kind: "status", chatId: 7 });
+  assert.ok(!lastRichText(out2).includes("💲"), "no cost line at $0");
+});
+
+test("status: 💲 cost line — only when cost > 0, right after the tokens line, adaptive precision", async () => {
+  // cost 0.4521 → 3-decimal band; sits between 🪙 tokens and 📨 messages
+  const pi = new FakePi({
+    cwd: "/proj",
+    model: { id: "m1", name: "Model One", provider: "p", reasoning: false },
+    sessionUsage: { input: 12500, output: 128000, cost: 0.4521 },
+  });
+  const out = new FakeOut();
+  await new SessionBridge(makeDeps(pi.build(), out)).dispatch({ kind: "status", chatId: 7 });
+  const lines = lastRichText(out).split("\n");
+  assert.deepEqual(lines, [
+    "📌 Untitled session — idle · 🔊 full",
+    "📁 dir: /proj",
+    "🤖 model: Model One · 🧠 thinking: default",
+    "📖 context: n/a",
+    "🪙 tokens: ↑12.5k ↓128k",
+    "💲 cost: $0.452",
+    "📨 messages: 0",
+  ]);
+
+  // cost 0 → the line is absent entirely (local-model card is unchanged)
+  const pi2 = new FakePi({ cwd: "/proj", sessionUsage: { input: 5, output: 6, cost: 0 } });
+  const out2 = new FakeOut();
+  await new SessionBridge(makeDeps(pi2.build(), out2)).dispatch({ kind: "status", chatId: 7 });
+  assert.ok(!lastRichText(out2).includes("💲"), "no cost line at $0");
+});
+
 test("status: 🔥 GPU line from probeGpu (single + multi); omitted when probe unavailable", async () => {
   const base = {
     cwd: "/proj",
@@ -117,15 +171,63 @@ test("status: 🔥 GPU line from probeGpu (single + multi); omitted when probe u
   const deps1 = makeDeps(new FakePi(base).build(), out1);
   deps1.probeGpu = async () => [gpu];
   await new SessionBridge(deps1).dispatch({ kind: "status", chatId: 7 });
-  assert.equal(lastRichText(out1).split("\n")[6], "🔥 GPU: 67°C · 96% · 14.2/24.0 GB");
+  assert.equal(lastRichText(out1).split("\n")[6], "🔥 GPU: 96% · 67°C · 14.2/24.0 GB");
 
   const out2 = new FakeOut();
   const deps2 = makeDeps(new FakePi(base).build(), out2);
   deps2.probeGpu = async () => [gpu, { tempC: 72, utilPct: 50, memUsedGb: 8, memTotalGb: 24 }];
   await new SessionBridge(deps2).dispatch({ kind: "status", chatId: 7 });
   const lines = lastRichText(out2).split("\n");
-  assert.ok(lines[6].startsWith("🔥 GPU 0: 67°C"));
-  assert.ok(lines[7].startsWith("🔥 GPU 1: 72°C"));
+  assert.ok(lines[6].startsWith("🔥 GPU 0: 96%"));
+  assert.ok(lines[7].startsWith("🔥 GPU 1: 50%"));
+});
+
+test("status: 📊 sys line (CPU + RAM) as the LAST card line; omitted when probe unavailable", async () => {
+  const base = { cwd: "/proj" };
+
+  // makeDeps default: probeSys → null → no sys line
+  const out0 = new FakeOut();
+  await new SessionBridge(makeDeps(new FakePi(base).build(), out0)).dispatch({ kind: "status", chatId: 7 });
+  assert.ok(!lastRichText(out0).includes("📊"), "no sys line by default");
+
+  // probe available → the line is the LAST card line (after the GPU line)
+  const out1 = new FakeOut();
+  const deps1 = makeDeps(new FakePi(base).build(), out1);
+  deps1.probeSys = () => ({ cpuPct: 12, ramUsedGb: 24.4, ramTotalGb: 91.7 });
+  await new SessionBridge(deps1).dispatch({ kind: "status", chatId: 7 });
+  const lines = lastRichText(out1).split("\n");
+  assert.equal(lines[lines.length - 1], "📊 CPU: 12% · RAM: 24.4/91.7 GB");
+
+  // GPU + sys together: GPU line first, sys line last
+  const out2 = new FakeOut();
+  const deps2 = makeDeps(new FakePi(base).build(), out2);
+  deps2.probeGpu = async () => [{ tempC: 67, utilPct: 96, memUsedGb: 14.19, memTotalGb: 24 }];
+  deps2.probeSys = () => ({ cpuPct: 12, ramUsedGb: 24.4, ramTotalGb: 91.7 });
+  await new SessionBridge(deps2).dispatch({ kind: "status", chatId: 7 });
+  const l2 = lastRichText(out2).split("\n");
+  assert.ok(l2[l2.length - 2]!.startsWith("🔥 GPU"), "GPU line before the sys line");
+  assert.equal(l2[l2.length - 1], "📊 CPU: 12% · RAM: 24.4/91.7 GB");
+});
+
+test("status: 🌿 branch line directly UNDER the dir line; omitted when the probe finds nothing", async () => {
+  const base = { cwd: "/proj" };
+
+  // makeDeps default: probeBranch → undefined → no branch line (6 base lines)
+  const out0 = new FakeOut();
+  await new SessionBridge(makeDeps(new FakePi(base).build(), out0)).dispatch({ kind: "status", chatId: 7 });
+  const l0 = lastRichText(out0).split("\n");
+  assert.equal(l0.length, 6);
+  assert.ok(!l0.some((l) => l.includes("🌿")), "no branch line by default");
+
+  // probe available → the line sits right under the dir line
+  const out1 = new FakeOut();
+  const deps1 = makeDeps(new FakePi(base).build(), out1);
+  deps1.probeBranch = async (cwd) => (cwd === "/proj" ? "feat/session-cost-card" : undefined);
+  await new SessionBridge(deps1).dispatch({ kind: "status", chatId: 7 });
+  const l1 = lastRichText(out1).split("\n");
+  assert.ok(l1[1]!.startsWith("📁 dir: "), "line 1 is the dir line");
+  assert.equal(l1[2], "🌿 branch: feat/session-cost-card", "line 2 is the branch line");
+  assert.ok(l1[3]!.startsWith("🤖 model:"), "the rest of the card follows");
 });
 
 test("pair: sets ownerId, sends welcome + card + help", async () => {
@@ -141,13 +243,15 @@ test("pair: sets ownerId, sends welcome + card + help", async () => {
   assert.ok(texts[1].startsWith("📌 Untitled session — idle")); // the STATUS card (not the old session card)
   assert.ok(texts[1].includes("📨 messages:"));
   assert.ok(texts[2].includes("/help"));
+  // pairing completes → the TUI pairing modal is closed (no-op when none open)
+  assert.equal(pi.closeQrCalls, 1);
 });
 
 test("notAuthorized: different text paired vs unpaired", async () => {
   const out = new FakeOut();
   await new SessionBridge(makeDeps(new FakePi().build(), out, { ownerId: undefined }))
     .dispatch({ kind: "notAuthorized", chatId: 1, fromId: 2 });
-  assert.ok(lastRichText(out).includes("Start"));
+  assert.ok(lastRichText(out).includes("/start"));
   const out2 = new FakeOut();
   await new SessionBridge(makeDeps(new FakePi().build(), out2)).dispatch({
     kind: "notAuthorized",

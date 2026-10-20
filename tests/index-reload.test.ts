@@ -25,7 +25,7 @@ const richText = (body: Record<string, unknown> | undefined): string => {
 
 const agentDir = mkdtempSync(join(tmpdir(), "pi-tg-reload-"));
 process.env.PI_CODING_AGENT_DIR = agentDir;
-writeFileSync(join(agentDir, "pi-telegram.json"), JSON.stringify({ botToken: "TEST-TOKEN", ownerId: 123456 }));
+writeFileSync(join(agentDir, "pi-tg.json"), JSON.stringify({ botToken: "TEST-TOKEN", ownerId: 123456 }));
 
 type Handler = (...a: unknown[]) => unknown;
 function boot(mod: { default: (pi: unknown) => void }, handlers: Map<string, Handler>): void {
@@ -105,7 +105,7 @@ test("owner chat survives a reload: gen2 (fresh module) mirrors a dialog to the 
   await waitFor(
     () => {
       try {
-        return (JSON.parse(readFileSync(join(agentDir, "pi-telegram.json"), "utf-8")) as { ownerChatId?: number }).ownerChatId === 42;
+        return (JSON.parse(readFileSync(join(agentDir, "pi-tg.json"), "utf-8")) as { ownerChatId?: number }).ownerChatId === 42;
       } catch {
         return false;
       }
@@ -170,7 +170,7 @@ test("run started before the chat was learned: the draft appears when the owner 
   // The previous test's generation persisted ownerChatId into the shared temp
   // config file — wipe it to recreate the real gap: a fresh generation whose
   // config has NO learned chat (the pre-fix state the upgrade lands in).
-  writeFileSync(join(agentDir, "pi-telegram.json"), JSON.stringify({ botToken: "TEST-TOKEN", ownerId: 123456 }));
+  writeFileSync(join(agentDir, "pi-tg.json"), JSON.stringify({ botToken: "TEST-TOKEN", ownerId: 123456 }));
 
   // fresh module: ownerChatId starts undefined (no ownerChatId in the config file)
   // @ts-expect-error -- query-string import: fresh module instance (the /reload equivalent)
@@ -236,7 +236,7 @@ test("process start (reason startup): the persisted chat is NOT restored — the
   }) as typeof fetch;
 
   // the config DOES carry a persisted chat (left by a previous process)
-  writeFileSync(join(agentDir, "pi-telegram.json"), JSON.stringify({ botToken: "TEST-TOKEN", ownerId: 123456, ownerChatId: 42 }));
+  writeFileSync(join(agentDir, "pi-tg.json"), JSON.stringify({ botToken: "TEST-TOKEN", ownerId: 123456, ownerChatId: 42 }));
 
   // @ts-expect-error -- query-string import: fresh module instance
   const modD = await import("../index.ts?reload3");
@@ -311,7 +311,7 @@ test("mid-run dialog: the live draft is segmented BEFORE the dialog message, and
 
   // self-contained config: no learned chat in the file (the restart gate keeps
   // it out at startup anyway — the first owner message teaches the chat)
-  writeFileSync(join(agentDir, "pi-telegram.json"), JSON.stringify({ botToken: "TEST-TOKEN", ownerId: 123456 }));
+  writeFileSync(join(agentDir, "pi-tg.json"), JSON.stringify({ botToken: "TEST-TOKEN", ownerId: 123456 }));
   // @ts-expect-error -- query-string import: fresh module instance (the /reload equivalent)
   const modE = await import("../index.ts?seg");
   const handlersE = new Map<string, Handler>();
