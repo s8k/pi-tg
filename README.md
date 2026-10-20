@@ -157,7 +157,7 @@ login acme`) and tap the entry — the command runs with your arguments.
 
 ## Configuration
 
-File: `~/.pi/agent/pi-tg.json` (atomic writes; created on first `/tg:config`; legacy `pi-telegram.json` / `pi-telega.json` migrate automatically).
+File: `~/.pi/agent/pi-tg.json` (atomic writes; created on first `/tg:config`).
 Env `PI_TELEGRAM_BOT_TOKEN` overrides the stored token.
 
 | Field | Default | Meaning |

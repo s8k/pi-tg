@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -90,31 +90,10 @@ export const DEFAULTS: Pick<
   seenUpdateIds: [],
 };
 
-/** Previous config filenames (newest first) — kept only for the one-time migration below. */
-const LEGACY_CONFIG_FILENAMES = ["pi-telegram.json", "pi-telega.json"];
-
 export function configPath(opts?: ConfigOptions): string {
   if (opts?.path) return opts.path; // explicit override (tests) — no side effects
   const dir = opts?.agentDir ?? join(homedir(), ".pi", "agent");
-  const fresh = join(dir, "pi-tg.json");
-  // One-time migration from a pre-rename filename: move the existing config
-  // (token + pairing) so a rename never forces a re-pair. When several legacy
-  // files exist the newest wins. Idempotent and self-healing: while the fresh
-  // file is absent the attempt repeats.
-  if (!existsSync(fresh)) {
-    for (const name of LEGACY_CONFIG_FILENAMES) {
-      const legacy = join(dir, name);
-      if (!existsSync(legacy)) continue;
-      try {
-        writeFileSync(fresh, readFileSync(legacy, "utf-8"), "utf-8");
-        unlinkSync(legacy);
-      } catch {
-        /* best effort — the next call retries; the old file is never destroyed */
-      }
-      break;
-    }
-  }
-  return fresh;
+  return join(dir, "pi-tg.json");
 }
 
 function clampInt(value: unknown, fallback: number, min: number, max: number): number {

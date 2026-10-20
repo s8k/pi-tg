@@ -22,8 +22,6 @@ import { mergeCommands, filterCommands, customCommandMatch, toInlineResults, toC
 import type { TgInlineQuery } from "./src/telegram-client.ts";
 
 // pi's agent dir honors PI_CODING_AGENT_DIR (tests point it at a temp dir).
-// configPath also runs the one-time migration from the legacy `pi-telega.json`
-// filename (token + pairing carry over, no re-pair).
 const CFG = { agentDir: getAgentDir() };
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
