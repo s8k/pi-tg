@@ -1,8 +1,9 @@
 {
   "name": "pi-tg",
   "version": "1.0.0",
-  "type": "module",
   "description": "pi extension: drive your local Pi Coding Agent from Telegram (Bot API, long polling)",
+  "type": "module",
+  "main": "index.ts",
   "keywords": [
     "pi-package",
     "pi-extension",
@@ -13,11 +14,19 @@
     "remote-control",
     "mobile"
   ],
+  "author": "s8k",
+  "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/s8k/pi-tg.git"
+    "url": "git+https://github.com/s8k/pi-tg.git"
   },
-  "license": "MIT",
+  "homepage": "https://github.com/s8k/pi-tg#readme",
+  "bugs": {
+    "url": "https://github.com/s8k/pi-tg/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "engines": {
     "node": ">=22.19.0"
   },
@@ -29,6 +38,11 @@
     "extensions": [
       "./index.ts"
     ]
+  },
+  "scripts": {
+    "test": "node --test",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run typecheck && npm test"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*"
