@@ -35,10 +35,11 @@ via Bot API long polling — phone and terminal become co-clients of the same
 live session. No cloud relay; your code never leaves your machine.
 
 ```
-Telegram (phone) ⇄ Bot API long polling ⇄ pi-tg (extension) ⇄ Pi harness
+Telegram (phone) ⇄ Bot API long polling ⇄ pi-tg (extension) ⇄ Pi Coding Agent
 ```
 
-https://github.com/user-attachments/assets/7ec4653a-df27-4fb9-a8d8-82488d910132
+https://github.com/user-attachments/assets/c1478d38-dba6-4c19-a6d1-f7e1947d8186
+
 
 ## Requirements
 
@@ -66,6 +67,8 @@ https://github.com/user-attachments/assets/7ec4653a-df27-4fb9-a8d8-82488d910132
    The selector closes the moment you pair — or press `Esc` / choose **Cancel**
    to dismiss it early.
 
+https://github.com/user-attachments/assets/52930e84-aee0-40e0-b69e-c5d8e9eb051e
+
 ### Install from source (development)
 
 1. `git clone https://github.com/s8k/pi-tg.git`
@@ -92,7 +95,7 @@ https://github.com/user-attachments/assets/7ec4653a-df27-4fb9-a8d8-82488d910132
   `(continued)` marker. If Telegram rejects a rich send, the answer is
   re-sent as plain text.
 
-## Pi harness commands
+## Pi Coding Agent commands
 
 | Command | Action |
 |---|---|
@@ -104,25 +107,26 @@ All three appear in the TUI’s `/` completion list (type `/tg` and Tab).
 `/tg` itself is reserved for pi-tg’s internal poller → TUI dispatch — typing
 it by hand just says so.
 
-## Telegram bot commands
+## Telegram Bot commands
 
 | Command | Action |
 |---|---|
-| free text | send a prompt |
-| `/status` | session, dir, model, thinking, context usage, message count, busy state, GPU temp/util/memory (NVIDIA, if available) |
-| `/stop` | stop the current turn |
-| `/new` | new session (confirm; the old one stays in the list) |
-| `/sessions` | list recent sessions (≤ 20) with buttons; tap one to switch (confirm if `askClearOnSwitch`) |
-| `/name <text>` | rename the session |
-| `/models` | model list (current marked) with buttons |
-| `/thinking` | available thinking levels (off → high) with buttons |
-| `/level_mute` | output level: mute — no agent output (commands still work) |
-| `/level_minimal` | output level: minimal — visible text only (no tools, no thinking) |
-| `/level_full` | output level: full — tool log + final answer (default) |
-| `/compact` | compact context (stoppable via Stop; result reported when done) |
-| `/reload` | hot-reload extensions, skills, prompts, themes, context files (idle only; ✔️ stamp + card = success) |
-| `/kill` | confirm → graceful TUI shutdown |
-| `/help` | bot command list + ⌨️ button to browse, search, and run other Pi commands |
+| free text | Send a prompt |
+| `/start` | Pair the bot and show confirmation message and welcome card (i.e. `/status` and `/help` combined) |
+| `/status` | Session, dir, model, thinking, context usage, message count, busy state, GPU temp/util/memory (NVIDIA, if available) |
+| `/stop` | Stop the current turn |
+| `/new` | New session (confirm; the old one stays in the list) |
+| `/sessions` | List recent sessions (≤ 20) with buttons; tap one to switch (confirm if `askClearOnSwitch`) |
+| `/name <text>` | Rename the session |
+| `/models` | Model list (current marked) with buttons |
+| `/thinking` | Available thinking levels (off → high) with buttons |
+| `/level_mute` | Output level: mute — no agent output (commands still work) |
+| `/level_minimal` | Output level: minimal — visible text only (no tools, no thinking) |
+| `/level_full` | Output level: full — tool log + final answer (default) |
+| `/compact` | Compact context (stoppable via Stop; result reported when done) |
+| `/reload` | Hot-reload extensions, skills, prompts, themes, context files (idle only; ✔️ stamp + card = success) |
+| `/kill` | Confirm → graceful TUI shutdown |
+| `/help` | Bot command list + ⌨️ button to browse, search, and run other Pi commands |
 
 Row order matches the Telegram `/` command menu — set via `setMyCommands`
 on every poller start (self-healing; single source of truth in
