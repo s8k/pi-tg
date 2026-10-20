@@ -1,5 +1,5 @@
 {
-  "name": "pi-tg",
+  "name": "@s8k/pi-tg",
   "version": "1.0.0",
   "description": "pi extension: drive your local Pi Coding Agent from Telegram (Bot API, long polling)",
   "type": "module",

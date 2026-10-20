@@ -19,14 +19,14 @@
 </p>
 
 <p align="center">
-  <a href="https://www.npmjs.com/package/pi-tg">
-    <img src="https://img.shields.io/npm/v/pi-tg" alt="npm version" />
+  <a href="https://www.npmjs.com/package/@s8k/pi-tg">
+    <img src="https://img.shields.io/npm/v/@s8k/pi-tg" alt="npm version" />
   </a>
   <a href="https://github.com/s8k/pi-tg/releases/latest">
     <img src="https://img.shields.io/github/v/release/s8k/pi-tg" alt="release" />
   </a>
   <a href="https://github.com/s8k/pi-tg/blob/main/LICENSE">
-    <img src="https://img.shields.io/npm/l/pi-tg" alt="license" />
+    <img src="https://img.shields.io/npm/l/@s8k/pi-tg" alt="license" />
   </a>
 </p>
 
@@ -58,7 +58,7 @@ https://github.com/user-attachments/assets/c1478d38-dba6-4c19-a6d1-f7e1947d8186
 
 ### Install from npm
 
-1. `pi install npm:pi-tg`
+1. `pi install npm:@s8k/pi-tg`
 2. Start Pi - the extension loads automatically
 3. In the TUI: `/tg:config <bot_token>`
 4. `/tg:pair` → a pairing selector appears: instructions, a clickable link, and the QR
