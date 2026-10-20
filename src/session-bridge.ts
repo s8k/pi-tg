@@ -844,14 +844,14 @@ export class SessionBridge {
         return;
       }
       case "kill": {
+        if (!action.nonce) return; // a callback without a nonce is inert
         const p = this.consumeOneShot(action.nonce);
-        if (action.nonce && !p) return; // stale tap — the question is already stamped
+        if (!p) return; // stale tap — the question is already stamped
         if (!action.yes) {
-          if (p) await this.stampOneShot(p, "✅ Kept running — Pi is still alive.");
-          else await out.send(action.chatId, "OK — Pi keeps running."); // legacy (no nonce) — plain message
+          await this.stampOneShot(p, "✅ Kept running — Pi is still alive.");
           return;
         }
-        if (p) await this.stampOneShot(p, "☠ Shutting down…");
+        await this.stampOneShot(p, "☠ Shutting down…");
         await out.send(action.chatId, "👋 Shutting down pi… (bot goes silent)");
         pi.shutdown();
         return;
@@ -1052,20 +1052,19 @@ export class SessionBridge {
 
   private async handleClear(action: Extract<TgAction, { kind: "clear" }>): Promise<void> {
     const { out, state, sleep } = this.deps;
+    if (!action.nonce) return; // a callback without a nonce is inert
     const p = this.consumeOneShot(action.nonce);
-    if (action.nonce && !p) return; // stale tap — the question is already stamped
+    if (!p) return; // stale tap — the question is already stamped
     if (!action.doIt) {
-      if (p) await this.stampOneShot(p, "✅ Kept — chat history stays.");
-      else await out.send(action.chatId, "OK — chat history kept."); // legacy (no nonce) — plain message
+      await this.stampOneShot(p, "✅ Kept — chat history stays.");
       return;
     }
     const ids = state.drainSent();
     if (ids.length === 0) {
-      if (p) await this.stampOneShot(p, "✅ Nothing to clear.");
-      else await out.send(action.chatId, "Nothing to clear.");
+      await this.stampOneShot(p, "✅ Nothing to clear.");
       return;
     }
-    if (p) await this.stampOneShot(p, "🧹 Clearing…");
+    await this.stampOneShot(p, "🧹 Clearing…");
     await out.send(action.chatId, `🧹 Clearing ${ids.length} messages…`);
     let cleared = 0;
     for (const id of ids) {
