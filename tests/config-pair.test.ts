@@ -223,3 +223,122 @@ test("/tg:unpair clears the chat-scoped sentMessageIds but keeps the bot-scoped 
   assert.equal(c.lastOffset, 500, "unpair KEEPS the bot-scoped lastOffset (same bot)");
   assert.deepEqual(c.seenUpdateIds, [600], "unpair KEEPS the bot-scoped seenUpdateIds (same bot)");
 });
+
+// Regression: on a token change the new bot's existing update backlog used to
+// be re-read and re-answered (an unpaired bot replied "not paired" to every
+// stale message — incident: ~10 identical replies at once). The drain in
+// runConfig advances lastOffset past the backlog and marks it seen WITHOUT
+// processing, so the fresh bot neither re-answers stale messages nor re-reads
+// them — but still receives genuinely NEW updates (it is not deaf).
+test("token change drains the new bot's backlog: no stale replies, new updates still delivered", async (t) => {
+  const realFetch = globalThis.fetch;
+  t.after(() => (globalThis.fetch = realFetch));
+  let notAuthSends = 0;
+  let c1006 = 0;
+  const msg = (id: number, mid: number) => ({
+    update_id: id,
+    message: {
+      message_id: mid, date: 1, chat: { id: 42, type: "private" },
+      from: { id: 123456, is_bot: false, first_name: "O" }, text: "hello",
+    },
+  });
+  const backlog = [1001, 1002, 1003, 1004, 1005].map((id) => msg(id, 5000 + id));
+  const newMsg = msg(1007, 6001);
+  const hang = (init?: RequestInit) => new Promise<Response>((_, reject) => {
+    const sig = init?.signal as AbortSignal | undefined;
+    const onAbort = () => reject(new DOMException("Aborted", "AbortError"));
+    if (sig) { if (sig.aborted) onAbort(); else sig.addEventListener("abort", onAbort, { once: true }); }
+  });
+  const ok = (result: unknown) => new Response(JSON.stringify({ ok: true, result }), { status: 200 });
+  globalThis.fetch = (async (url: unknown, init?: RequestInit) => {
+    const method = String(url).split("/").pop() ?? "";
+    const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {};
+    if (method === "getMe") return ok({ id: 1, is_bot: true, first_name: "B", username: "b" });
+    if (method === "getUpdates") {
+      const off = Number(body.offset ?? 0);
+      if (off === 500) return hang(init);          // old bot's poller (aborted on /tg:config)
+      if (off === 0) return ok(backlog);           // drain: read the new bot's backlog
+      if (off === 1006) {
+        c1006++;
+        if (c1006 === 1) return ok([]);            // drain: empty → done
+        if (c1006 === 2) return ok([newMsg]);      // new poller: the fresh update
+        return hang(init);
+      }
+      return hang(init);                            // new poller long-poll (offset 1008+)
+    }
+    if (method !== "getMe" && String(JSON.stringify(body)).includes("Not paired")) notAuthSends++;
+    return ok({ message_id: 99999 });
+  }) as typeof fetch;
+
+  // old bot, paired, at offset 500
+  writeFileSync(cfgFile, JSON.stringify({ botToken: "111:AAOLD0000000000000000", ownerId: 123456, ownerChatId: 42, lastOffset: 500 }));
+  const { handlers, config } = await boot("cfgDrain");
+  t.after(() => handlers.get("session_shutdown")!());
+  handlers.get("session_start")!({}, { cwd: "/tmp", mode: "rpc", hasUI: false, isIdle: () => true, ui: { notify: () => {} }, sessionManager: {} } as never);
+
+  // switch to a brand-new bot that already has a backlog of 5 stale messages
+  await config("222:AAbrandnewbot0000000000");
+
+  // the fresh (unpaired) bot must reply "not paired" to the ONE new message
+  // (proof it is not deaf) — and to NONE of the 5 stale backlog messages.
+  await waitFor(() => notAuthSends >= 1, "the new message got a 'not paired' reply");
+  await sleep(150); // give any (buggy) stale replies a chance to land
+  assert.equal(notAuthSends, 1, "backlog drained: only the new message is answered, not the 5 stale ones");
+  assert.ok((readCfg().lastOffset ?? 0) >= 1006, "lastOffset advanced past the drained backlog");
+});
+
+// The same protection on the STARTUP path (a reload goes through session_start,
+// not runConfig): an unpaired bot with a backlog of messages that piled up while
+// it was offline must not spam one "not paired" reply per stale message.
+test("unpaired startup drains the backlog: no stale replies, new updates still delivered", async (t) => {
+  const realFetch = globalThis.fetch;
+  t.after(() => (globalThis.fetch = realFetch));
+  let notAuthSends = 0;
+  let c1006 = 0;
+  const msg = (id: number, mid: number) => ({
+    update_id: id,
+    message: {
+      message_id: mid, date: 1, chat: { id: 42, type: "private" },
+      from: { id: 123456, is_bot: false, first_name: "O" }, text: "hello",
+    },
+  });
+  const backlog = [1001, 1002, 1003, 1004, 1005].map((id) => msg(id, 5000 + id));
+  const newMsg = msg(1007, 6001);
+  const hang = (init?: RequestInit) => new Promise<Response>((_, reject) => {
+    const sig = init?.signal as AbortSignal | undefined;
+    const onAbort = () => reject(new DOMException("Aborted", "AbortError"));
+    if (sig) { if (sig.aborted) onAbort(); else sig.addEventListener("abort", onAbort, { once: true }); }
+  });
+  const ok = (result: unknown) => new Response(JSON.stringify({ ok: true, result }), { status: 200 });
+  globalThis.fetch = (async (url: unknown, init?: RequestInit) => {
+    const method = String(url).split("/").pop() ?? "";
+    const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {};
+    if (method === "getMe") return ok({ id: 1, is_bot: true, first_name: "B", username: "b" });
+    if (method === "getUpdates") {
+      const off = Number(body.offset ?? 0);
+      if (off === 0) return ok(backlog);       // drain: read the backlog
+      if (off === 1006) {
+        c1006++;
+        if (c1006 === 1) return ok([]);        // drain: empty → done
+        if (c1006 === 2) return ok([newMsg]);  // new poller: the fresh update
+        return hang(init);
+      }
+      return hang(init);                        // new poller long-poll (1008+)
+    }
+    if (method !== "getMe" && String(JSON.stringify(body)).includes("Not paired")) notAuthSends++;
+    return ok({ message_id: 99999 });
+  }) as typeof fetch;
+
+  // unpaired bot, no lastOffset (offset 0), with a backlog of 5 stale messages
+  writeFileSync(cfgFile, JSON.stringify({ botToken: "111:AAOLD0000000000000000" }));
+  const { handlers } = await boot("cfgStartupDrain");
+  t.after(() => handlers.get("session_shutdown")!());
+  handlers.get("session_start")!({}, { cwd: "/tmp", mode: "rpc", hasUI: false, isIdle: () => true, ui: { notify: () => {} }, sessionManager: {} } as never);
+
+  // the fresh (unpaired) bot must reply "not paired" to the ONE new message
+  // (proof it is not deaf) — and to NONE of the 5 stale backlog messages.
+  await waitFor(() => notAuthSends >= 1, "the new message got a 'not paired' reply");
+  await sleep(150); // give any (buggy) stale replies a chance to land
+  assert.equal(notAuthSends, 1, "startup backlog drained: only the new message is answered, not the 5 stale ones");
+  assert.ok((readCfg().lastOffset ?? 0) >= 1006, "lastOffset advanced past the drained backlog");
+});

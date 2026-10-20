@@ -441,6 +441,46 @@ export default function piTelegram(pi: ExtensionAPI): void {
 
   // ── terminal commands ──
 
+  // Drain a bot's existing update backlog: advance lastOffset past every queued
+  // update and mark each seen, WITHOUT processing it. Used on a token change (a
+  // new bot must not re-answer its old queue) and on an unpaired startup (a
+  // burst of messages that piled up while the bot was offline must not spam
+  // "not paired"). Best effort: a bad token / network error just leaves the
+  // offset low; the poller surfaces API failures itself.
+  async function drainBacklog(token: string): Promise<void> {
+    if (!state) return;
+    state.restoreSeenIds([], 0); // drop the previous bot's / stale seen ids
+    state.setOffset(0);          // drain from the very beginning
+    let off = 0;
+    let guard = 0;
+    try {
+      const drainClient = new TelegramClient(token, {});
+      for (;;) {
+        // Per-call abort so a stalled getUpdates can't hang the drain forever
+        // (the API's long-poll timeout is 1s; this is a safety net and lets
+        // tests' fake wires resolve it).
+        const ac = new AbortController();
+        const timer = setTimeout(() => ac.abort(), 2000);
+        let batch: TgUpdate[];
+        try {
+          batch = await drainClient.getUpdates(off, 1, ac.signal);
+        } finally {
+          clearTimeout(timer);
+        }
+        if (batch.length === 0) break;
+        for (const u of batch) state.markSeen(u.update_id);
+        off = Math.max(off, ...batch.map((u) => u.update_id)) + 1;
+        state.setOffset(off);
+        if (++guard >= 100) break; // safety cap
+      }
+    } catch {
+      off = state.getOffset(); // keep wherever we advanced past
+    }
+    cfg.lastOffset = off === 0 ? undefined : off;
+    cfg.seenUpdateIds = state.seenIds();
+    await persist();
+  }
+
   async function runConfig(token: string, ctx: ExtensionCommandContext): Promise<void> {
     if (!tokenLooksValid(token)) {
       ctx.ui.notify("pi-tg: invalid token (expected <digits>:<alnum/ -_>, e.g. 123456:AAH…)", "error");
@@ -454,26 +494,26 @@ export default function piTelegram(pi: ExtensionAPI): void {
     // /start. Re-saving the SAME token keeps the pairing intact.
     const prevToken = getBotToken(cfg, CFG);
     cfg.botToken = token;
-    if (getBotToken(cfg, CFG) !== prevToken) {
+    const tokenChanged = getBotToken(cfg, CFG) !== prevToken;
+    if (tokenChanged) {
       // Pairing is bot-scoped: the new bot was never /start-ed, so the old
       // owner (a global Telegram id the router trusts outright) must not carry
       // over. Reset the pairing…
       cfg.ownerId = undefined;
       cfg.ownerChatId = undefined;
       ownerChatId = undefined; // Mirror must stop posting to the stale chat
-      // …and the bot-scoped pollers. These are per-bot: getUpdates drops every
-      // update with update_id < offset, so a carried-over offset (from the old
-      // bot's sequence) DEAFs the new bot (its fresh ids are all below it).
-      // Reset the LIVE state (the poller reads it directly) AND cfg — persist()
-      // below re-syncs cfg.sent/seen from state, so cfg alone would be clobbered.
+      // …and the chat-scoped sent ids (a new bot = a new chat context).
+      // lastOffset/seenUpdateIds are handled by the DRAIN below (after the old
+      // poller stops): we must not let the new poller re-read the bot's backlog
+      // (an unpaired bot would reply "not paired" to every stale message, and a
+      // stale /start in it would auto-pair the new bot to the wrong account).
       if (state) {
-        state.setOffset(0);
         state.restoreSentIds([]);
-        state.restoreSeenIds([], 0);
+      } else {
+        cfg.lastOffset = undefined;
+        cfg.seenUpdateIds = [];
       }
-      cfg.lastOffset = undefined;
       cfg.sentMessageIds = [];
-      cfg.seenUpdateIds = [];
     }
     await persist();
     const old = pollPromise;
@@ -483,6 +523,10 @@ export default function piTelegram(pi: ExtensionAPI): void {
     // A session replacement can happen while we were waiting above — in that
     // case this handler's ctx is stale and must not be used any more.
     if (!ctxIsAlive(ctx)) return;
+    if (tokenChanged && state) {
+      await drainBacklog(token);
+      if (!ctxIsAlive(ctx)) return;
+    }
     pollPromise = startPolling().catch((err) => ui(`pi-tg: ${String(err)}`, "error"));
     void pollPromise;
     // Event-driven (2026-10-11): key configuration is one of the two moments
@@ -612,6 +656,13 @@ export default function piTelegram(pi: ExtensionAPI): void {
       // the loop backs off and retries instead of dying.
       stopping = true;
       pollAbort?.abort();
+      // Unpaired: drain any backlog that piled up while the bot was offline so
+      // it doesn't spam one "not paired" reply per stale message on startup.
+      // (A /start pressed while offline is skipped too — the user re-presses it.)
+      if (cfg.ownerId === undefined) {
+        const token = getBotToken(cfg, CFG);
+        if (token) await drainBacklog(token);
+      }
       // startPolling's sync setup (client/out/bridge) is done by the time this
       // line runs — only its long-poll loop is still pending.
       const loop = startPolling();
