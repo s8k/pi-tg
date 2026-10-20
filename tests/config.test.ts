@@ -7,12 +7,12 @@ import { DEFAULTS, configPath, getBotToken, loadConfig, sanitize, saveConfig } f
 
 function tempPath(): { opts: { path: string }; path: string } {
   const dir = mkdtempSync(join(tmpdir(), "pi-tg-cfg-"));
-  const path = join(dir, "pi-telegram.json");
+  const path = join(dir, "pi-tg.json");
   return { opts: { path }, path };
 }
 
 test("configPath: default under ~/.pi/agent, override honored", () => {
-  assert.equal(configPath(), join(homedir(), ".pi", "agent", "pi-telegram.json"));
+  assert.equal(configPath(), join(homedir(), ".pi", "agent", "pi-tg.json"));
   assert.equal(configPath({ path: "/x/y.json" }), "/x/y.json");
 });
 
@@ -151,11 +151,11 @@ test("loadConfig: malformed ownerChatId → undefined", () => {
 
 test("configPath: agentDir override is honored (pi's agent dir, PI_CODING_AGENT_DIR)", () => {
   const dir = mkdtempSync(join(tmpdir(), "pi-tg-cfg-"));
-  assert.equal(configPath({ agentDir: dir }), join(dir, "pi-telegram.json"));
+  assert.equal(configPath({ agentDir: dir }), join(dir, "pi-tg.json"));
   assert.equal(configPath({ path: "/x/y.json", agentDir: dir }), "/x/y.json", "explicit path still wins");
 });
 
-// ── one-time migration from the legacy `pi-telega.json` filename ───────────
+// ── one-time migration from the legacy filenames (pi-telega.json, pi-telegram.json) ──
 
 function withFakeHome(home: string, fn: () => void): void {
   const oldUp = process.env.USERPROFILE;
@@ -172,7 +172,7 @@ function withFakeHome(home: string, fn: () => void): void {
   }
 }
 
-test("configPath: migrates a legacy pi-telega.json to pi-telegram.json (content preserved, legacy removed)", () => {
+test("configPath: migrates a legacy pi-telega.json to pi-tg.json (content preserved, legacy removed)", () => {
   const home = mkdtempSync(join(tmpdir(), "pi-tg-migrate-"));
   const agentDir = join(home, ".pi", "agent");
   mkdirSync(agentDir, { recursive: true });
@@ -180,14 +180,29 @@ test("configPath: migrates a legacy pi-telega.json to pi-telegram.json (content 
   writeFileSync(legacy, '{"ownerId": 7, "level": "full"}', "utf-8");
   withFakeHome(home, () => {
     const p = configPath();
-    assert.equal(p, join(agentDir, "pi-telegram.json"), "default path is the new name");
+    assert.equal(p, join(agentDir, "pi-tg.json"), "default path is the new name");
     assert.ok(existsSync(p), "the fresh file exists after configPath()");
     assert.equal(readFileSync(p, "utf-8"), '{"ownerId": 7, "level": "full"}', "content preserved");
     assert.ok(!existsSync(legacy), "legacy file removed");
   });
 });
 
-test("configPath: an existing fresh file is never clobbered by the legacy one", () => {
+test("configPath: migrates a legacy pi-telegram.json to pi-tg.json (content preserved, legacy removed)", () => {
+  const home = mkdtempSync(join(tmpdir(), "pi-tg-migrate-"));
+  const agentDir = join(home, ".pi", "agent");
+  mkdirSync(agentDir, { recursive: true });
+  const legacy = join(agentDir, "pi-telegram.json");
+  writeFileSync(legacy, '{"ownerId": 8, "level": "mute"}', "utf-8");
+  withFakeHome(home, () => {
+    const p = configPath();
+    assert.equal(p, join(agentDir, "pi-tg.json"), "default path is the new name");
+    assert.ok(existsSync(p), "the fresh file exists after configPath()");
+    assert.equal(readFileSync(p, "utf-8"), '{"ownerId": 8, "level": "mute"}', "content preserved");
+    assert.ok(!existsSync(legacy), "legacy file removed");
+  });
+});
+
+test("configPath: with both legacy files present, pi-telegram.json (the newer) wins", () => {
   const home = mkdtempSync(join(tmpdir(), "pi-tg-migrate-"));
   const agentDir = join(home, ".pi", "agent");
   mkdirSync(agentDir, { recursive: true });
@@ -195,7 +210,21 @@ test("configPath: an existing fresh file is never clobbered by the legacy one", 
   writeFileSync(join(agentDir, "pi-telega.json"), '{"ownerId": 1}', "utf-8");
   withFakeHome(home, () => {
     const p = configPath();
+    assert.equal(readFileSync(p, "utf-8"), '{"ownerId": 99}', "the newer legacy file wins");
+  });
+});
+
+test("configPath: an existing fresh file is never clobbered by the legacy ones", () => {
+  const home = mkdtempSync(join(tmpdir(), "pi-tg-migrate-"));
+  const agentDir = join(home, ".pi", "agent");
+  mkdirSync(agentDir, { recursive: true });
+  writeFileSync(join(agentDir, "pi-tg.json"), '{"ownerId": 99}', "utf-8");
+  writeFileSync(join(agentDir, "pi-telegram.json"), '{"ownerId": 2}', "utf-8");
+  writeFileSync(join(agentDir, "pi-telega.json"), '{"ownerId": 1}', "utf-8");
+  withFakeHome(home, () => {
+    const p = configPath();
     assert.equal(readFileSync(p, "utf-8"), '{"ownerId": 99}', "fresh file wins");
+    assert.ok(existsSync(join(agentDir, "pi-telegram.json")), "pi-telegram.json left in place when fresh exists");
     assert.ok(existsSync(join(agentDir, "pi-telega.json")), "legacy left in place when fresh exists");
   });
 });

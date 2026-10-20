@@ -7,7 +7,7 @@
  */
 import { readFileSync } from "node:fs";
 
-const cfg = JSON.parse(readFileSync(process.env.USERPROFILE! + "/.pi/agent/pi-telegram.json", "utf8"));
+const cfg = JSON.parse(readFileSync(process.env.USERPROFILE! + "/.pi/agent/pi-tg.json", "utf8"));
 const BASE = `https://api.telegram.org/bot${cfg.botToken}`;
 
 const deadline = Date.now() + 90_000;

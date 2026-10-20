@@ -20,7 +20,7 @@ process.env.PI_CODING_AGENT_DIR = agentDir;
 // token-change detection in runConfig compares what the poller actually uses.
 delete process.env.PI_TELEGRAM_BOT_TOKEN;
 
-const cfgFile = join(agentDir, "pi-telegram.json");
+const cfgFile = join(agentDir, "pi-tg.json");
 type Cfg = {
   botToken?: string;
   ownerId?: number;

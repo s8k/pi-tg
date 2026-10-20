@@ -8,7 +8,7 @@ import { join } from "node:path";
 // index.ts calls getAgentDir() on import to build the config path, and the
 // /tg:config handler would otherwise read/write the user's real config.
 const agentDir = mkdtempSync(join(tmpdir(), "pi-tg-cmd-"));
-const CFG_PATH = join(agentDir, "pi-telegram.json");
+const CFG_PATH = join(agentDir, "pi-tg.json");
 process.env.PI_CODING_AGENT_DIR = agentDir;
 
 const { default: piTelegram } = await import("../index.ts");

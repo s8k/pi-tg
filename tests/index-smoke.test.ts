@@ -21,7 +21,7 @@ process.env.PI_CODING_AGENT_DIR = agentDir;
 process.env.PI_TELEGRAM_BOT_TOKEN = "TEST-TOKEN";
 // paired config: the mirror only works for the owner's chat, and the chat id
 // is learned from the first owner update (below)
-writeFileSync(join(agentDir, "pi-telegram.json"), JSON.stringify({ botToken: "TEST-TOKEN", ownerId: 123456 }));
+writeFileSync(join(agentDir, "pi-tg.json"), JSON.stringify({ botToken: "TEST-TOKEN", ownerId: 123456 }));
 
 const { default: piTelegram } = await import("../index.ts");
 
@@ -1120,7 +1120,7 @@ test("sent message ids persist to the config file (regression: /new's Clear must
 
   // Wait until every persistent send carrying MY marker is in the config file.
   const persisted = (): number[] =>
-    (JSON.parse(readFileSync(join(agentDir, "pi-telegram.json"), "utf-8")) as { sentMessageIds?: number[] }).sentMessageIds ?? [];
+    (JSON.parse(readFileSync(join(agentDir, "pi-tg.json"), "utf-8")) as { sentMessageIds?: number[] }).sentMessageIds ?? [];
   await waitFor(() => {
     const mine = calls.filter((c) => (c.method === "sendMessage" || c.method === "sendRichMessage") && c.markdown.includes(MARKER) && c.msgId !== undefined);
     if (mine.length === 0) return false;
@@ -1282,7 +1282,7 @@ test("smoke: session card carries a 💲 cost line when the session branch has c
   // The card is only posted on session_start for a pending action (/new or a
   // session switch) — seed one into the shared config file; session_start
   // re-loads cfg, and onSessionReplaced clears it. Restore the file after.
-  const cfgPath = join(agentDir, "pi-telegram.json");
+  const cfgPath = join(agentDir, "pi-tg.json");
   const cfgBefore = readFileSync(cfgPath, "utf-8");
   t.after(() => writeFileSync(cfgPath, cfgBefore));
   writeFileSync(
