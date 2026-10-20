@@ -29,7 +29,15 @@ type Cfg = {
   sentMessageIds?: number[];
   seenUpdateIds?: number[];
 };
-const readCfg = (): Cfg => JSON.parse(readFileSync(cfgFile, "utf-8")) as Cfg;
+/** Raw config reader mirroring the app's decode: base64 at rest, plaintext in memory. */
+const readCfg = (): Cfg => {
+  const c = JSON.parse(readFileSync(cfgFile, "utf-8")) as Cfg;
+  if (typeof c.botToken === "string" && !c.botToken.includes(":")) {
+    const decoded = Buffer.from(c.botToken, "base64").toString("utf-8");
+    if (decoded !== "") c.botToken = decoded;
+  }
+  return c;
+};
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 async function waitFor(pred: () => boolean, what: string, ms = 15000): Promise<void> {

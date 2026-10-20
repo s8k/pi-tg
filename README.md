@@ -162,7 +162,7 @@ Env `PI_TELEGRAM_BOT_TOKEN` overrides the stored token.
 
 | Field | Default | Meaning |
 |---|---|---|
-| `botToken` | — | Bot API token |
+| `botToken` | — | Bot API token (base64-encoded at rest; legacy plaintext still reads) |
 | `ownerId` | — | Telegram user ID allowed to drive the bot |
 | `ownerChatId` | — | owner’s chat id, persisted on first message so the bot can post right after `/reload` (restored on `/reload` only, not on process start — after a restart the bot stays silent until the owner writes) |
 | `streamEditMs` | `1500` | throttle for rich-draft updates |

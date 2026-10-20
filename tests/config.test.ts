@@ -222,3 +222,40 @@ test("sanitize: seenUpdateIds capped at 200 (newest kept) + deduped + invalid dr
 test("sanitize: seenUpdateIds default []", () => {
   assert.deepEqual(sanitize({}).seenUpdateIds, []);
 });
+
+// ── botToken at-rest encoding (base64) ──────────────────────────────────────
+
+test("saveConfig: botToken is written base64-encoded, never plaintext", () => {
+  const { opts, path } = tempPath();
+  const cfg = { ...loadConfig(opts), botToken: "123:ABC" };
+  saveConfig(cfg, opts);
+  const raw = JSON.parse(readFileSync(path, "utf-8")) as { botToken: string };
+  assert.equal(raw.botToken, Buffer.from("123:ABC", "utf-8").toString("base64"));
+  assert.notEqual(raw.botToken, "123:ABC");
+  assert.equal(cfg.botToken, "123:ABC", "in-memory cfg is not mutated by saveConfig");
+});
+
+test("loadConfig: a base64-encoded botToken on disk is decoded", () => {
+  const { opts, path } = tempPath();
+  const token = "8852053515:AAESyRGxDVT_qNaMwrANG1fxFhp4MTrSsbk";
+  writeFileSync(path, JSON.stringify({ botToken: Buffer.from(token, "utf-8").toString("base64") }), "utf-8");
+  assert.equal(loadConfig(opts).botToken, token);
+});
+
+test("sanitize: legacy plaintext token (contains ':') is kept as-is (no decode)", () => {
+  assert.equal(sanitize({ botToken: "123:ABC" }).botToken, "123:ABC");
+});
+
+test("saveConfig/loadConfig round-trip: encoded on disk, decoded in memory", () => {
+  const { opts, path } = tempPath();
+  const token = "456:XYZ-_/";
+  const cfg = { ...loadConfig(opts), botToken: token };
+  saveConfig(cfg, opts);
+  assert.equal(JSON.parse(readFileSync(path, "utf-8")).botToken, Buffer.from(token, "utf-8").toString("base64"));
+  const back = loadConfig(opts);
+  assert.equal(back.botToken, token);
+  // saving again is idempotent — the already-decoded value re-encodes to the same bytes
+  saveConfig(back, opts);
+  assert.equal(JSON.parse(readFileSync(path, "utf-8")).botToken, Buffer.from(token, "utf-8").toString("base64"));
+  assert.equal(loadConfig(opts).botToken, token);
+});
