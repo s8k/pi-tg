@@ -38,6 +38,8 @@ live session. No cloud relay; your code never leaves your machine.
 Telegram (phone) ⇄ Bot API long polling ⇄ pi-tg (extension) ⇄ Pi harness
 ```
 
+https://github.com/user-attachments/assets/7ec4653a-df27-4fb9-a8d8-82488d910132
+
 ## Requirements
 
 - Node ≥ 24.21 (native TS type-stripping for `node --test`; dev on Node 26)
