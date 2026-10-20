@@ -19,7 +19,7 @@
 </p>
 
 <p align="center">
-  <a href="https://www.npmjs.com/package/qrcode">
+  <a href="https://www.npmjs.com/package/pi-tg">
     <img src="https://img.shields.io/npm/v/pi-tg" alt="npm version" />
   </a>
   <a href="https://github.com/s8k/pi-tg/releases/latest">
