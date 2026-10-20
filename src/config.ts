@@ -18,7 +18,7 @@ export type PendingAction =
 
 /**
  * Agent output level — the mirror's render filter: `mute` = nothing (old
- * `muted: true`), `minimal` = visible text only (narration + answer),
+ * `mute` = nothing, `minimal` = visible text only (narration + answer),
  * `full` = today's behavior (draft + work log + final answer, default).
  * Commands, cards and help are unaffected by any level.
  */
@@ -47,7 +47,7 @@ export interface TelegramConfig {
   errorSettleMs: number;
   /** Code fences with a body of more than this many lines are wrapped in a closed <details>. */
   codeFoldLines: number;
-  /** Agent output level (see `OutputLevel`). Legacy `muted` still parses: true → "mute", false → "full". */
+  /** Agent output level (see `OutputLevel`). */
   level: OutputLevel;
   /** Mirror other extensions' TUI dialogs (select/confirm/input/editor) to Telegram as interactive messages. */
   mirrorDialogs: boolean;
@@ -148,11 +148,9 @@ function sanitizePending(value: unknown): PendingAction | undefined {
   return undefined;
 }
 
-/** `level`: a valid value wins; otherwise legacy `muted` (strict boolean: true → "mute", false → "full"); otherwise the default. */
+/** `level`: a valid value wins; anything else (including unknown fields) → the default. */
 function parseLevel(obj: Record<string, unknown>): OutputLevel {
   if (obj.level === "mute" || obj.level === "minimal" || obj.level === "full") return obj.level;
-  if (obj.muted === true) return "mute";
-  if (obj.muted === false) return "full";
   return DEFAULTS.level;
 }
 

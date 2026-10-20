@@ -167,7 +167,7 @@ Env `PI_TELEGRAM_BOT_TOKEN` overrides the stored token.
 | `ownerChatId` | — | owner’s chat id, persisted on first message so the bot can post right after `/reload` (restored on `/reload` only, not on process start — after a restart the bot stays silent until the owner writes) |
 | `streamEditMs` | `1500` | throttle for rich-draft updates |
 | `askClearOnSwitch` | `true` | ask “clear?” when switching sessions |
-| `level` | `"full"` | agent output level: `mute` / `minimal` / `full` (set from the phone; legacy `muted` still migrates: true → `mute`, false → `full`) |
+| `level` | `"full"` | agent output level: `mute` / `minimal` / `full` (set from the phone) |
 | `maxSessionList` | `20` | `/sessions` list cap |
 | `draftHeartbeatMs` | `17000` | rich-draft re-send cadence in ms (keeps the ephemeral draft alive; out-of-range 5000..25000 → default) |
 | `errorSettleMs` | `5000` | grace before an error-ended run’s un-persisted work log is posted as its own “⚠️ error” message; must exceed Pi’s retry backoff (2 s) so an auto-retry carries the log over instead of double-posting |
