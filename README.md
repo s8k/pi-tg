@@ -39,7 +39,7 @@ Pi Coding Agent ⇄ Pi-Tg (extension) ⇄ Telegram Bot API ⇄ Telegram (phone)
 ```
 
 <p align="center">
-  <a hred="https://github.com/user-attachments/assets/c1478d38-dba6-4c19-a6d1-f7e1947d8186">
+  <a href="https://github.com/user-attachments/assets/c1478d38-dba6-4c19-a6d1-f7e1947d8186">
     <img src="https://raw.githubusercontent.com/s8k/pi-tg/refs/heads/main/docs/images/Pi_Coding_Agent-Telegram_Desktop-Telegram_Phone.webp" alt="Demo: Pi Coding Agent &amp; Telegram (Desktop) &amp; Telegram (Phone)" />
   </a>
 </p>
