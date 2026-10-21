@@ -38,6 +38,13 @@ live session. No cloud relay; your code never leaves your machine.
 Pi Coding Agent ⇄ Pi-Tg (extension) ⇄ Telegram Bot API ⇄ Telegram (phone)
 ```
 
+**What you get:**
+
+- Your phone drives the live Pi session — free text is a prompt, the agent works in your terminal
+- One **live draft** message streams the answer with native formatting, tool status, and a **Stop** button
+- A small command set for sessions, models, thinking, and output level
+- Terminal dialogs (selectors, confirms, inputs) mirrored to your chat as buttons
+
 <p align="center">
   <a href="https://github.com/user-attachments/assets/c1478d38-dba6-4c19-a6d1-f7e1947d8186">
     <img src="https://raw.githubusercontent.com/s8k/pi-tg/refs/heads/main/docs/images/Pi_Coding_Agent-Telegram_Desktop-Telegram_Phone.webp" alt="Demo: Pi Coding Agent &amp; Telegram (Desktop) &amp; Telegram (Phone)" />
@@ -57,7 +64,7 @@ Pi Coding Agent ⇄ Pi-Tg (extension) ⇄ Telegram Bot API ⇄ Telegram (phone)
 1. Telegram: open **@BotFather** → `/newbot`
 2. Pick a name and a username ending in `bot`
 3. Copy the **API token** (`123456789:AAH…`) — this is the `<bot_token>` below; treat it like a password
-4. *(optional)* Unlock the Pi commands picker feature: @BotFather → `/mybots` → *Bot Settings* → *Inline mode* → **Turn On**
+4. *(optional)* Unlock the Pi commands picker — one-time setup, see [Pi commands picker](#pi-commands-picker) below
 
 ### Install from npm
 
@@ -85,7 +92,8 @@ Pi Coding Agent ⇄ Pi-Tg (extension) ⇄ Telegram Bot API ⇄ Telegram (phone)
 
 ## How it works
 
-- The extension runs **inside** the live Pi process.
+- The extension runs **inside** the live Pi process — the TUI is the brain:
+  keep the terminal open, close it and the bot goes silent.
 - A long-poll loop reads Telegram updates; only the paired owner is served.
 - Free text is delivered as agent prompts.
 - Session controls (`/new`, `/sessions`, `/stop`, …) execute through Pi’s own
@@ -96,11 +104,9 @@ Pi Coding Agent ⇄ Pi-Tg (extension) ⇄ Telegram Bot API ⇄ Telegram (phone)
   and a native **Stop** button. The draft is refreshed every 1.5 s and
   heartbeated every 17 s (it is ephemeral — Telegram auto-hides it ~30 s after
   the last refresh).
-- The final answer is a rich message (Bot API 10.2+ `blocks`
-  tier — structured `InputRichBlock` arrays, no markdown round-trip); answers
-  over the rich message limit are chunked at block boundaries with a
-  `(continued)` marker. If Telegram rejects a rich send, the answer is
-  re-sent as plain text.
+- The final answer is a rich message; long answers are chunked at block
+  boundaries with a `(continued)` marker, and if Telegram rejects a rich send
+  the answer is re-sent as plain text.
 
 ## Pi Coding Agent commands
 
@@ -108,7 +114,7 @@ Pi Coding Agent ⇄ Pi-Tg (extension) ⇄ Telegram Bot API ⇄ Telegram (phone)
 |---|---|
 | `/tg:config <bot_token>` | save bot token, restart poller |
 | `/tg:pair` | show the pairing selector (instructions + link + QR; `Esc`/Cancel to dismiss, auto-closes on pair) |
-| `/tg:unpair` | unpair the phone (bot silent until a new `/start`) |
+| `/tg:unpair` | unpair the phone (the bot ignores messages again until you send `/start`) |
 
 All three appear in the TUI’s `/` completion list (type `/tg` and Tab).
 `/tg` itself is reserved for pi-tg’s internal poller → TUI dispatch — typing
@@ -119,8 +125,8 @@ it by hand just says so.
 | Command | Action |
 |---|---|
 | free text | Send a prompt |
-| `/start` | Pair the bot and show confirmation message and welcome card (i.e. `/status` and `/help` combined) |
-| `/status` | Session, dir, model, thinking, context usage, message count, busy state, GPU temp/util/memory (NVIDIA, if available) |
+| `/start` | Pair the bot; shows a status summary + command list |
+| `/status` | Session, dir, model, thinking, context usage, message count, session cost (paid models), busy state, GPU temp/util/memory (NVIDIA, if available) |
 | `/stop` | Stop the current turn |
 | `/new` | New session (confirm; the old one stays in the list) |
 | `/sessions` | List recent sessions (≤ 20) with buttons; tap one to switch (confirm if `askClearOnSwitch`) |
@@ -135,10 +141,9 @@ it by hand just says so.
 | `/kill` | Confirm → graceful TUI shutdown |
 | `/help` | Bot command list + ⌨️ button to browse, search, and run other Pi commands |
 
-Row order matches the Telegram `/` command menu — set via `setMyCommands`
-on every poller start (self-healing; single source of truth in
-`src/bot-commands.ts`). `/start` is handled by the bot but deliberately not
-listed in the menu.
+Row order matches the Telegram `/` command menu (self-healing on every
+poller start); `/start` is handled but deliberately not listed. Menu
+internals: [docs/development.md](docs/development.md#bot-command-menu).
 
 ## Pi commands picker
 
@@ -175,20 +180,21 @@ Env `PI_TELEGRAM_BOT_TOKEN` overrides the stored token.
 
 | Field | Default | Meaning |
 |---|---|---|
-| `botToken` | — | Bot API token (base64-encoded at rest; legacy plaintext still reads) |
+| `botToken` | — | Bot API token (stored base64-encoded) |
 | `ownerId` | — | Telegram user ID allowed to drive the bot |
-| `ownerChatId` | — | owner’s chat id, persisted on first message so the bot can post right after `/reload` (restored on `/reload` only, not on process start — after a restart the bot stays silent until the owner writes) |
 | `streamEditMs` | `1500` | throttle for rich-draft updates |
 | `askClearOnSwitch` | `true` | ask “clear?” when switching sessions |
 | `level` | `"full"` | agent output level: `mute` / `minimal` / `full` (set from the phone) |
 | `maxSessionList` | `20` | `/sessions` list cap |
-| `draftHeartbeatMs` | `17000` | rich-draft re-send cadence in ms (keeps the ephemeral draft alive; out-of-range 5000..25000 → default) |
-| `errorSettleMs` | `5000` | grace before an error-ended run’s un-persisted work log is posted as its own “⚠️ error” message; must exceed Pi’s retry backoff (2 s) so an auto-retry carries the log over instead of double-posting |
-| `codeFoldLines` | `25` | code fences whose body has more than N lines collapse into a closed `<details>` (out-of-range 5..500 → default) |
-| `sentMessageIds` | `[]` | recent sent message ids (dedupe; capped at 500) |
-| `lastOffset` | `0` | long-poll offset (survives restarts) |
-| `seenUpdateIds` | `[]` | recently handled update ids (replay guard: if the offset ever regresses — crash, 409 twin — Telegram redelivers those updates and they are skipped, not re-processed; capped at 200) |
+| `draftHeartbeatMs` | `17000` | rich-draft re-send cadence in ms (5000..25000, else default) |
+| `errorSettleMs` | `5000` | grace before an error-ended run’s work log is posted as its own “⚠️ error” message |
+| `codeFoldLines` | `25` | code fences longer than N lines collapse into a closed `<details>` (5..500, else default) |
 | `mirrorDialogs` | `true` | mirror other extensions’ TUI dialogs to the chat (see below) |
+
+Internal state fields (`ownerChatId`, `sentMessageIds`, `lastOffset`,
+`seenUpdateIds`) manage polling, dedupe, and replay safety — details in
+[docs/development.md](docs/development.md#internal-config-fields). Note:
+after a Pi restart the bot stays silent until you send any message.
 
 ## Dialog mirroring
 
@@ -215,16 +221,11 @@ to the chat at the same time:
 - press a key in the terminal → the message is stamped
   `💻 <title>: answered in the terminal`.
 
-Caveats:
-
-- `ctx.ui.custom` (arbitrary terminal UI) is **not** mirrorable — it stays
-  terminal-only, with the usual “⚠️ terminal prompt” line in the work log.
-- `editor` has no programmatic dismiss in Pi: if the phone answers first, the
-  terminal editor stays open until Esc (its late result is discarded).
-- Dialogs follow the output level: `mute` suppresses them (commands still
-  work), `minimal` and `full` mirror them live. The `mirrorDialogs` config
-  field is the master switch — set `"mirrorDialogs": false` in the config
-  file to turn mirroring off at any level.
+Caveats: `ctx.ui.custom` (arbitrary terminal UI) is terminal-only. `editor`
+has no programmatic dismiss in Pi — if the phone answers first, the terminal
+editor stays open until Esc (its late result is discarded). Dialogs follow
+the output level (`mute` suppresses them); `"mirrorDialogs": false` in the
+config file turns mirroring off entirely.
 
 ## Security model
 
@@ -239,32 +240,22 @@ Caveats:
 ```bash
 npx tsc --noEmit            # type gate (strict, erasable-TS)
 node --test                 # all tests (node:test, .ts run natively)
-node --test tests/router.test.ts   # single file
 ```
 
-**Module boundary:** only the root `index.ts` may import
-`@earendil-works/pi-coding-agent`. Every `src/` module is pi-free and takes
-injected interfaces (`TelegramPi`, `Out`, `FetchLike`); `tests/boundary.test.ts`
-enforces the rule mechanically.
+Module layout, the pi-import boundary rule, the bot-menu internals, and the
+internal config fields are documented in
+[docs/development.md](docs/development.md).
 
-| Module | Responsibility |
-|---|---|
-| `src/config.ts` | config load/save, env token override, sanitize (id cap, sent-ids cap) |
-| `src/telegram-client.ts` | Bot API calls, 429 retry, poller loop + offset management |
-| `src/rich-blocks.ts` | the blocks tier: `TgBlock`/`TgRichText` types, cost model, `inlineToRichText`, `mdToBlocks`, `tailBlocks`/`chunkBlocks` @32k, `blocksToPlainText` (pure) |
-| `src/markdown.ts` | survivors: `richUnits` block skeleton, `chunkText` plain-rung chunking, work-log helpers (`toolArgsJson` / `extractWhy`) |
-| `src/thinking.ts` | `supportedThinkingLevels(model)` — mirror of Pi’s selection logic (pure) |
-| `src/bot-commands.ts` | Telegram bot menu (`setMyCommands`) — single source of truth for the bot command list (pure) |
-| `src/ui-dialogs.ts` | in-flight mirrored dialogs: render, reply/number routing, first-answer-wins stamps (pure) |
-| `src/compact.ts` | stoppable manual compaction for `/compact` — replays Pi’s default summarization with its own abort controller |
-| `src/gpu.ts` | NVIDIA GPU temp/util/memory probe for `/status` (never throws, bounded timeout) |
-| `src/router.ts` | update → typed action (pure) |
-| `src/command-args.ts` | `/tg internal …` encode/parse (pure) |
-| `src/session-bridge.ts` | all phone-command logic behind the `TelegramPi` interface |
-| `src/mirror.ts` | Pi events → one blocks draft per turn (footer, 17 s heartbeat) + blocks→plain finalization |
-| `src/onboarding.ts` | QR rendering, token validation, pairing selector title, pairing texts (pure) |
-| `src/state.ts` | per-instance state: offset, sent ids, list caches |
-| `src/wiring.ts` | `makeOut` / `makeTelegramPi` adapters (structural Pi mirrors) |
+## Troubleshooting
+
+- **Bot not responding** — the TUI is the brain: if the terminal is closed,
+  polling stopped. Reopen Pi and the bot resumes.
+- **After restarting Pi the bot is silent** — expected; it starts replying
+  when you send any message.
+- **Wrong user paired / “not authorized”** — `/tg:unpair` in the TUI, then
+  `/tg:pair` and `/start` again.
+- **Telegram rate limits** — the bot backs off automatically on 429; no
+  action needed.
 
 ## Known limitations (v1)
 
