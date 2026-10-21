@@ -1,16 +1,19 @@
 {
   "name": "@s8k/pi-tg",
   "version": "1.0.1",
-  "description": "pi extension: drive your local Pi Coding Agent from Telegram (Bot API, long polling)",
+  "description": "Pi-Tg: Drive your local Pi Coding Agent from Telegram",
   "type": "module",
   "main": "index.ts",
   "keywords": [
     "pi-package",
     "pi-extension",
+    "pi-tg",
     "pi",
+    "pi-coding-agent",
+    "coding-agent",
+    "pi-telegram",
     "telegram",
     "telegram-bot",
-    "coding-agent",
     "remote-control",
     "mobile"
   ],
