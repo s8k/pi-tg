@@ -35,11 +35,14 @@ via Bot API long polling — phone and terminal become co-clients of the same
 live session. No cloud relay; your code never leaves your machine.
 
 ```
-Telegram (phone) ⇄ Bot API long polling ⇄ pi-tg (extension) ⇄ Pi Coding Agent
+Pi Coding Agent ⇄ Pi-Tg (extension) ⇄ Telegram Bot API ⇄ Telegram (phone)
 ```
 
-https://github.com/user-attachments/assets/c1478d38-dba6-4c19-a6d1-f7e1947d8186
-
+<p align="center">
+  <a hred="https://github.com/user-attachments/assets/c1478d38-dba6-4c19-a6d1-f7e1947d8186">
+    <img src="https://raw.githubusercontent.com/s8k/pi-tg/refs/heads/main/docs/images/Pi_Coding_Agent-Telegram_Desktop-Telegram_Phone.webp" alt="Demo: Pi Coding Agent &amp; Telegram (Desktop) &amp; Telegram (Phone)" />
+  </a>
+</p>
 
 ## Requirements
 
@@ -67,7 +70,11 @@ https://github.com/user-attachments/assets/c1478d38-dba6-4c19-a6d1-f7e1947d8186
    The selector closes the moment you pair — or press `Esc` / choose **Cancel**
    to dismiss it early.
 
-https://github.com/user-attachments/assets/52930e84-aee0-40e0-b69e-c5d8e9eb051e
+<p align="center">
+  <a href="https://github.com/user-attachments/assets/52930e84-aee0-40e0-b69e-c5d8e9eb051e">
+    <img src="https://raw.githubusercontent.com/s8k/pi-tg/refs/heads/main/docs/images/Pairing_Pi_Coding_Agent_To_Telegram.webp" alt="Pairing Pi Coding Agent with Telegram" />
+  </a>
+</p>
 
 ### Install from source (development)
 
