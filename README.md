@@ -38,18 +38,18 @@ live session. No cloud relay; your code never leaves your machine.
 Pi Coding Agent ⇄ Pi-Tg (extension) ⇄ Telegram Bot API ⇄ Telegram (phone)
 ```
 
+<p align="center">
+  <a href="https://github.com/user-attachments/assets/c1478d38-dba6-4c19-a6d1-f7e1947d8186">
+    <img src="https://raw.githubusercontent.com/s8k/pi-tg/refs/heads/main/docs/images/Pi_Coding_Agent-Telegram_Desktop-Telegram_Phone.webp" alt="Demo: Pi Coding Agent &amp; Telegram (Desktop) &amp; Telegram (Phone)" />
+  </a>
+</p>
+
 **What you get:**
 
 - Your phone drives the live Pi session — free text is a prompt, the agent works in your terminal
 - One **live draft** message streams the answer with native formatting, tool status, and a **Stop** button
 - A small command set for sessions, models, thinking, and output level
 - Terminal dialogs (selectors, confirms, inputs) mirrored to your chat as buttons
-
-<p align="center">
-  <a href="https://github.com/user-attachments/assets/c1478d38-dba6-4c19-a6d1-f7e1947d8186">
-    <img src="https://raw.githubusercontent.com/s8k/pi-tg/refs/heads/main/docs/images/Pi_Coding_Agent-Telegram_Desktop-Telegram_Phone.webp" alt="Demo: Pi Coding Agent &amp; Telegram (Desktop) &amp; Telegram (Phone)" />
-  </a>
-</p>
 
 ## Requirements
 
