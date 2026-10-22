@@ -39,6 +39,7 @@
     "docs/development.md"
   ],
   "pi": {
+    "image": "https://raw.githubusercontent.com/s8k/pi-tg/refs/heads/main/docs/images/screenshot.png",
     "extensions": [
       "./index.ts"
     ]
