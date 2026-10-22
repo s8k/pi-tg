@@ -1,6 +1,6 @@
 {
   "name": "@s8k/pi-tg",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Pi-Tg: Drive your local Pi Coding Agent from Telegram",
   "type": "module",
   "main": "index.ts",
